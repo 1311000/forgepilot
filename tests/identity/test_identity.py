@@ -459,3 +459,74 @@ async def test_a_resumed_session_inherits_narrowed_not_original_authority() -> N
     assert not resumed.allows_repo(REPO_B)
     assert resumed.permitted_operations == frozenset({Operation.READ_CODE})
     assert resumed.is_signed, "re-derived authority is freshly signed, not inherited"
+
+
+# ---------------------------------------------------------------------------
+# Credentials from the environment
+#
+# Without this the token table is only ever filled by tests, and the CLI cannot
+# authenticate at all. Tokens come from the environment rather than config for
+# the same reason API keys do: a config file is committed and dumped.
+# ---------------------------------------------------------------------------
+async def test_credentials_load_from_the_environment(monkeypatch) -> None:
+    import json as _json
+
+    monkeypatch.setenv(
+        "TEST_TOKENS",
+        _json.dumps([
+            {
+                "token": "dev-token",
+                "principal_id": "alice",
+                "tenant_id": "acme",
+                "teams": ["team-a"],
+                "operations": ["read_code", "write_code"],
+                "repo_prefixes": ["git.corp/team/*"],
+                "writable_paths": ["src"],
+            }
+        ]),
+    )
+    root = create_root()
+    fiber = await root.plugin(PrincipalServicePlugin, {"tokens_env": "TEST_TOKENS"})
+    try:
+        record = root.principal.resolve("dev-token")
+
+        assert record.principal.principal_id == PrincipalId("alice")
+        assert record.principal.team_ids == frozenset({"team-a"})
+        assert record.grant.operations == frozenset(
+            {Operation.READ_CODE, Operation.WRITE_CODE}
+        )
+        assert record.grant.repo_prefixes == frozenset({"git.corp/team/*"})
+        assert record.grant.writable_paths == ("src",)
+        # Network defaults to deny when the entry does not say otherwise.
+        assert record.grant.network is NetworkAccess.DENY
+    finally:
+        await dispose_fiber(fiber)
+
+
+async def test_a_malformed_credential_table_fails_loudly(monkeypatch) -> None:
+    """A silently-empty table is much harder to diagnose than a parse error."""
+    monkeypatch.setenv("TEST_TOKENS", "{not json")
+    root = create_root()
+
+    with pytest.raises(AuthenticationFailed, match="not valid JSON"):
+        await root.plugin(PrincipalServicePlugin, {"tokens_env": "TEST_TOKENS"})
+
+
+async def test_an_entry_without_a_token_is_refused(monkeypatch) -> None:
+    import json as _json
+
+    monkeypatch.setenv("TEST_TOKENS", _json.dumps([{"principal_id": "alice"}]))
+    root = create_root()
+
+    with pytest.raises(AuthenticationFailed, match="no 'token'"):
+        await root.plugin(PrincipalServicePlugin, {"tokens_env": "TEST_TOKENS"})
+
+
+async def test_no_token_environment_variable_is_not_an_error() -> None:
+    """A deployment that authenticates another way must still boot."""
+    root = create_root()
+    fiber = await root.plugin(PrincipalServicePlugin, {"tokens_env": "DEFINITELY_UNSET_VAR"})
+    try:
+        assert root.principal.reload_from_env() == 0
+    finally:
+        await dispose_fiber(fiber)
