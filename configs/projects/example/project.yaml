@@ -1,0 +1,53 @@
+# Example project configuration.
+#
+# ⚠️ This format is an invention — the design doc calls for a "fixed
+# build/test/repair workflow" without defining how one is described. Confirm it
+# against whatever the teams actually use before it becomes load-bearing.
+#
+# Copy to your own project directory and adjust.
+
+name: svc-a
+default_branch: main
+
+repos:
+  - git.corp/team/svc-a
+
+# What this project permits. Absent means "nothing", not "everything" — a
+# project that forgot to say is not thereby an open project.
+allowed_operations:
+  - read_code
+  - write_code
+  - run_tests
+  - open_pr
+writable_paths:
+  - src
+network: deny
+
+# The repair loop's commands, and how far it may retry before giving up.
+build:
+  - make build
+test:
+  - pytest -q
+lint:
+  - ruff check .
+retry:
+  max_attempts: 2
+  on_failure: stop
+
+# Which tool set a category runs with. The classifier picks a *name*; what that
+# name means is decided here, which is what bounds a model's influence over tool
+# selection to "choose one of the sets someone already approved".
+tool_sets:
+  default:
+    - read_file
+  bugfix:
+    - read_file
+    - write_file
+    - run
+category_tool_sets:
+  bug: bugfix
+  question: default
+
+budget:
+  max_tool_calls: 60
+  max_tokens: 150000

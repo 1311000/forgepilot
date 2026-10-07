@@ -63,6 +63,17 @@
       - open_pr
   tier: trusted
 
+# --- ticket understanding ---------------------------------------------------
+# The seam the company's own model is meant to fill. It ships as a classifier
+# that **always declines**: a keyword heuristic pretending to classify would look
+# like it worked and would blur the distinction this seam exists to demonstrate —
+# that the model produces *understanding* and the harness produces *decisions*.
+#
+# Declining means "unknown", and unknown means ask a human. Never guess.
+- id: classifier
+  plugin: forgepilot.providers.classify.stub:NullClassifierPlugin
+  tier: trusted
+
 # --- work item and repository ---------------------------------------------
 - id: tickets
   plugin: forgepilot.providers.tickets.mock:MockTicketSourcePlugin
