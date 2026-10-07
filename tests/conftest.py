@@ -222,3 +222,33 @@ async def rig(tmp_path: Path):
     finally:
         for fiber in reversed(fibers):
             await dispose_fiber(fiber)
+
+
+@pytest.fixture
+def constraints_factory():
+    """Build ``ExecutionConstraints`` from a test.
+
+    A fixture rather than an importable helper on purpose: pytest puts a test
+    file's own directory on ``sys.path``, not the tests package, so
+    ``from .conftest import ...`` fails and ``from ..conftest import ...`` fails
+    too. Fixtures are shared across subdirectories without any import at all,
+    which is why every shared test helper that is not a fixture should be one.
+    """
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import (
+        ExecutionConstraints,
+        NetworkAccess,
+        Operation,
+        Principal,
+    )
+
+    def make(*operations, writable=("src",), repos=(), network=NetworkAccess.DENY):
+        return ExecutionConstraints.for_principal(
+            Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+            allowed_repos=frozenset(repos),
+            permitted_operations=frozenset(operations),
+            writable_paths=tuple(writable),
+            network=network,
+        )
+
+    return make

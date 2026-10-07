@@ -127,6 +127,12 @@ class EventKind:
     #: payload is empty — position carries the meaning.
     END_SEED = "session/end-seed"
     TASK_STATE = "task/state"
+    #: A check the *harness* ran — the project's build/test commands. Surfaced to
+    #: the model, because it needs to see why something failed, but deliberately
+    #: **not** a ``tool/result``: the model never asked for it, and a tool result
+    #: with no preceding assistant tool call is a malformed conversation that
+    #: endpoints reject outright.
+    TASK_CHECK = "task/check"
     MEMORY_WRITE = "memory/write"
 
 

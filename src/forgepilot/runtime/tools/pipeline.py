@@ -89,6 +89,13 @@ class ToolPipeline:
     logger: Any = None
     pre_execute_listeners: list[PreExecuteListener] = field(default_factory=list)
     post_execute_listeners: list[PostExecuteListener] = field(default_factory=list)
+    #: Tools this run may use at all. ``None`` means "everything registered".
+    #:
+    #: Restricting what the model is *shown* is not enough on its own: a model can
+    #: name a tool it was never offered, and the registry would happily run it.
+    #: The router's selection has to be enforced here, at the point of execution,
+    #: or the visible set is merely a suggestion.
+    allowed_tools: frozenset[str] | None = None
     #: Phase names in the order the most recent call passed through them.
     #: Exposed for tests and diagnostics; this is how the ordering guarantee is
     #: asserted rather than assumed.
@@ -119,6 +126,21 @@ class ToolPipeline:
         if definition is None:
             outcome = ToolOutcome(
                 content=f"no such tool: {call.name!r}", is_error=True, meta={"phase": "dispatch"}
+            )
+            await self._record_call(session, call, turn, step)
+            await self._record_result(session, call, outcome, turn, step)
+            return outcome
+
+        if self.allowed_tools is not None and call.name not in self.allowed_tools:
+            # Not in this task's selected set. Recorded as a normal refusal so the
+            # model sees it and stops asking, rather than being silently ignored.
+            outcome = ToolOutcome(
+                content=(
+                    f"tool {call.name!r} is not part of this task's tool set. Available: "
+                    f"{sorted(self.allowed_tools)}"
+                ),
+                is_error=True,
+                meta={"phase": "dispatch", "not_selected": True},
             )
             await self._record_call(session, call, turn, step)
             await self._record_result(session, call, outcome, turn, step)

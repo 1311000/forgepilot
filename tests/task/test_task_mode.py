@@ -1,0 +1,379 @@
+"""Task mode end to end: a mocked ticket becomes a branch, a diff and a PR draft.
+
+The whole flow runs deterministically against mocks and a **scripted** model, so
+it needs no network, no git binary and no test runner. What it does need is a
+sandbox that returns output — the recording one refuses every command, and a
+repair loop cannot be exercised against a sandbox that never answers.
+
+Three assertions here are the ones worth keeping:
+
+- the diff is **real** — it reflects what the model wrote, not a stub;
+- a check that *could not run* is never reported as a pass;
+- the harness's check reaches the model as a **user message**, not as a tool
+  result the model never asked for (which endpoints reject outright).
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from forgepilot.orchestration import ClassifierGateway
+from forgepilot.orchestration.modes.task import plan_task, run_task
+from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+from forgepilot.providers.sandbox.scripted import ScriptedResult
+from forgepilot.runtime.projection import derive_messages
+from forgepilot.seams.classifier import TicketUnderstanding
+from forgepilot.seams.llm import Role
+from forgepilot.seams.refs import RepoRef, TicketId
+from forgepilot.seams.security import Operation
+from forgepilot.seams.session import EventKind
+from forgepilot.seams.tickets import Ticket, TicketPriority
+
+
+
+# Defined locally rather than imported from conftest: pytest does not put the
+# tests package on sys.path, so a relative conftest import fails at collection.
+REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
+
+BUGGY = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    attempts = 0\n    while True:\n        try:\n            return client.login(credentials)\n        except AuthError:\n            attempts += 1\n"
+
+FIXED = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    for _ in range(MAX_ATTEMPTS):\n        try:\n            return client.login(credentials)\n        except AuthError:\n            continue\n    raise RuntimeError('login failed after retries')\n"
+
+
+class FixedClassifier:
+    def __init__(self, understanding: TicketUnderstanding) -> None:
+        self.understanding = understanding
+
+    def capabilities(self) -> frozenset[str]:
+        return frozenset()
+
+    async def classify(self, request):  # noqa: ANN001
+        return self.understanding
+
+
+def a_ticket() -> Ticket:
+    return Ticket(
+        id=TicketId("T-1"),
+        title="登录无限重试",
+        description_md=(
+            "复现步骤：\n1. 输错密码\n\n预期结果：提示密码错误\n实际结果：无限重试"
+        ),
+        priority=TicketPriority.HIGH,
+    )
+
+
+async def make_plan(rig, constraints=None):
+    return await plan_task(
+        ticket=a_ticket(),
+        project=rig.project,
+        constraints=constraints or rig.constraints,
+        registry=rig.registry,
+        classifier=ClassifierGateway(
+            FixedClassifier(TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95))
+        ),
+    )
+
+
+async def run(rig, plan, constraints=None):
+    return await run_task(
+        plan=plan,
+        project=rig.project,
+        session=rig.session,
+        llm=rig.llm,
+        tools=rig.registry,
+        vcs=rig.vcs,
+        workspace=rig.workspace,
+        sandbox=rig.sandbox,
+        constraints=constraints or rig.constraints,
+        pipeline=rig.pipeline,
+        tracker=rig.tracker,
+        model="replay-1",
+    )
+
+
+def write_fix(content: str):
+    return tool_call_turn(
+        "write_file", json.dumps({"path": "src/login.py", "content": content}), call_id="c1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The happy path
+# ---------------------------------------------------------------------------
+async def test_a_ticket_becomes_a_branch_a_diff_and_a_pull_request(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    assert plan.ready, plan.describe()
+
+    task_rig.llm.script(write_fix(FIXED), text_turn("bounded the retry loop"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    outcome = await run(task_rig, plan)
+
+    assert outcome.delivered, outcome.reason
+    assert outcome.branch
+    assert outcome.attempts == 1
+
+    # The diff is real: it reflects what the model wrote, not a placeholder.
+    assert "src/login.py" in outcome.diff
+    assert "for _ in range(MAX_ATTEMPTS)" in outcome.diff
+    assert "while True" in outcome.diff, "the removed line should appear as a removal"
+    assert outcome.changed_paths == ("src/login.py",)
+
+
+async def test_the_pull_request_is_recorded_and_traceable_to_the_ticket(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    outcome = await run(task_rig, plan)
+
+    assert len(task_rig.vcs.pull_requests) == 1
+    draft = task_rig.vcs.pull_requests[0]
+    assert draft.ticket_id == "T-1", "a PR must be traceable to its work item"
+    assert draft.source_branch == outcome.branch
+    assert draft.target_branch == "main"
+    assert draft.draft is True
+    assert "T-1" in draft.body_md
+    assert "pytest -q" in draft.body_md
+    assert outcome.pull_request is not None
+
+
+async def test_the_session_records_the_full_task_trace(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    await run(task_rig, plan)
+
+    kinds = [e.kind for e in task_rig.session.committed_events]
+    assert EventKind.CONSTRAINT_SNAPSHOT not in kinds  # not taken in this path
+    assert EventKind.TURN_START in kinds and EventKind.TURN_END in kinds
+    assert EventKind.TASK_CHECK in kinds
+    states = [
+        e.data["state"] for e in task_rig.session.committed_events if e.kind == EventKind.TASK_STATE
+    ]
+    assert states == ["running", "delivered"]
+
+
+# ---------------------------------------------------------------------------
+# The repair loop
+# ---------------------------------------------------------------------------
+async def test_a_failing_check_sends_the_model_back_to_fix_it(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(
+        write_fix(BUGGY),          # a fix that does not work
+        text_turn("tried"),
+        write_fix(FIXED),          # the real fix
+        text_turn("done"),
+    )
+    task_rig.sandbox.script(
+        ScriptedResult(exit_code=1, stdout="1 failed: retry loop is unbounded"),
+        ScriptedResult(exit_code=0, stdout="1 passed"),
+    )
+
+    outcome = await run(task_rig, plan)
+
+    assert outcome.delivered
+    assert outcome.attempts == 2
+    assert outcome.turns == 2
+    assert [c.passed for c in outcome.checks] == [False, True]
+
+
+async def test_the_retry_bound_is_respected(task_rig) -> None:
+    """Bounded by the project's policy, never looping until it works."""
+    plan = await make_plan(task_rig)
+    for _ in range(5):
+        task_rig.llm.script(write_fix(BUGGY), text_turn("tried again"))
+    task_rig.sandbox.script(*[ScriptedResult(exit_code=1, stdout="still failing")] * 5)
+
+    outcome = await run(task_rig, plan)
+
+    assert outcome.state.value == "failed"
+    assert outcome.attempts == task_rig.project.retry.max_attempts + 1
+    assert task_rig.vcs.pull_requests == (), "nothing is delivered when checks fail"
+
+
+async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(task_rig, constraints_factory) -> None:
+    """Reporting success for checks nobody ran would claim verification that
+    did not happen."""
+    # Write is needed to create the branch; run_tests is the one withheld, so
+    # the check is what fails rather than the setup.
+    read_only = constraints_factory(Operation.READ_CODE, Operation.WRITE_CODE, repos=(REPO,))
+    plan = await make_plan(task_rig, constraints=read_only)
+
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+
+    outcome = await run(task_rig, plan, constraints=read_only)
+
+    assert outcome.state.value == "failed"
+    assert outcome.checks[-1].could_not_run is True
+    assert "not a pass" in outcome.checks[-1].output
+    assert task_rig.vcs.pull_requests == ()
+
+
+async def test_no_pull_request_is_opened_when_a_check_could_not_run(task_rig, constraints_factory) -> None:
+    read_only = constraints_factory(Operation.READ_CODE, Operation.WRITE_CODE, repos=(REPO,))
+    plan = await make_plan(task_rig, constraints=read_only)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+
+    await run(task_rig, plan, constraints=read_only)
+
+    assert task_rig.vcs.pull_requests == ()
+
+
+# ---------------------------------------------------------------------------
+# The tool set is enforced, not merely advertised
+# ---------------------------------------------------------------------------
+async def test_a_tool_outside_the_selection_is_refused_at_execution(task_rig) -> None:
+    """Restricting the schemas is not enough: a model can name what it was never offered.
+
+    The selection is narrowed through the *project configuration*, which is the
+    real path — the runner sets the pipeline's allow-list from the plan, so
+    mutating the pipeline by hand would be overwritten and would prove nothing.
+    """
+    from forgepilot.config.project import ProjectConfig
+
+    narrow = ProjectConfig(
+        name="svc-a",
+        repos=(REPO,),
+        default_branch="main",
+        test=("pytest -q",),
+        allowed_operations=frozenset(Operation),
+        writable_paths=("src",),
+        tool_sets={"default": ("write_file", "run")},  # read_file is NOT offered
+    )
+    plan = await plan_task(
+        ticket=a_ticket(),
+        project=narrow,
+        constraints=task_rig.constraints,
+        registry=task_rig.registry,
+        classifier=ClassifierGateway(
+            FixedClassifier(TicketUnderstanding(category="bug", confidence=0.95))
+        ),
+    )
+
+    task_rig.llm.script(
+        tool_call_turn("read_file", json.dumps({"path": "src/login.py"}), call_id="c9"),
+        write_fix(FIXED),
+        text_turn("done"),
+    )
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="ok"))
+
+    await run_task(
+        plan=plan,
+        project=narrow,
+        session=task_rig.session,
+        llm=task_rig.llm,
+        tools=task_rig.registry,
+        vcs=task_rig.vcs,
+        workspace=task_rig.workspace,
+        sandbox=task_rig.sandbox,
+        constraints=task_rig.constraints,
+        pipeline=task_rig.pipeline,
+        tracker=task_rig.tracker,
+        model="replay-1",
+    )
+
+    results = [e for e in task_rig.session.committed_events if e.kind == EventKind.TOOL_RESULT]
+    assert results, "the refusal is recorded so the model can see it"
+    assert any("not part of this task's tool set" in str(r.data.get("content")) for r in results)
+
+
+async def test_the_model_is_never_given_a_tool_that_opens_pull_requests(task_rig) -> None:
+    """Delivery is harness-driven. A capability that exists is one that can be induced."""
+    plan = await make_plan(task_rig)
+    offered = {schema.name for schema in plan.tool_schemas(task_rig.registry)}
+
+    assert "open_pr" not in offered
+    assert task_rig.registry.get("open_pr") is None, (
+        "no pull-request tool is registered at all; the harness opens the PR once "
+        "the checks pass"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Well-formedness of the harness's own check
+# ---------------------------------------------------------------------------
+async def test_a_harness_check_reaches_the_model_as_a_user_message(task_rig) -> None:
+    """Not as a tool result the model never asked for.
+
+    A `tool/result` with no preceding assistant tool call is an orphan, and
+    endpoints reject the whole request over it — the failure would look like a
+    provider problem rather than a logging bug.
+    """
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    await run(task_rig, plan)
+
+    messages = derive_messages(task_rig.session.events)
+    check_message = next(
+        (m for m in messages if m.content and "harness ran this project's checks" in m.content),
+        None,
+    )
+    assert check_message is not None
+    assert check_message.role is Role.USER
+    assert "pytest -q" in check_message.content
+    assert "1 passed" in check_message.content
+
+
+def _orphan_tool_messages(messages) -> list[str]:
+    """Tool messages whose call id no assistant message ever requested."""
+    requested: set[str] = set()
+    orphans: list[str] = []
+    for message in messages:
+        for call in message.tool_calls:
+            requested.add(call.call_id)
+        if message.role is Role.TOOL and message.tool_call_id not in requested:
+            orphans.append(str(message.tool_call_id))
+    return orphans
+
+
+async def test_the_conversation_stays_well_formed_across_the_whole_task(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(
+        write_fix(BUGGY), text_turn("tried"),
+        write_fix(FIXED), text_turn("done"),
+    )
+    task_rig.sandbox.script(
+        ScriptedResult(exit_code=1, stdout="failing"),
+        ScriptedResult(exit_code=0, stdout="passing"),
+    )
+
+    await run(task_rig, plan)
+
+    messages = derive_messages(task_rig.session.events)
+
+    assert _orphan_tool_messages(messages) == [], (
+        "every tool result must answer a tool call the model made"
+    )
+    assert all(m.source_event_seq is not None for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# Planning is reused, not bypassed
+# ---------------------------------------------------------------------------
+async def test_a_ticket_that_cannot_be_scoped_is_never_executed(task_rig) -> None:
+    """No repository, nothing to run against — and no model call to guess one."""
+    from forgepilot.config.project import ProjectConfig
+
+    project = ProjectConfig(name="scopeless", tool_sets={"default": ("read_file",)})
+    plan = await plan_task(
+        ticket=a_ticket(),
+        project=project,
+        constraints=task_rig.constraints,
+        registry=task_rig.registry,
+        classifier=ClassifierGateway(
+            FixedClassifier(TicketUnderstanding(category="bug", confidence=0.99))
+        ),
+    )
+
+    assert plan.needs_human
+    assert "no repository" in plan.reason
+
+    outcome = await run(task_rig, plan)
+    assert not outcome.delivered
+    assert task_rig.vcs.pull_requests == ()

@@ -31,7 +31,12 @@ __all__ = ["derive_messages", "build_request", "unsupported_event_kinds"]
 #: Event kinds that become a message. Anything absent is log-only by construction
 #: — a plugin can add events without accidentally feeding the model.
 _SURFACE_KINDS = frozenset(
-    {EventKind.USER_MESSAGE, EventKind.ASSISTANT_MESSAGE, EventKind.TOOL_RESULT}
+    {
+        EventKind.USER_MESSAGE,
+        EventKind.ASSISTANT_MESSAGE,
+        EventKind.TOOL_RESULT,
+        EventKind.TASK_CHECK,
+    }
 )
 
 
@@ -114,6 +119,26 @@ def _render(event: SessionEvent) -> ChatMessage | None:
             role=Role.TOOL,
             content=str(data.get("content", "")),
             tool_call_id=str(data.get("callId", "")),
+            source_event_seq=event.seq,
+        )
+
+    if event.kind == EventKind.TASK_CHECK:
+        # Rendered as a *user* message, not a tool result: the model did not ask
+        # for this check, and dressing it as one would both misrepresent the log
+        # and produce an orphan tool message the endpoint would reject.
+        status = "passed" if data.get("passed") else "FAILED"
+        command = data.get("command", "")
+        output = str(data.get("output", "")).strip()
+        body = [
+            f"The harness ran this project's checks: {status}.",
+            f"Command: {command}",
+        ]
+        if output:
+            body.append("Output:")
+            body.append(output)
+        return ChatMessage(
+            role=Role.USER,
+            content="\n".join(body),
             source_event_seq=event.seq,
         )
 

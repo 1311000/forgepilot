@@ -52,6 +52,9 @@ class TaskPlan:
     ticket: Ticket
     preprocessed: PreprocessResult
     reason: str = ""
+    #: Which repositories the work targets. Resolved deterministically: what the
+    #: ticket names, or the project's single repository.
+    repos: tuple[Any, ...] = ()
     understanding: TicketUnderstanding | None = None
     selection: AdapterSelection | None = None
     system_sections: tuple[PromptSection, ...] = ()
@@ -130,6 +133,25 @@ async def plan_task(
             transitions=tuple(machine.history),
         )
 
+    # Which repository? Answered by rules, and answered *before* the classifier
+    # for the same reason as above. A ticket naming a repository nobody knows
+    # cannot be scoped, and asking a model to guess one would be asking it to
+    # choose where to write.
+    target_repos = preprocessed.repos or tuple(project.repos)
+    if not target_repos:
+        reason = (
+            "no repository could be determined for this ticket: it names none the "
+            "project knows about, and the project declares none"
+        )
+        machine.to(TaskState.AWAITING_INFO, reason)
+        return TaskPlan(
+            state=TaskState.AWAITING_INFO,
+            ticket=ticket,
+            preprocessed=preprocessed,
+            reason=reason,
+            transitions=tuple(machine.history),
+        )
+
     understanding = await classifier.classify(
         ClassificationRequest(
             ticket_id=ticket.id,
@@ -177,10 +199,242 @@ async def plan_task(
         state=TaskState.QUEUED,
         ticket=ticket,
         preprocessed=preprocessed,
+        reason="planned",
+        repos=target_repos,
         understanding=understanding,
         selection=selection,
         system_sections=sections,
         brief=brief,
-        reason="planned",
         transitions=tuple(machine.history),
     )
+
+
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
+#: Sent on a retry. Short on purpose: the check output is already in the log as a
+#: `task/check` event the model can see, so repeating it here would duplicate
+#: context and imply the two could disagree.
+FIX_PROMPT = (
+    "The project's checks failed. Read the output above, fix the cause, and stop "
+    "once you believe the checks will pass."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskOutcome:
+    """What running the plan produced."""
+
+    state: TaskState
+    reason: str = ""
+    attempts: int = 0
+    turns: int = 0
+    checks: tuple[Any, ...] = ()
+    diff: str = ""
+    changed_paths: tuple[str, ...] = ()
+    branch: str = ""
+    pull_request: Any = None
+    transitions: tuple[tuple[TaskState, str], ...] = field(default_factory=tuple)
+
+    @property
+    def delivered(self) -> bool:
+        return self.state is TaskState.DELIVERED
+
+
+async def run_task(
+    *,
+    plan: TaskPlan,
+    project: ProjectConfig,
+    session: Any,
+    llm: Any,
+    tools: Any,
+    vcs: Any,
+    workspace: Any,
+    sandbox: Any,
+    constraints: ExecutionConstraints,
+    pipeline: Any = None,
+    tracker: Any = None,
+    model: str = "",
+    author: Any = None,
+) -> TaskOutcome:
+    """Execute a plan: branch, work, check, repair, deliver.
+
+    Delivery is **harness-driven, not model-driven**. The model never gets an
+    `open_pr` tool, because opening a pull request is a privileged, outward-facing
+    act and the fixed workflow already decided when it should happen — once the
+    checks pass. Giving the model the tool would add an authority it has no need
+    for, and every capability that exists is one that can be induced.
+    """
+    from forgepilot.runtime.loop.turn import run_turn
+    from forgepilot.runtime.repair import run_checks
+    from forgepilot.seams.agent_loop import UserInput
+    from forgepilot.seams.session import EventKind
+    from forgepilot.seams.vcs import PullRequestDraft
+
+    machine = TaskStateMachine()
+
+    if not plan.ready:
+        return TaskOutcome(state=plan.state, reason=plan.reason)
+
+    assert plan.selection is not None  # noqa: S101 - invariant of `ready`
+
+    machine.to(TaskState.RUNNING, "executing plan")
+    await session.append(
+        EventKind.TASK_STATE,
+        {"state": str(TaskState.RUNNING), "ticket": str(plan.ticket.id), "toolSet": plan.selection.tool_set},
+    )
+
+    repo = plan.repos[0]
+    session_id = session.header.session_id
+    handle = await workspace.prepare(repo, project.default_branch, session_id)
+    branch = await vcs.create_branch(repo, handle.branch, project.default_branch, constraints)
+
+    # Enforce the routing selection at the point of execution. Restricting the
+    # schemas the model is *shown* is not enough: a model can name a tool it was
+    # never offered, and the registry would run it.
+    if pipeline is not None:
+        pipeline.allowed_tools = plan.selection.tools
+
+    checks: list[Any] = []
+    turns = 0
+    passed = False
+    attempts = 0
+
+    for attempt in range(project.retry.max_attempts + 1):
+        attempts = attempt + 1
+        await run_turn(
+            session=session,
+            user_input=UserInput(text=plan.brief if attempt == 0 else FIX_PROMPT),
+            llm=llm,
+            tools=tools,
+            constraints=constraints,
+            model=model,
+            system_sections=plan.system_texts,
+            workspace_root=handle.root,
+            tool_schemas=plan.tool_schemas(tools),
+            tracker=tracker,
+        )
+        turns += 1
+
+        check = await run_checks(
+            commands=project.test,
+            sandbox=sandbox,
+            session=session,
+            constraints=constraints,
+            workspace_root=handle.root,
+            session_id=session_id,
+        )
+        checks.append(check)
+
+        if check.passed:
+            passed = True
+            break
+        if check.could_not_run:
+            # Retrying something that cannot run just burns budget. Say why and
+            # stop rather than looping against a wall.
+            break
+
+    diff = await workspace.diff(handle)
+    changed = tuple(await workspace.changed_paths(handle))
+
+    if not passed:
+        reason = checks[-1].reason if checks and checks[-1].could_not_run else "checks failed"
+        machine.to(TaskState.FAILED, reason)
+        await session.append(
+            EventKind.TASK_STATE, {"state": str(TaskState.FAILED), "reason": reason}
+        )
+        # A finished task's log must be durable. Without this the closing events
+        # sit in the buffer, and a reader — or a crash — sees a task that never
+        # ended.
+        await session.flush()
+        return TaskOutcome(
+            state=TaskState.FAILED,
+            reason=reason,
+            attempts=attempts,
+            turns=turns,
+            checks=tuple(checks),
+            diff=diff,
+            changed_paths=changed,
+            branch=branch.name,
+            transitions=tuple(machine.history),
+        )
+
+    from forgepilot.seams.vcs import CommitAuthor
+
+    await vcs.commit(
+        repo,
+        branch.name,
+        f"fix: {plan.ticket.title}",
+        author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
+        constraints,
+    )
+    await vcs.push(repo, branch.name, constraints)
+
+    draft = PullRequestDraft(
+        repo=repo,
+        source_branch=branch.name,
+        target_branch=project.default_branch,
+        title=f"fix: {plan.ticket.title}",
+        body_md=_pull_request_body(plan, checks, changed, diff),
+        # Traceable back to the work item, not only to a branch name.
+        ticket_id=str(plan.ticket.id),
+        draft=True,
+    )
+    pull_request = await vcs.open_pull_request(draft, constraints)
+
+    machine.to(TaskState.DELIVERED, "checks passed and a pull request was opened")
+    await session.append(
+        EventKind.TASK_STATE,
+        {"state": str(TaskState.DELIVERED), "pullRequest": pull_request.url},
+    )
+    await session.flush()
+
+    return TaskOutcome(
+        state=TaskState.DELIVERED,
+        reason="delivered",
+        attempts=attempts,
+        turns=turns,
+        checks=tuple(checks),
+        diff=diff,
+        changed_paths=changed,
+        branch=branch.name,
+        pull_request=pull_request,
+        transitions=tuple(machine.history),
+    )
+
+
+def _pull_request_body(
+    plan: TaskPlan, checks: Sequence[Any], changed: Sequence[str], diff: str
+) -> str:
+    """Assemble the PR description from what actually happened.
+
+    Built from the log rather than asked of the model: the evidence is already
+    recorded, and a model-authored summary of its own work is the least reliable
+    available source for it. A summarisation turn could add narrative later; the
+    facts should not depend on one.
+    """
+    lines = [
+        f"Fixes {plan.ticket.id}.",
+        "",
+        "## Checks",
+    ]
+    for check in checks:
+        status = "passed" if check.passed else "FAILED"
+        lines.append(f"- `{check.command}` — {status}")
+    if changed:
+        lines.append("")
+        lines.append("## Changed")
+        lines.extend(f"- `{path}`" for path in changed)
+    if plan.understanding is not None and plan.understanding.symptom:
+        lines.append("")
+        lines.append("## Reported symptom")
+        lines.append(plan.understanding.symptom)
+    if diff:
+        lines.append("")
+        lines.append("<details><summary>Diff</summary>")
+        lines.append("")
+        lines.append("```diff")
+        lines.append(diff.rstrip())
+        lines.append("```")
+        lines.append("</details>")
+    return "\n".join(lines)
