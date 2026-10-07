@@ -27,6 +27,7 @@ __all__ = [
     "Budget",
     "NetworkAccess",
     "ExecutionConstraints",
+    "normalise_relative",
 ]
 
 
@@ -149,11 +150,11 @@ class ExecutionConstraints:
         """
         if not self.writable_paths:
             return False
-        candidate = _normalise_relative(relative_path)
+        candidate = normalise_relative(relative_path)
         if candidate is None:
             return False
         for allowed in self.writable_paths:
-            allowed_norm = _normalise_relative(allowed)
+            allowed_norm = normalise_relative(allowed)
             if allowed_norm is None:
                 continue
             if candidate == allowed_norm or candidate.startswith(allowed_norm.rstrip("/") + "/"):
@@ -202,7 +203,7 @@ def _prefix_matches(prefix: str, slug: str) -> bool:
     return slug == prefix
 
 
-def _normalise_relative(path: str) -> str | None:
+def normalise_relative(path: str) -> str | None:
     """Normalise a workspace-relative path, rejecting escapes and absolutes."""
     cleaned = path.replace("\\", "/").strip()
     if not cleaned or cleaned.startswith("/") or ":" in cleaned.split("/")[0]:

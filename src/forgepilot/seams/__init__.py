@@ -116,12 +116,15 @@ from forgepilot.seams.tickets import (
     TicketStatus,
 )
 from forgepilot.seams.tools import (
+    Capabilities,
+    ResourceTargets,
     ToolCall,
     ToolContext,
     ToolDefinition,
     ToolEffect,
     ToolOutcome,
     ToolRegistry,
+    ToolSessionRecorder,
 )
 from forgepilot.seams.vcs import (
     ChangedFile,
@@ -164,6 +167,9 @@ __all__ = [
     # tools
     "ToolCall", "ToolContext", "ToolDefinition", "ToolEffect", "ToolOutcome",
     "ToolRegistry",
+    "ToolSessionRecorder",
+    "Capabilities",
+    "ResourceTargets",
     # vcs
     "ChangedFile", "CommitAuthor", "DiffBundle", "PullRequestDraft", "PullRequestRef",
     "Vcs",

@@ -89,19 +89,29 @@
   tier: trusted
 
 - id: approval
-  plugin: forgepilot.providers.approval.scripted:ScriptedApprovalPlugin
+  plugin: forgepilot.runtime.approval:ApprovalServicePlugin
   config:
     # fail-closed: an unanswered ask is a refusal.
     policy: ask
   tier: trusted
+  # No answerer is wired here, so any `ask` resolves to UNAVAILABLE and the call
+  # is refused. That is the correct default for a headless skeleton; a UI supplies
+  # an answerer at M10. Swap in
+  # `forgepilot.providers.approval.scripted:ScriptedApprovalPlugin` to script one.
 
 # --- not yet implemented ---------------------------------------------------
 # These name the intended implementation so the seam is visible in the dump.
 
-# M4 — the tool pipeline and registry.
+# The tool registry is the catalog; it refuses to execute anything unless a
+# pipeline is attached, so approval, guards and the sandbox cannot be skipped.
 - id: tools
   plugin: forgepilot.runtime.tools.registry:ToolRegistryPlugin
-  disabled: true
+  tier: trusted
+
+# The shipped tools. Depends on `tools` and `sandbox`, so it stays PENDING — and
+# registers nothing — on a host without a sandbox.
+- id: tools-builtin
+  plugin: forgepilot.runtime.tools.builtin:BuiltinToolsPlugin
   tier: trusted
 
 # M6 — the agent loop, selected through a factory key so the engine is a config
