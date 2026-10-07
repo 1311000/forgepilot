@@ -35,6 +35,7 @@ __all__ = [
     "ResolvedRow",
     "ResolvedConfig",
     "apply_layers",
+    "apply_row",
     "patch_layer_from_mapping",
     "expand_env",
 ]
@@ -90,14 +91,22 @@ VALID_TIERS = frozenset({TIER_TRUSTED, TIER_THIRD_PARTY})
 
 @dataclass(frozen=True, slots=True)
 class PatchEntry:
-    """One row contributed by one layer."""
+    """One row contributed by one layer.
+
+    ``tier`` and ``disabled`` are **three-state**: ``None`` means "I am not
+    expressing an opinion", and an override inherits the previous value. This is
+    not a nicety — treating "unspecified" as ``False``/``trusted`` would let a
+    layer that only wanted to change ``config`` silently re-enable a disabled
+    plugin, or silently promote a third-party plugin to trusted. Both are
+    privilege changes nobody wrote down.
+    """
 
     id: str
     plugin: str | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
     inject: tuple[str, ...] | None = None
-    tier: str = TIER_TRUSTED
-    disabled: bool = False
+    tier: str | None = None
+    disabled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,16 +157,9 @@ class ResolvedConfig:
         ``resolver`` maps a ``"module:attr"`` spec to the object; tests inject a
         mapping-backed resolver so they need no real import machinery.
         """
-        if resolver is None:
-            from forgepilot.config.bundle import resolve_plugin
-
-            resolver = resolve_plugin
-
+        resolve = resolver or _default_resolver()
         for row in self.rows:
-            if row.disabled or row.plugin is None:
-                continue
-            target = resolver(row.plugin)
-            ctx.plugin(_as_plugin(target, row), dict(row.config))
+            apply_row(ctx, row, resolve)
         return ctx
 
     # -- inspection path ---------------------------------------------------
@@ -175,6 +177,30 @@ class ResolvedConfig:
             if candidate.id == row_id:
                 return candidate
         raise KeyError(row_id)
+
+
+def _default_resolver() -> Callable[[str], Any]:
+    from forgepilot.config.bundle import resolve_plugin
+
+    return resolve_plugin
+
+
+def apply_row(
+    ctx: Any,
+    row: ResolvedRow,
+    resolver: Callable[[str], Any] | None = None,
+) -> Any:
+    """Register a single resolved row onto ``ctx``. Returns the fiber, or ``None``.
+
+    Exposed separately from :meth:`ResolvedConfig.materialize` so a caller that
+    wants per-row error reporting (the ``boot`` command) can get it without
+    reimplementing how a row becomes a plugin.
+    """
+    if row.disabled or row.plugin is None:
+        return None
+    resolve = resolver or _default_resolver()
+    target = resolve(row.plugin)
+    return ctx.plugin(_as_plugin(target, row), dict(row.config))
 
 
 def _as_plugin(target: Any, row: ResolvedRow) -> Any:
@@ -216,7 +242,7 @@ def apply_layers(
                 )
             seen_in_layer.add(entry.id)
 
-            if entry.tier not in VALID_TIERS:
+            if entry.tier is not None and entry.tier not in VALID_TIERS:
                 raise PatchFormatError(
                     f"row {entry.id!r} in layer {layer.name!r} has unknown tier "
                     f"{entry.tier!r}; expected one of {sorted(VALID_TIERS)}"
@@ -230,20 +256,24 @@ def apply_layers(
                     plugin=entry.plugin,
                     config=dict(entry.config),
                     inject=tuple(entry.inject or ()),
-                    tier=entry.tier,
-                    disabled=entry.disabled,
+                    tier=entry.tier or TIER_TRUSTED,
+                    disabled=bool(entry.disabled),
                     sources=(layer.name,),
                 )
                 continue
 
-            # Override: the whole config is replaced, not merged.
+            # Override: the whole config is replaced, not merged. `tier` and
+            # `disabled` are inherited unless this layer states them, so an
+            # override cannot change privilege by omission.
             by_id[entry.id] = replace(
                 previous,
                 plugin=entry.plugin if entry.plugin is not None else previous.plugin,
                 config=dict(entry.config),
                 inject=tuple(entry.inject) if entry.inject is not None else previous.inject,
-                tier=entry.tier,
-                disabled=entry.disabled,
+                tier=entry.tier if entry.tier is not None else previous.tier,
+                disabled=(
+                    entry.disabled if entry.disabled is not None else previous.disabled
+                ),
                 sources=previous.sources + (layer.name,),
             )
 
@@ -297,8 +327,8 @@ def patch_layer_from_mapping(name: str, raw: Any) -> PatchLayer:
                     dict(item.get("config") or {}), where=f"{name}.{item['id']}.config"
                 ),
                 inject=inject,
-                tier=str(item.get("tier", TIER_TRUSTED)),
-                disabled=bool(item.get("disabled", False)),
+                tier=str(item["tier"]) if "tier" in item else None,
+                disabled=bool(item["disabled"]) if "disabled" in item else None,
             )
         )
 

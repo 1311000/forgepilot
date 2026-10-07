@@ -38,6 +38,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     config = parser.add_argument_group("configuration")
     config.add_argument("--dump-config", action="store_true", help="print the resolved plugin tree")
+    config.add_argument(
+        "--boot",
+        action="store_true",
+        help="resolve the profile and actually load every enabled plugin",
+    )
     config.add_argument("--profile", default="default", help="profile name (default: default)")
     config.add_argument(
         "--config-dir",
@@ -73,6 +78,54 @@ def _dump_config(args: argparse.Namespace) -> int:
 
     print(resolved.dump(), end="")
     return 0
+
+
+def _boot(args: argparse.Namespace) -> int:
+    """Resolve the profile and load every enabled plugin for real.
+
+    This and ``--dump-config`` consume the same :func:`apply_layers` result, so
+    what the dump prints is what boots. That is the whole reason the two share a
+    composition function.
+    """
+    from forgepilot.config import (
+        ConfigError,
+        apply_layers,
+        apply_row,
+        compose_layers,
+        load_profile,
+    )
+    from forgepilot.kernel import create_root, fiber_state_name
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    root = create_root()
+    failures = 0
+
+    print(f"profile: {profile.name}   mode: {profile.default_mode}")
+    print(f"  {'row':<16} {'state':<10} plugin")
+
+    for row in resolved.enabled_rows():
+        try:
+            fiber = apply_row(root, row)
+            state = fiber_state_name(fiber) if fiber is not None else "skipped"
+        except Exception as exc:  # noqa: BLE001 - report every row, do not stop at the first
+            failures += 1
+            print(f"  {row.id:<16} {'FAILED':<10} {row.plugin}")
+            print(f"      {type(exc).__name__}: {exc}")
+            continue
+        print(f"  {row.id:<16} {state:<10} {row.plugin}")
+
+    disabled = [row.id for row in resolved.rows if row.disabled]
+    if disabled:
+        print(f"\nnot loaded (disabled rows): {', '.join(disabled)}")
+
+    print(f"\nresult: {'OK' if failures == 0 else str(failures) + ' row(s) FAILED'}")
+    return 0 if failures == 0 else 1
 
 
 def _kernel_check() -> int:
@@ -117,6 +170,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _kernel_check()
     if args.dump_config:
         return _dump_config(args)
+    if args.boot:
+        return _boot(args)
 
     parser.print_help()
     return 0

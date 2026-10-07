@@ -3,8 +3,10 @@
 # This is the frontend-swap boundary: the UI can be replaced without touching
 # anything below it, because everything reaches the runtime through this API.
 
+# Lands at M10. Disabled so that a profile including this bundle still boots.
 - id: httpapi
   plugin: forgepilot.httpapi.app:HttpApiPlugin
+  disabled: true
   config:
     host: 127.0.0.1
     port: 8000

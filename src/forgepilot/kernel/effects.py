@@ -41,6 +41,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from cordis_port import Context, Fiber
+from cordis_port import Service as PluginService  # re-exported for providers
 
 from forgepilot.kernel.errors import DisposalError, PluginContractViolation
 
@@ -54,6 +55,7 @@ __all__ = [
     "bind_waterfall",
     "create_root",
     "fiber_state_name",
+    "PluginService",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])

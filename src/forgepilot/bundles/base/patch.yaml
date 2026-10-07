@@ -1,29 +1,30 @@
 # ForgePilot base bundle — the seam wiring every profile inherits.
 #
-# These rows name the provider that fills each capability seam. They compose (and
-# appear in `--dump-config`) as of M1, but only become *loadable* once the
-# matching provider packages land at M2 — `--dump-config` never resolves plugins,
-# so inspection works before the implementations exist.
+# Rows marked `disabled: true` name the plugin that will fill the seam but whose
+# implementation has not landed yet. They stay in the file rather than being
+# omitted, so `--dump-config` shows the intended shape and the gap is visible
+# instead of implied.
 #
-# Swap a capability by overriding its row id in a later layer; never by editing
-# a consumer. That is what makes the seam swappable.
+# Swap a capability by overriding a row id in a later layer; never by editing a
+# consumer. That is what makes the seam swappable.
 
+# --- model -----------------------------------------------------------------
+# Replay rather than a live model: deterministic, offline, no credentials. This
+# is the provider CI runs against.
 - id: llm
   plugin: forgepilot.providers.llm.replay:ReplayLLMPlugin
   config:
     model: replay-1
-  inject: []
   tier: trusted
 
+# --- code retrieval --------------------------------------------------------
+# Local search is scoped to the branch diff plus uncommitted changes. In the
+# target environment (GVFS: 300GB+, metadata-only locally) scanning the working
+# tree would trigger unbounded on-demand downloads; on ordinary repos it simply
+# does not scale. Either way, global search belongs to the remote provider below.
 - id: retriever
-  plugin: forgepilot.providers.retrieve.local_overlay:LocalOverlayRetrieverPlugin
+  plugin: forgepilot.providers.retrieve.mock:MockRetrieverPlugin
   config:
-    # Local search is scoped to the branch diff plus uncommitted changes.
-    # In the target environment (GVFS: 300GB+, metadata-only locally) scanning
-    # the working tree would trigger unbounded on-demand downloads; on ordinary
-    # repos it simply does not scale. Either way, global search belongs to the
-    # remote index provider below.
-    scope: local-overlay
     max_hits: 200
   tier: trusted
 
@@ -44,33 +45,62 @@
     verify_ref: true
   tier: trusted
 
-- id: session
-  plugin: forgepilot.providers.session_store.jsonl:JsonlSessionStorePlugin
+# --- work item and repository ---------------------------------------------
+- id: tickets
+  plugin: forgepilot.providers.tickets.mock:MockTicketSourcePlugin
   tier: trusted
 
+- id: vcs
+  plugin: forgepilot.providers.vcs.mock:MockVcsPlugin
+  tier: trusted
+
+- id: workspace
+  plugin: forgepilot.providers.workspace.local:LocalTempWorkspacePlugin
+  tier: trusted
+
+# --- persistence -----------------------------------------------------------
+- id: session
+  plugin: forgepilot.providers.session_store.memory:InMemorySessionStorePlugin
+  tier: trusted
+
+- id: memory
+  plugin: forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin
+  tier: trusted
+
+# --- execution and safety --------------------------------------------------
+# Reports `none` enforcement and records calls without executing them. A real
+# host-backed provider must replace this before anything runs a command, and
+# profiles that require containment must refuse to start while enforcement is
+# weaker than `full`.
 - id: sandbox
-  plugin: forgepilot.providers.sandbox.subprocess_local:SubprocessLocalSandboxPlugin
+  plugin: forgepilot.providers.sandbox.recording:RecordingSandboxPlugin
   config:
-    # Never danger-full-access for a model-initiated call.
     mode: workspace-write
     network: deny
-  tier: trusted
-
-- id: tools
-  plugin: forgepilot.runtime.tools.registry:ToolRegistryPlugin
+    enforcement: none
   tier: trusted
 
 - id: approval
-  plugin: forgepilot.runtime.approval:ApprovalServicePlugin
+  plugin: forgepilot.providers.approval.scripted:ScriptedApprovalPlugin
   config:
     # fail-closed: an unanswered ask is a refusal.
     policy: ask
   tier: trusted
 
-# Third-party plugins are denied the privileged `tools/arm` phase. Declaring the
-# tier here makes that visible in `--dump-config` and assertable at boot.
+# --- not yet implemented ---------------------------------------------------
+# These name the intended implementation so the seam is visible in the dump.
+
+# M4 — the tool pipeline and registry.
+- id: tools
+  plugin: forgepilot.runtime.tools.registry:ToolRegistryPlugin
+  disabled: true
+  tier: trusted
+
+# M6 — the agent loop, selected through a factory key so the engine is a config
+# change rather than a refactor.
 - id: agent-loop
   plugin: forgepilot.runtime.loop.agent_loop:ForgePilotAgentLoopPlugin
+  disabled: true
   config:
     factory: forgepilot
   tier: trusted

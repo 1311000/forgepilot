@@ -97,6 +97,46 @@ def test_disabled_row_is_resolved_but_not_enabled() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Privilege flags are inherited, never reset by omission
+#
+# Treating "unspecified" as False/trusted would let a layer that only meant to
+# change a config value silently re-enable a disabled plugin or promote a
+# third-party plugin to trusted.
+# ---------------------------------------------------------------------------
+def test_override_does_not_silently_reenable_a_disabled_row() -> None:
+    base = layer("bundle:base", {"id": "tools", "disabled": True, "config": {"a": 1}})
+    tuning = layer("user", {"id": "tools", "config": {"a": 2}})
+
+    row = apply_layers([base, tuning]).row("tools")
+
+    assert row.disabled is True, "changing config must not enable a disabled plugin"
+    assert row.config == {"a": 2}
+
+
+def test_override_can_explicitly_reenable() -> None:
+    base = layer("bundle:base", {"id": "tools", "disabled": True})
+    enable = layer("user", {"id": "tools", "disabled": False})
+
+    assert apply_layers([base, enable]).row("tools").disabled is False
+
+
+def test_override_does_not_silently_promote_a_third_party_row() -> None:
+    base = layer("bundle:base", {"id": "ext", "tier": "third-party", "config": {"a": 1}})
+    tuning = layer("user", {"id": "ext", "config": {"a": 2}})
+
+    row = apply_layers([base, tuning]).row("ext")
+
+    assert row.tier == "third-party", "an override must not escalate privilege by omission"
+
+
+def test_new_rows_default_to_trusted_and_enabled() -> None:
+    row = apply_layers([layer("a", {"id": "fresh"})]).row("fresh")
+
+    assert row.tier == "trusted"
+    assert row.disabled is False
+
+
+# ---------------------------------------------------------------------------
 # The invariant: one composition function feeding both paths
 # ---------------------------------------------------------------------------
 def test_boot_registers_exactly_the_resolved_rows(base: PatchLayer, overlay: PatchLayer) -> None:
@@ -227,13 +267,17 @@ def test_shipped_default_profile_composes_and_user_layer_wins() -> None:
 
     cfg = apply_layers(compose_layers(profile), profile=profile.name)
 
-    llm = cfg.row("llm")
-    assert llm.plugin == "forgepilot.providers.llm.anthropic:AnthropicLLMPlugin"
-    assert llm.sources == ("bundle:base", "user")
+    # The shipped user layer tunes local retrieval upward.
+    retriever = cfg.row("retriever")
+    assert retriever.sources == ("bundle:base", "user")
+    assert retriever.config == {"max_hits": 500}
 
-    # The web bundle contributed its row, and base's rows survived.
-    assert cfg.row("httpapi").sources == ("bundle:web",)
+    # Untouched rows keep their single-bundle provenance.
+    assert cfg.row("llm").sources == ("bundle:base",)
     assert cfg.row("sandbox").sources == ("bundle:base",)
+    # The web bundle contributed its row, disabled until M10.
+    assert cfg.row("httpapi").sources == ("bundle:web",)
+    assert cfg.row("httpapi").disabled is True
 
 
 def test_shipped_default_profile_dump_names_every_layer() -> None:
@@ -254,4 +298,9 @@ def test_extra_patch_layer_applied_last() -> None:
     cfg = apply_layers(layers, profile=profile.name)
 
     assert cfg.layers[-1] == f"--patch:{extra}"
-    assert cfg.row("llm").sources == ("bundle:base", "user", f"--patch:{extra}")
+    # The same file applied twice: bundle, then user, then --patch.
+    assert cfg.row("retriever").sources == (
+        "bundle:base",
+        "user",
+        f"--patch:{extra}",
+    )

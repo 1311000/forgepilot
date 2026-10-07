@@ -23,6 +23,7 @@ from forgepilot.config.patch import (
     ResolvedConfig,
     ResolvedRow,
     apply_layers,
+    apply_row,
     expand_env,
     patch_layer_from_mapping,
 )
@@ -36,6 +37,7 @@ from forgepilot.config.profile import (
 __all__ = [
     # composition
     "apply_layers",
+    "apply_row",
     "patch_layer_from_mapping",
     "expand_env",
     "PatchEntry",

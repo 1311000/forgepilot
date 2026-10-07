@@ -15,6 +15,7 @@ from forgepilot.kernel.contracts import (
     requires_inject,
 )
 from forgepilot.kernel.effects import (
+    PluginService,
     apply_plugin,
     assert_apply_arity,
     bind_effect,
@@ -60,6 +61,7 @@ __all__ = [
     "bind_waterfall",
     "create_root",
     "fiber_state_name",
+    "PluginService",
     # contracts
     "requires_inject",
     "assert_declares_inject",
