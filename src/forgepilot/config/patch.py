@@ -154,12 +154,37 @@ class ResolvedConfig:
     ) -> Any:
         """Register every enabled row onto ``ctx``. Returns ``ctx``.
 
+        ⚠️ **Synchronous only.** It works because the kernel spins a temporary
+        event loop to completion when none is running. Inside a *running* loop it
+        returns immediately with fibers that have not loaded — so a service
+        lookup right afterwards yields ``None``. Use
+        :meth:`materialize_async` from async code; the failure is silent, which
+        is exactly why it is worth stating twice.
+
         ``resolver`` maps a ``"module:attr"`` spec to the object; tests inject a
         mapping-backed resolver so they need no real import machinery.
         """
         resolve = resolver or _default_resolver()
         for row in self.rows:
             apply_row(ctx, row, resolve)
+        return ctx
+
+    async def materialize_async(
+        self,
+        ctx: Any,
+        resolver: Callable[[str], Any] | None = None,
+    ) -> Any:
+        """Register every row and **await each fiber**, so ``ctx.<name>`` works after.
+
+        Awaiting is the only sound way to know a plugin has loaded: the fiber's
+        state can read ACTIVE before its ``apply`` has run (see ``CLAUDE.md``,
+        kernel note 7).
+        """
+        resolve = resolver or _default_resolver()
+        for row in self.rows:
+            fiber = apply_row(ctx, row, resolve)
+            if fiber is not None:
+                await fiber
         return ctx
 
     # -- inspection path ---------------------------------------------------

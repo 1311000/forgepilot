@@ -57,6 +57,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="extra patch layer applied last; repeatable",
     )
+
+    chat = parser.add_argument_group("chat")
+    chat.add_argument(
+        "--chat",
+        action="store_true",
+        help="boot the profile and start an interactive session",
+    )
+    chat.add_argument("--token", default=None, help="credential; or set FORGEPILOT_TOKEN")
+    chat.add_argument("--session", default=None, help="resume an existing session id")
     return parser
 
 
@@ -128,6 +137,110 @@ def _boot(args: argparse.Namespace) -> int:
     return 0 if failures == 0 else 1
 
 
+def _chat(args: argparse.Namespace) -> int:
+    """Interactive chat against the profile's configured model.
+
+    Goes through the same boot path as everything else, so what runs is what
+    ``--dump-config`` prints.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.identity import ENV_KEY, ProjectPolicy, derive
+    from forgepilot.kernel import create_root
+    from forgepilot.runtime.assembly import assemble_session
+    from forgepilot.seams.agent_loop import AgentSpec, UserInput
+    from forgepilot.seams.refs import AgentId, SessionId
+    from forgepilot.seams.session import SessionStore  # noqa: F401  (readability)
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    token = args.token or os.environ.get("FORGEPILOT_TOKEN")
+    if not token:
+        print(
+            "error: no credential. Pass --token or set FORGEPILOT_TOKEN.",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def run() -> int:
+        from forgepilot.seams.refs import Mode
+
+        root = create_root()
+        try:
+            # The async form: we are inside a running loop, where the sync one
+            # returns fibers that have not loaded and every lookup yields None.
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            record = root.principal.resolve(token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+
+        constraints = derive(
+            record.principal, record.grant, ProjectPolicy.open_project(), key=None
+        )
+
+        runtime = await assemble_session(
+            root,
+            constraints,
+            session_id=SessionId(args.session) if args.session else None,
+            tenant=str(record.principal.tenant_id),
+            principal=str(record.principal.principal_id),
+        )
+
+        spec = AgentSpec(
+            agent_id=AgentId("cli"),
+            session_id=runtime.session.header.session_id,
+            mode=Mode(profile.default_mode),
+            constraints=constraints,
+            system_sections=("You are ForgePilot, an enterprise coding assistant.",),
+        )
+        loop = root.agents.build("forgepilot", spec, runtime.scope.ctx)
+        agent = loop.create(spec)
+
+        print(f"session {runtime.session.header.session_id}")
+        print(f"model   {getattr(root.llm, 'model', '?')}   user {record.principal.principal_id}")
+        print("type /exit to leave\n")
+
+        while True:
+            try:
+                line = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if line in {"/exit", "/quit"}:
+                break
+            if not line:
+                continue
+            result = await agent.run_turn(UserInput(text=line))
+            print(f"\n{result.assistant_text}\n[{result.reason}, {result.tool_calls} tool call(s)]\n")
+
+        await runtime.close()
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if ENV_KEY not in os.environ:
+            print(
+                f"hint: {ENV_KEY} is unset, so authority cannot be signed.",
+                file=sys.stderr,
+            )
+        return 1
+
+
 def _kernel_check() -> int:
     """Boot the kernel through the ``kernel/`` package and report what we found.
 
@@ -172,6 +285,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dump_config(args)
     if args.boot:
         return _boot(args)
+    if args.chat:
+        return _chat(args)
 
     parser.print_help()
     return 0

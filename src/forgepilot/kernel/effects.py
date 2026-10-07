@@ -59,6 +59,7 @@ __all__ = [
     "PluginService",
     "new_interface_label",
     "isolate_service",
+    "isolate_services",
     "provide",
 ]
 
@@ -145,6 +146,19 @@ def isolate_service(ctx: Context, name: str) -> Context:
     quietly turn the fail-closed property into decoration.
     """
     return ctx.isolate(name, new_interface_label(name))
+
+
+def isolate_services(ctx: Context, *names: str) -> Context:
+    """Isolate several service names in one branch.
+
+    Each isolate extends the previous context, so the layering composes. Used by
+    request scopes, which must isolate everything they provide — a scope that
+    isolated ``constraints`` but not ``session`` would leak the second to the
+    root, which is exactly the mistake the single-name helper exists to prevent.
+    """
+    for name in names:
+        ctx = isolate_service(ctx, name)
+    return ctx
 
 
 def provide(ctx: Context, name: str, value: Any) -> Any:

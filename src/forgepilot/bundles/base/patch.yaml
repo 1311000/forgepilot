@@ -132,11 +132,19 @@
   plugin: forgepilot.runtime.tools.builtin:BuiltinToolsPlugin
   tier: trusted
 
-# M6 — the agent loop, selected through a factory key so the engine is a config
-# change rather than a refactor.
+# The table of agent engines this deployment can run. `agent-loop` registers
+# itself here, and the loop is then selected **by key** — so replacing the
+# built-in engine with the company's own is a patch line, not a refactor. Order
+# matters: the registry must exist before the loop that injects it.
+- id: agents
+  plugin: forgepilot.runtime.loop.agent_loop:AgentFactoryRegistry
+  tier: trusted
+
 - id: agent-loop
   plugin: forgepilot.runtime.loop.agent_loop:ForgePilotAgentLoopPlugin
-  disabled: true
   config:
-    factory: forgepilot
+    engine: forgepilot
+    # Bounds looping rather than cost: a model calling a cheap tool forever stays
+    # inside a healthy-looking budget while burning wall-clock.
+    max_steps: 12
   tier: trusted

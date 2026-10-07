@@ -25,6 +25,7 @@ from forgepilot.kernel.effects import (
     dispose_fiber,
     fiber_state_name,
     isolate_service,
+    isolate_services,
     make_plugin,
     new_interface_label,
     provide,
@@ -67,6 +68,7 @@ __all__ = [
     "PluginService",
     "new_interface_label",
     "isolate_service",
+    "isolate_services",
     "provide",
     # contracts
     "requires_inject",

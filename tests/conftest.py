@@ -63,6 +63,96 @@ def constraints_for(
     )
 
 
+@dataclass
+class LoopRig:
+    """A pipeline plus a scripted model, enough to drive turns end to end."""
+
+    root: object
+    session: Session
+    llm: object
+    pipeline: ToolPipeline
+    registry: object
+    tracker: UsageTracker
+    workspace: Path
+
+
+@pytest.fixture
+async def loop_rig(tmp_path: Path):
+    """Session + ReplayLLM + tool pipeline, wired as the loop expects.
+
+    The model is scripted rather than live: a loop test that calls a real endpoint
+    is slow, non-deterministic and needs credentials, and it would hide
+    prompt-assembly bugs behind the model's tolerance. No test in this suite
+    touches a network.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    from forgepilot.providers.llm.replay import ReplayLLMPlugin
+    from forgepilot.seams.session import SessionHeader
+
+    root = create_root()
+    fibers = []
+
+    async def load(spec: str, config: dict | None = None):
+        fiber = await root.plugin(resolve_plugin(spec), config or {})
+        fibers.append(fiber)
+        return fiber
+
+    await load("forgepilot.providers.session_store.memory:InMemorySessionStorePlugin")
+    await load(
+        "forgepilot.providers.sandbox.recording:RecordingSandboxPlugin",
+        {"enforcement": "full"},
+    )
+    await load("forgepilot.providers.llm.replay:ReplayLLMPlugin", {"model": "replay-1"})
+    await load("forgepilot.runtime.tools.registry:ToolRegistryPlugin")
+    await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "ask"})
+    await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
+
+    tracker = UsageTracker()
+    guards = GuardRegistry()
+    for name, guard in default_guards(tracker):
+        guards.register(name, guard)
+
+    workspace = tmp_path / "ws"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "a.py").write_text("def retry(): ...\n", encoding="utf-8")
+
+    pipeline = ToolPipeline(
+        registry=root.tools,
+        guards=guards,
+        approval=root.approval,
+        enforcement=root.sandbox.probe,
+        workspace_root=workspace,
+    )
+    root.tools.attach_pipeline(pipeline)
+
+    session_id = SessionId("loop-session")
+    await root.sessionPersistence.create(
+        SessionHeader(
+            session_id=session_id,
+            created_at=datetime.now(timezone.utc),
+            tenant="acme",
+            principal="alice",
+        )
+    )
+    session = await Session.open(root.sessionPersistence, session_id)
+
+    try:
+        yield LoopRig(
+            root=root,
+            session=session,
+            llm=root.llm,
+            pipeline=pipeline,
+            registry=root.tools,
+            tracker=tracker,
+            workspace=workspace,
+        )
+    finally:
+        for fiber in reversed(fibers):
+            await dispose_fiber(fiber)
+
+
 @pytest.fixture
 async def rig(tmp_path: Path):
     """A booted pipeline with one open session."""

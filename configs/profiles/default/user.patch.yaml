@@ -12,12 +12,23 @@
     max_hits: 500
   tier: trusted
 
-# Once the local model or a commercial endpoint is reachable, switching provider
-# is this much and no more — nothing downstream knows which model is installed.
+# Use a real model instead of the replay fixture.
 #
-#   - id: llm
-#     plugin: forgepilot.providers.llm.anthropic:AnthropicLLMPlugin
-#     config:
-#       model: claude-sonnet-5-5
-#       max_tokens: 8192
-#     tier: trusted
+# `api_key_env` holds the *name* of an environment variable, never the key
+# itself: a key in a config file ends up in `--dump-config` and in git.
+#
+#   export FORGEPILOT_LLM_API_KEY=...        # required
+#   export FORGEPILOT_LLM_BASE_URL=...       # optional; any OpenAI-compatible endpoint
+#   export FORGEPILOT_LLM_MODEL=...          # optional
+- id: llm
+  plugin: forgepilot.providers.llm.openai_compat:OpenAICompatLLMPlugin
+  config:
+    model: ${FORGEPILOT_LLM_MODEL:-gpt-4o-mini}
+    base_url: ${FORGEPILOT_LLM_BASE_URL:-https://api.openai.com/v1}
+    api_key_env: FORGEPILOT_LLM_API_KEY
+    max_context_tokens: 128000
+  tier: trusted
+
+# To go back to the scripted model — the one CI uses, and the one that never
+# touches a network — delete the `llm` override above and `base`'s replay row
+# applies again.

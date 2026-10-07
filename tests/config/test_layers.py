@@ -267,13 +267,16 @@ def test_shipped_default_profile_composes_and_user_layer_wins() -> None:
 
     cfg = apply_layers(compose_layers(profile), profile=profile.name)
 
-    # The shipped user layer tunes local retrieval upward.
+    # The shipped user layer tunes local retrieval upward and swaps in a real model.
     retriever = cfg.row("retriever")
     assert retriever.sources == ("bundle:base", "user")
     assert retriever.config == {"max_hits": 500}
 
+    llm = cfg.row("llm")
+    assert llm.sources == ("bundle:base", "user")
+    assert llm.plugin.endswith("OpenAICompatLLMPlugin"), "the user layer wins by omission"
+
     # Untouched rows keep their single-bundle provenance.
-    assert cfg.row("llm").sources == ("bundle:base",)
     assert cfg.row("sandbox").sources == ("bundle:base",)
     # The web bundle contributed its row, disabled until M10.
     assert cfg.row("httpapi").sources == ("bundle:web",)
@@ -303,4 +306,55 @@ def test_extra_patch_layer_applied_last() -> None:
         "bundle:base",
         "user",
         f"--patch:{extra}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Booting from async code
+#
+# `materialize` works synchronously only because the kernel spins a temporary
+# event loop when none is running. Inside a running loop it returns immediately
+# with fibers that have not loaded, and every service lookup then yields None —
+# silently. `materialize_async` is the form that awaits.
+# ---------------------------------------------------------------------------
+async def test_materialize_async_awaits_every_fiber() -> None:
+    from forgepilot.kernel import create_root
+
+    rows = layer(
+        "a",
+        {"id": "one", "plugin": "pkg:One", "config": {"n": 1}},
+        {"id": "two", "plugin": "pkg:Two", "config": {"n": 2}},
+    )
+    cfg = apply_layers([rows])
+    loaded: list[str] = []
+
+    def resolver(spec: str):
+        async def apply(ctx, config):
+            loaded.append(spec)
+
+        return apply
+
+    await cfg.materialize_async(create_root(), resolver=resolver)
+
+    assert loaded == ["pkg:One", "pkg:Two"]
+
+
+async def test_the_sync_form_does_not_await_inside_a_running_loop() -> None:
+    """The footgun, pinned explicitly so nobody rediscover it as a service returning None."""
+    from forgepilot.kernel import create_root
+
+    cfg = apply_layers([layer("a", {"id": "one", "plugin": "pkg:One"})])
+    loaded: list[str] = []
+
+    def resolver(spec: str):
+        async def apply(ctx, config):
+            loaded.append(spec)
+
+        return apply
+
+    cfg.materialize(create_root(), resolver=resolver)
+
+    assert loaded == [], (
+        "inside a running loop the sync form returns before apply runs — which is why "
+        "async callers must use materialize_async()"
     )

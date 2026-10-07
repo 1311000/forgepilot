@@ -26,10 +26,10 @@ and the service leaks to the root — silently. That was measured, not read; see
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from forgepilot.identity.signing import verify
-from forgepilot.kernel import isolate_service, provide
+from forgepilot.kernel import isolate_services, provide
 from forgepilot.runtime.guards import GuardRegistry, UsageTracker, default_guards
 from forgepilot.seams.security import ExecutionConstraints
 
@@ -77,18 +77,27 @@ def open_request_scope(
     key: bytes | None = None,
     verify_signature: bool = True,
     tracker: UsageTracker | None = None,
+    extra_services: Mapping[str, Any] | None = None,
 ) -> RequestScope:
     """Open an isolated scope carrying ``constraints``.
 
     The signature is verified **before** the scope exists, so a forged or unsigned
     set never gets a context to live in. Verification is on by default and turning
     it off is a visible argument at the call site.
+
+    ``extra_services`` are provided *and isolated* alongside the constraints. The
+    isolation is not optional: a scope that isolated one service and leaked the
+    next would make the fail-closed property a matter of which name someone
+    remembered.
     """
     if verify_signature:
         verify(constraints, key)
 
-    ctx = isolate_service(root, CONSTRAINTS)
+    extras = dict(extra_services or {})
+    ctx = isolate_services(root, CONSTRAINTS, *extras)
     provide(ctx, CONSTRAINTS, constraints)
+    for name, value in extras.items():
+        provide(ctx, name, value)
 
     usage = tracker or UsageTracker()
     guards = GuardRegistry()
