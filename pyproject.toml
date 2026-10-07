@@ -24,6 +24,20 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+# AST-backed impact analysis for review mode: real definitions and real
+# references, instead of a word-boundary search with known false positives.
+#
+# ⚠️ Optional, and it has to be: `tree-sitter` publishes no cp314 wheel for
+# Windows (win_amd64 stops at cp313; cp314 exists only for macOS and manylinux)
+# and ships no abi3 or pure-Python fallback, so it cannot be built on a Windows
+# dev box without a C toolchain. Production is Linux, where the wheel exists.
+# `runtime/review/blastradius.py` probes at import time and reports which backend
+# it used, so a text search is never presented as a parse.
+ast = [
+    "tree-sitter>=0.26",
+    "tree-sitter-python>=0.25",
+]
+
 [project.scripts]
 forgepilot = "forgepilot.cli.main:main"
 

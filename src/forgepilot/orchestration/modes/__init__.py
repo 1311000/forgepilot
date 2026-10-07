@@ -8,6 +8,11 @@ that is the signal the difference belongs in configuration instead.
 """
 
 from forgepilot.orchestration.modes.chat import ChatTurn, prepare_chat_turn
+from forgepilot.orchestration.modes.review import (
+    ReviewPlan,
+    build_review,
+    prepare_review,
+)
 from forgepilot.orchestration.modes.task import (
     FIX_PROMPT,
     TaskOutcome,
@@ -24,4 +29,7 @@ __all__ = [
     "plan_task",
     "run_task",
     "FIX_PROMPT",
+    "ReviewPlan",
+    "prepare_review",
+    "build_review",
 ]
