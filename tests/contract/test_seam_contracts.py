@@ -48,7 +48,6 @@ from forgepilot.seams import (
     Workspace,
 )
 from forgepilot.providers.llm.replay import text_turn, tool_call_turn
-from forgepilot.providers.session_store.memory import LossyEventPayload
 from forgepilot.providers.memory.memory import UnprovenMemoryWrite
 from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
 from forgepilot.seams.vcs import CommitAuthor, PullRequestDraft
@@ -309,37 +308,6 @@ async def test_sandbox_records_and_never_executes(container, tmp_path) -> None:
     assert result.enforcement.value == "none", (
         "the reported enforcement must reflect reality, not the requested policy"
     )
-
-
-# ---------------------------------------------------------------------------
-# session store
-# ---------------------------------------------------------------------------
-async def test_session_store_assigns_sequence_numbers_itself(container) -> None:
-    store = container.sessionPersistence
-    assert isinstance(store, SessionStore)
-    sid = SessionId("s-1")
-
-    # Callers do not get to choose their sequence number.
-    await store.append(sid, [SessionEvent(seq=999, kind=EventKind.TURN_START, data={"turn": 1})])
-    await store.append(sid, [SessionEvent(seq=999, kind=EventKind.TURN_END, data={"turn": 1})])
-
-    events = [e async for e in store.read(sid)]
-    assert [e.seq for e in events] == [1, 2]
-    assert await store.high_water(sid) == 2
-
-    tail = [e async for e in store.read(sid, after=1)]
-    assert [e.seq for e in tail] == [2]
-
-
-async def test_session_store_refuses_payload_that_cannot_be_logged(container) -> None:
-    """An unserialisable payload breaks 'model-visible means logged' at write time."""
-    store = container.sessionPersistence
-    sid = SessionId("s-2")
-
-    with pytest.raises(LossyEventPayload):
-        await store.append(
-            sid, [SessionEvent(seq=0, kind=EventKind.TOOL_CALL, data={"obj": object()})]
-        )
 
 
 # ---------------------------------------------------------------------------

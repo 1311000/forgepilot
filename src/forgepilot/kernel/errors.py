@@ -7,9 +7,9 @@ Kept deliberately flat and closed-set where the architecture demands it —
 
 from __future__ import annotations
 
-
-class ForgePilotError(Exception):
-    """Base class for every error ForgePilot raises deliberately."""
+# Re-exported: the base lives at the top level so that `seams/` can depend on it
+# without pulling in the plugin kernel. See forgepilot/errors.py.
+from forgepilot.errors import ForgePilotError as ForgePilotError
 
 
 # --------------------------------------------------------------------------
@@ -75,3 +75,17 @@ class ModelVisibleNotLogged(ForgePilotError):
     boundary that builds a model request, so it is a hard failure rather than a
     warning.
     """
+
+
+__all__ = [
+    "ForgePilotError",
+    "KernelContractViolation",
+    "PluginContractViolation",
+    "ContractViolation",
+    "DisposalError",
+    "Denied",
+    "GuardRejected",
+    "ApprovalUnavailable",
+    "CapabilityNotGranted",
+    "ModelVisibleNotLogged",
+]

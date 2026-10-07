@@ -59,8 +59,16 @@
   tier: trusted
 
 # --- persistence -----------------------------------------------------------
+# Append-only JSONL, one file per session. Uncompressed on purpose: when a run
+# goes wrong, grepping the timeline is worth more than the disk. Swap to the
+# in-memory store (`...session_store.memory:InMemorySessionStorePlugin`) for a
+# throwaway run — the seam makes that a one-line change.
 - id: session
-  plugin: forgepilot.providers.session_store.memory:InMemorySessionStorePlugin
+  plugin: forgepilot.providers.session_store.jsonl:JsonlSessionStorePlugin
+  config:
+    # Beyond this, an event payload spills to a sidecar blob losslessly rather
+    # than growing a single log line without bound.
+    inline_limit: 65536
   tier: trusted
 
 - id: memory
