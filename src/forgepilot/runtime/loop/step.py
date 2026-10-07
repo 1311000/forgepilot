@@ -18,6 +18,7 @@ from forgepilot.runtime.projection import build_request
 from forgepilot.seams.llm import ChatMessage, StreamChunk, ToolCallRequest, ToolSchema, Usage
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.session import EventKind
 from forgepilot.seams.tools import ToolCall
 
 __all__ = ["StepResult", "run_step", "accumulate", "ContextWindowExceeded"]
@@ -40,6 +41,10 @@ class StepResult:
     text: str
     tool_calls: tuple[ToolCallRequest, ...] = ()
     usage: Usage = field(default_factory=Usage)
+    #: A reasoning model's thinking. Kept separate from ``text`` on purpose: it
+    #: is recorded for audit but never becomes an assistant message, because it
+    #: is not part of the conversation the model is asked to continue.
+    reasoning: str = ""
 
     @property
     def wants_tools(self) -> bool:
@@ -55,12 +60,15 @@ def accumulate(chunks: list[StreamChunk]) -> StepResult:
     Concatenating in arrival order would corrupt every call after the first.
     """
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     slots: dict[int, dict[str, str]] = {}
     usage = Usage()
 
     for chunk in chunks:
         if chunk.kind == "text":
             text_parts.append(chunk.text)
+        elif chunk.kind == "reasoning":
+            reasoning_parts.append(chunk.text)
         elif chunk.kind == "tool_call_delta":
             slot = slots.setdefault(chunk.tool_index or 0, {"id": "", "name": "", "args": ""})
             if chunk.tool_call_id:
@@ -76,7 +84,12 @@ def accumulate(chunks: list[StreamChunk]) -> StepResult:
         for _, slot in sorted(slots.items())
         if slot["name"]
     )
-    return StepResult(text="".join(text_parts), tool_calls=calls, usage=usage)
+    return StepResult(
+        text="".join(text_parts),
+        tool_calls=calls,
+        usage=usage,
+        reasoning="".join(reasoning_parts),
+    )
 
 
 def estimate_tokens(messages: tuple[ChatMessage, ...], system: tuple[str, ...]) -> int:
@@ -139,6 +152,17 @@ async def run_step(
     async for chunk in guarded_stream(session, llm, request):
         chunks.append(chunk)
     result = accumulate(chunks)
+
+    if result.reasoning:
+        # Log-only: durable for audit, never replayed as conversation. A
+        # reasoning model can spend most of its output here, and dropping it
+        # would lose the account of how the answer was reached.
+        await session.append(
+            EventKind.ASSISTANT_REASONING,
+            {"text": result.reasoning},
+            turn=turn,
+            step=step,
+        )
 
     await session.assistant_message(
         turn,

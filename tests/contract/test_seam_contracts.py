@@ -305,6 +305,9 @@ async def test_sandbox_records_and_never_executes(container, tmp_path) -> None:
 
     assert [c.argv for c in sandbox.calls] == [("rm", "-rf", "/")]
     assert result.exit_code == 0
+    # Recording is not executing. Reporting otherwise would let a caller format
+    # a command that never ran as a success.
+    assert result.executed is False
     assert result.enforcement.value == "none", (
         "the reported enforcement must reflect reality, not the requested policy"
     )

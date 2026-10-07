@@ -78,6 +78,21 @@ async def _read_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
     path = _resolve(ctx.workspace_root, str(args["path"]))
     if not path.exists():
         return ToolOutcome(content=f"no such file: {args['path']}", is_error=True)
+    if path.is_dir():
+        # Said plainly rather than letting an IsADirectoryError surface: "that is
+        # a directory" is actionable, "IsADirectoryError: [Errno 21]" is a puzzle.
+        try:
+            entries = sorted(p.name for p in path.iterdir())[:50]
+        except OSError:
+            entries = []
+        listing = ", ".join(entries) if entries else "(unreadable or empty)"
+        return ToolOutcome(
+            content=(
+                f"{args['path']} is a directory, not a file. It contains: {listing}"
+            ),
+            is_error=True,
+            meta={"is_directory": True, "entries": entries},
+        )
 
     data = path.read_bytes()
     truncated = len(data) > MAX_READ_BYTES
@@ -154,6 +169,25 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             env={},
             timeout_s=ctx.timeout_s,
         )
+        if not result.executed:
+            # Never dress this up as a result. A model handed "(exit 0)" for a
+            # command that never ran will summarise its output confidently.
+            return ToolOutcome(
+                content=(
+                    f"the command was NOT executed: the configured sandbox "
+                    f"({result.enforcement.value!r} enforcement) records calls without "
+                    f"running them. There is no output to report, and anything inferred "
+                    f"from this call would be invented. A sandbox provider that actually "
+                    f"executes is required."
+                ),
+                is_error=True,
+                meta={
+                    "executed": False,
+                    "enforcement": str(result.enforcement),
+                    "argv": list(result.argv),
+                },
+            )
+
         body = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
         return ToolOutcome(
             content=body.strip() or f"(exit {result.exit_code})",

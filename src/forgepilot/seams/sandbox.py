@@ -70,6 +70,14 @@ class ExecResult:
     #: Enforcement actually applied to *this* execution, so a caller can tell
     #: whether its assumption held rather than assuming the policy was honoured.
     enforcement: SandboxEnforcement = SandboxEnforcement.NONE
+    #: Whether the command actually ran.
+    #:
+    #: A recording sandbox answers from a script without spawning anything, and
+    #: reporting that as ``exit_code=0`` reads as "the command succeeded" when
+    #: nothing happened at all. That is worse than an error: it makes a model
+    #: confidently summarise the output of a command that never ran. Callers
+    #: must surface ``False`` to the model rather than formatting it as success.
+    executed: bool = True
 
 
 @runtime_checkable

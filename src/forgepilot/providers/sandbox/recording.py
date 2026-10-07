@@ -70,4 +70,8 @@ class RecordingSandboxPlugin(PluginService):
             duration_ms=0,
             timed_out=False,
             enforcement=self._enforcement,
+            # Nothing was spawned. Saying so is the whole point: a caller that
+            # formats this as an `(exit 0)` success invites the model to reason
+            # confidently about output that does not exist.
+            executed=False,
         )

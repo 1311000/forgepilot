@@ -66,6 +66,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument("--token", default=None, help="credential; or set FORGEPILOT_TOKEN")
     chat.add_argument("--session", default=None, help="resume an existing session id")
+    chat.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        help="directory the agent may read and write; defaults to the current directory",
+    )
+    chat.add_argument(
+        "--allow-uncontained-exec",
+        action="store_true",
+        help=(
+            "permit shell tools on a host whose sandbox is weaker than `full`. "
+            "The default refuses them; see the warning this prints."
+        ),
+    )
     return parser
 
 
@@ -191,12 +205,35 @@ def _chat(args: argparse.Namespace) -> int:
             record.principal, record.grant, ProjectPolicy.open_project(), key=None
         )
 
+        # Every tool's writes are bounded by this directory, and the sandbox
+        # policy takes its root from here — so an unresolved path would widen the
+        # boundary the sandbox enforces.
+        workspace = (args.workspace or Path.cwd()).resolve()
+
+        minimum_enforcement = None
+        if args.allow_uncontained_exec:
+            from forgepilot.seams.sandbox import SandboxEnforcement
+
+            enforcement = root.sandbox.probe()
+            if enforcement is not SandboxEnforcement.FULL:
+                print(
+                    f"⚠  allowing shell tools on a host that reports sandbox "
+                    f"enforcement {enforcement.value!r}.\n"
+                    f"   Commands will run WITHOUT real containment. Fine for a local "
+                    f"fixture; do not do this where the agent can reach anything you "
+                    f"care about.\n",
+                    file=sys.stderr,
+                )
+            minimum_enforcement = SandboxEnforcement.NONE
+
         runtime = await assemble_session(
             root,
             constraints,
             session_id=SessionId(args.session) if args.session else None,
+            workspace_root=workspace,
             tenant=str(record.principal.tenant_id),
             principal=str(record.principal.principal_id),
+            minimum_enforcement_for_exec=minimum_enforcement,
         )
 
         spec = AgentSpec(
@@ -276,6 +313,13 @@ def _kernel_check() -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Load a gitignored .env.local before anything reads the environment. The
+    # real environment always wins, so an explicit `export` still takes
+    # precedence over the file.
+    from forgepilot.env import load_local_env
+
+    load_local_env()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

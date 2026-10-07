@@ -218,14 +218,22 @@ async def test_the_budget_guard_refuses_once_exhausted(rig) -> None:
 # Approval
 # ---------------------------------------------------------------------------
 async def test_approval_allowed_once_lets_the_call_proceed(rig) -> None:
+    """An allow reaches the sandbox — which is the assertion; whether the command
+    then succeeds is the sandbox's business, and the recording one honestly
+    reports that it executed nothing."""
     rig.approval.set_answerer(lambda r: _allow())
     rig.pipeline.on_pre_execute(lambda p, s: _ask("dangerous"))
 
     outcome = await invoke(rig, call("run", {"command": "echo hi"}))
 
-    assert outcome.is_error is False
     assert Phase.APPROVAL in rig.pipeline.trace
+    assert "execute" in rig.pipeline.trace
     assert rig.sandbox.calls and rig.sandbox.calls[0].argv == ("echo", "hi")
+
+    # And the outcome says plainly that nothing ran, rather than reporting a
+    # successful `(exit 0)` for a command that never happened.
+    assert outcome.meta.get("executed") is False
+    assert "NOT executed" in outcome.content
 
 
 async def test_silence_is_a_refusal(rig) -> None:
@@ -407,3 +415,39 @@ async def _require_write(ctx):
     if not ctx.capabilities.fs_write:
         raise CapabilityNotGranted("no write capability was granted")
     return ToolOutcome(content="wrote")
+
+
+# ---------------------------------------------------------------------------
+# Honest failures
+#
+# Both of these were found by running a real model against the skeleton, which
+# is the only thing that reliably finds "the tool lied" bugs: a scripted model
+# never notices that its input does not make sense.
+# ---------------------------------------------------------------------------
+async def test_reading_a_directory_says_so_rather_than_raising(rig) -> None:
+    """"That is a directory, here is what is in it" beats an Errno 21 puzzle."""
+    (rig.workspace / "src" / "sample.py").write_text("x = 1\n", encoding="utf-8")
+
+    outcome = await invoke(rig, call("read_file", {"path": "src"}))
+
+    assert outcome.is_error
+    assert "is a directory" in outcome.content
+    assert outcome.meta["is_directory"] is True
+    assert "sample.py" in outcome.meta["entries"], "a listing is what makes it actionable"
+
+
+async def test_an_unexecuted_command_is_reported_as_not_having_run(rig) -> None:
+    """The recording sandbox must not let a command look like it succeeded.
+
+    It answered ``exit_code=0`` with no output, which a model reads as "the
+    command worked and printed nothing". Real models proceeded to reason about
+    output that never existed.
+    """
+    rig.approval.set_answerer(lambda r: _allow())
+
+    outcome = await invoke(rig, call("run", {"command": "echo hi"}))
+
+    assert outcome.is_error
+    assert outcome.meta["executed"] is False
+    assert "NOT executed" in outcome.content
+    assert rig.sandbox.calls, "it was still recorded — that is what a recording sandbox is for"

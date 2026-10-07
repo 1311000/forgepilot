@@ -111,6 +111,11 @@ class EventKind:
     USER_MESSAGE = "user/message"
     REQUEST_HEADER = "request/header"
     ASSISTANT_MESSAGE = "assistant/message"
+    #: A reasoning model's thinking, logged but never replayed. Reasoning is
+    #: model *output*, so it is not covered by "model-visible means logged" — but
+    #: throwing it away loses most of what a reasoning model did, which matters
+    #: for review narrative and for diagnosing a run that went wrong.
+    ASSISTANT_REASONING = "assistant/reasoning"
     TOOL_CALL = "tool/call"
     TOOL_RESULT = "tool/result"
     APPROVAL_ASKED = "approval/asked"

@@ -9,3 +9,7 @@ dist/
 
 # ForgePilot runtime state (sessions, worktrees, repo mirrors, logs)
 .forgepilot/
+
+# Local environment overrides — may hold credentials. Never commit this.
+.env.local
+.env
