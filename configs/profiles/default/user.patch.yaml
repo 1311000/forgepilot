@@ -1,0 +1,15 @@
+# The user layer for this profile.
+#
+# It is applied after every bundle, so it wins. Use it to change behaviour
+# without forking a bundle — and then `--dump-config` to confirm you got what
+# you meant. Note the whole `config` is replaced, not merged: spell out every
+# key you still want.
+
+# Example: run against a commercial model instead of the replay fixture, which
+# is the switch to flip once you have credentials.
+- id: llm
+  plugin: forgepilot.providers.llm.anthropic:AnthropicLLMPlugin
+  config:
+    model: claude-sonnet-5-5
+    max_tokens: 8192
+  tier: trusted

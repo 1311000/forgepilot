@@ -1,0 +1,11 @@
+# Web bundle — base plus the HTTP/SSE surface that the workbench talks to.
+#
+# This is the frontend-swap boundary: the UI can be replaced without touching
+# anything below it, because everything reaches the runtime through this API.
+
+- id: httpapi
+  plugin: forgepilot.httpapi.app:HttpApiPlugin
+  config:
+    host: 127.0.0.1
+    port: 8000
+  tier: trusted

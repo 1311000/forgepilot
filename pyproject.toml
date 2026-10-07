@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forgepilot"
+version = "0.0.1"
+description = "ForgePilot — 企业级 Coding Agent 平台：查 Bug → 修 Bug → 出可评审 PR"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+    # The Cordis microkernel port. Pinned deliberately: this is a 0.x alpha from a
+    # single maintainer and it is the foundation of the whole runtime. See
+    # tests/kernel/test_kernel_contract.py — that suite is the conformance gate.
+    "cordis-port==0.1.5",
+    # Profile / bundle / patch layers are YAML.
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+forgepilot = "forgepilot.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forgepilot"]
+
+# The in-tree bundles are data, not code; they must ship with the package.
+[tool.hatch.build.targets.wheel.force-include]
+"src/forgepilot/bundles" = "forgepilot/bundles"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::RuntimeWarning"]

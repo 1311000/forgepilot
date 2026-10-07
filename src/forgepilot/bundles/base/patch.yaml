@@ -1,0 +1,76 @@
+# ForgePilot base bundle — the seam wiring every profile inherits.
+#
+# These rows name the provider that fills each capability seam. They compose (and
+# appear in `--dump-config`) as of M1, but only become *loadable* once the
+# matching provider packages land at M2 — `--dump-config` never resolves plugins,
+# so inspection works before the implementations exist.
+#
+# Swap a capability by overriding its row id in a later layer; never by editing
+# a consumer. That is what makes the seam swappable.
+
+- id: llm
+  plugin: forgepilot.providers.llm.replay:ReplayLLMPlugin
+  config:
+    model: replay-1
+  inject: []
+  tier: trusted
+
+- id: retriever
+  plugin: forgepilot.providers.retrieve.local_overlay:LocalOverlayRetrieverPlugin
+  config:
+    # Local search is scoped to the branch diff plus uncommitted changes.
+    # In the target environment (GVFS: 300GB+, metadata-only locally) scanning
+    # the working tree would trigger unbounded on-demand downloads; on ordinary
+    # repos it simply does not scale. Either way, global search belongs to the
+    # remote index provider below.
+    scope: local-overlay
+    max_hits: 200
+  tier: trusted
+
+# The load-bearing global code search in the target design. Reuses the company's
+# existing enterprise search service (full-text inverted index + semantic vector
+# index) rather than rebuilding a per-developer index.
+#
+# Disabled because that service does not exist yet and the skeleton uses fixture
+# repos. An enabled row pointing at a placeholder would be worse than an honest
+# gap — flip this on when the endpoint is real.
+- id: retriever-remote
+  plugin: forgepilot.providers.retrieve.remote_index:RemoteIndexRetrieverPlugin
+  disabled: true
+  config:
+    endpoint: ${FORGEPILOT_SEARCH_ENDPOINT:-http://search.invalid}
+    # Every returned slice must carry its ref so callers can verify they are not
+    # reading trunk while working on a branch.
+    verify_ref: true
+  tier: trusted
+
+- id: session
+  plugin: forgepilot.providers.session_store.jsonl:JsonlSessionStorePlugin
+  tier: trusted
+
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.subprocess_local:SubprocessLocalSandboxPlugin
+  config:
+    # Never danger-full-access for a model-initiated call.
+    mode: workspace-write
+    network: deny
+  tier: trusted
+
+- id: tools
+  plugin: forgepilot.runtime.tools.registry:ToolRegistryPlugin
+  tier: trusted
+
+- id: approval
+  plugin: forgepilot.runtime.approval:ApprovalServicePlugin
+  config:
+    # fail-closed: an unanswered ask is a refusal.
+    policy: ask
+  tier: trusted
+
+# Third-party plugins are denied the privileged `tools/arm` phase. Declaring the
+# tier here makes that visible in `--dump-config` and assertable at boot.
+- id: agent-loop
+  plugin: forgepilot.runtime.loop.agent_loop:ForgePilotAgentLoopPlugin
+  config:
+    factory: forgepilot
+  tier: trusted

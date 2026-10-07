@@ -1,0 +1,11 @@
+# Default profile.
+#
+# Copy this tree to $FORGEPILOT_HOME/profiles/<name>/ to make your own, or point
+# at it directly with `forgepilot --config-dir configs --dump-config`.
+
+name: default
+# Order matters: later bundles override earlier ones by row id.
+bundles:
+  - base
+  - web
+default_mode: chat

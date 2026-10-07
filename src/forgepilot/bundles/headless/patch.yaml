@@ -1,0 +1,10 @@
+# Headless bundle — base plus a one-shot task runner, no HTTP surface.
+#
+# Overrides `base`'s agent-loop config only; everything else is inherited.
+
+- id: agent-loop
+  plugin: forgepilot.runtime.loop.agent_loop:ForgePilotAgentLoopPlugin
+  config:
+    factory: forgepilot
+    interactive: false
+  tier: trusted

@@ -1,0 +1,210 @@
+"""Typed wrappers over the kernel's plugin, effect and event primitives.
+
+Every helper here exists because the upstream Cordis/DSH documentation and the
+``cordis_port`` implementation **disagree**, and we verified the port's actual
+behaviour empirically (see ``tests/kernel/test_kernel_contract.py``). The
+differences that matter, and that these wrappers absorb:
+
+1. **A function plugin's ``apply`` takes TWO arguments — ``apply(ctx, config)``.**
+   The DSH docs show ``apply(ctx)``. Passing a one-arg callable does *not* raise
+   at registration; the fiber silently ends up ``FAILED``. :func:`assert_apply_arity`
+   turns that silent failure into a loud one.
+
+2. **``next`` is the LAST positional parameter of a waterfall listener, not the
+   first.** A listener is invoked as ``listener(*pending, next)``. The DSH docs
+   describe ``f(next, ...)``.
+
+3. **``next(value)`` ignores its argument.** The port's ``next_callback(*_ignored)``
+   discards everything and the terminal is invoked with no arguments at all.
+   There is no forward value threading. Values travel *backward* instead: a
+   listener that returns ``next()`` propagates the terminal's return value up the
+   chain. Any pipeline that needs to carry a decision through a waterfall must do
+   so with return values or an explicit accumulator — never by passing it to
+   ``next``.
+
+4. **``fiber.dispose()`` returns a coroutine**, and is idempotent. Always go
+   through :func:`dispose_fiber`, which awaits it when needed.
+
+5. **``ctx.effect(setup)`` runs ``setup`` immediately** and treats its *return
+   value* as the disposer. ``ctx.effect(lambda: log.append(x))`` therefore
+   registers ``None`` as a disposer and cleans up nothing — a mistake that looks
+   like it works until teardown.
+
+6. **Disposers run LIFO** (last registered, first disposed). We rely on this for
+   dependency-ordered teardown, so it is pinned by a test.
+"""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
+
+from cordis_port import Context, Fiber
+
+from forgepilot.kernel.errors import DisposalError, PluginContractViolation
+
+__all__ = [
+    "apply_plugin",
+    "make_plugin",
+    "assert_apply_arity",
+    "dispose_fiber",
+    "bind_effect",
+    "bind_listener",
+    "bind_waterfall",
+    "create_root",
+    "fiber_state_name",
+]
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+#: The arity a function-form plugin's ``apply`` must accept: ``(ctx, config)``.
+PLUGIN_APPLY_ARITY = 2
+
+
+def assert_apply_arity(apply: Callable[..., Any]) -> Callable[..., Any]:
+    """Return ``apply`` unchanged, or raise if it cannot accept ``(ctx, config)``.
+
+    Guards against difference #1 above. Called by :func:`make_plugin`, so the
+    common path cannot hit the silent-``FAILED`` trap.
+    """
+    if not callable(apply):
+        raise PluginContractViolation(f"plugin apply is not callable: {apply!r}")
+
+    try:
+        sig = inspect.signature(apply)
+    except (TypeError, ValueError):  # builtins / C callables: cannot introspect
+        return apply
+
+    positional = 0
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return apply  # *args accepts anything
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+
+    if positional < PLUGIN_APPLY_ARITY:
+        raise PluginContractViolation(
+            f"plugin apply must accept (ctx, config) — {PLUGIN_APPLY_ARITY} positional "
+            f"arguments — but {getattr(apply, '__qualname__', apply)!r} accepts "
+            f"{positional}. A one-argument `apply(ctx)` registers without error and "
+            f"then leaves the fiber FAILED; see kernel/effects.py."
+        )
+    return apply
+
+
+def make_plugin(
+    apply: Callable[..., Any],
+    *,
+    inject: list[str] | dict[str, Any] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Build the dict-form plugin descriptor the kernel expects.
+
+    Exists so ``inject`` and the ``(ctx, config)`` arity are stated in one place
+    rather than re-derived at every call site.
+    """
+    assert_apply_arity(apply)
+    descriptor: dict[str, Any] = {"apply": apply}
+    if inject is not None:
+        descriptor["inject"] = inject
+    if name is not None:
+        descriptor["name"] = name
+    return descriptor
+
+
+def create_root() -> Context:
+    """Create a root context.
+
+    The root fiber is ACTIVE on creation and its ``runtime`` is ``None``, which
+    means reads on it take the kernel's **unchecked** path (missing names return
+    ``None`` rather than raising). Do not hand the root context to a tool or any
+    other object that is expected to be scope-confined — see
+    ``test_root_context_read_is_unchecked``.
+    """
+    return Context()
+
+
+def fiber_state_name(fiber: Fiber) -> str:
+    """Return a fiber's lifecycle state as a name, e.g. ``"ACTIVE"``.
+
+    Prefer :func:`forgepilot.kernel.effects.dispose_fiber`-style waiting over
+    polling this: the state can read ACTIVE before the plugin's ``apply`` has
+    run. See ``test_active_state_does_not_imply_apply_has_run``.
+    """
+    return fiber.get_state().name
+
+
+def apply_plugin(
+    ctx: Context,
+    plugin: Any,
+    config: Any = None,
+) -> Fiber:
+    """Register ``plugin`` on ``ctx``, returning its :class:`Fiber`.
+
+    Thin wrapper purely so ``cordis_port`` stays behind this package.
+    """
+    return ctx.plugin(plugin, config)
+
+
+async def dispose_fiber(fiber: Fiber) -> None:
+    """Dispose ``fiber`` and wait for teardown to finish.
+
+    ``Fiber.dispose`` is **not a declared method** — the kernel assigns it at
+    runtime (``fiber.py`` sets it to ``_root_dispose`` on the root fiber and to an
+    effect for child fibers). It returns a coroutine, and is idempotent, so
+    calling this twice is safe.
+    """
+    dispose = getattr(fiber, "dispose", None)
+    if dispose is None:
+        raise DisposalError(
+            f"fiber {fiber!r} has no dispose attribute; the kernel's dynamic "
+            f"assignment did not happen"
+        )
+    result = dispose()
+    if isinstance(result, Awaitable):  # the normal case: a coroutine
+        await result
+
+
+def bind_effect(
+    ctx: Context,
+    setup: Callable[[], Callable[[], Any] | None],
+    label: str = "anonymous",
+) -> Any:
+    """Register a reversible effect — see difference #5 above.
+
+    ``setup`` runs **immediately**; whatever it *returns* is invoked on teardown.
+    Return a cleanup callable from ``setup`` or nothing will be cleaned up.
+    """
+    return ctx.effect(setup, label)
+
+
+def bind_listener(
+    ctx: Context,
+    event: str,
+    listener: Callable[..., Any],
+    options: Any = None,
+) -> Any:
+    """Subscribe to ``event``, returning a ``Disposable`` that unsubscribes."""
+    return ctx.on(event, listener, options)
+
+
+def bind_waterfall(
+    ctx: Context,
+    event: str,
+    *pending: Any,
+    terminal: Callable[..., Any],
+) -> Any:
+    """Run a waterfall chain, with ``terminal`` as the innermost callback.
+
+    Signature note (differences #2 and #3): each listener is invoked as
+    ``listener(*pending, next)`` — **``next`` is last** — and ``next(value)``
+    discards ``value``. To carry a result back out, have listeners
+    ``return next()`` and let the return value propagate.
+
+    ``terminal`` is called with **no arguments**; it must accept none.
+    """
+    return ctx.waterfall(event, *pending, terminal)
