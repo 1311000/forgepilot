@@ -98,6 +98,41 @@ class ExecutionConstraints:
     budget: Budget = field(default_factory=Budget)
     issued_at: datetime | None = None
     expires_at: datetime | None = None
+    #: HMAC over the canonical payload, set by :func:`forgepilot.identity.signing.sign`.
+    #:
+    #: Empty means **unsigned**, and nothing should trust it. The field exists now
+    #: because verification does; an unverified signature would be worse than none,
+    #: since it would look like tamper protection while providing none.
+    signature: str = ""
+
+    @property
+    def is_signed(self) -> bool:
+        return bool(self.signature)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        """Deterministic representation of everything the signature covers.
+
+        Everything *except* ``signature`` itself, with every collection sorted, so
+        that two constraint sets that mean the same thing serialise identically —
+        otherwise a legitimate re-serialisation would look like tampering.
+        """
+        return {
+            "principal_id": str(self.principal_id),
+            "tenant_id": str(self.tenant_id),
+            "allowed_repos": sorted(repo.slug for repo in self.allowed_repos),
+            "allowed_repo_prefixes": sorted(self.allowed_repo_prefixes),
+            "permitted_operations": sorted(op.value for op in self.permitted_operations),
+            "writable_paths": sorted(self.writable_paths),
+            "network": str(self.network),
+            "budget": {
+                "max_tokens": self.budget.max_tokens,
+                "max_tool_calls": self.budget.max_tool_calls,
+                "max_wall_seconds": self.budget.max_wall_seconds,
+                "max_cost_usd": self.budget.max_cost_usd,
+            },
+            "issued_at": self.issued_at.isoformat() if self.issued_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+        }
 
     @classmethod
     def for_principal(
@@ -167,6 +202,11 @@ class ExecutionConstraints:
         A subagent, a resumed session, or a forked session must only ever be able
         to *narrow* authority. Intersection is the operation that guarantees that
         structurally, rather than relying on callers remembering to check.
+
+        **The signature is dropped**, because the content changed. Keeping it would
+        mean a narrowed set carrying a signature over the wider one — the exact
+        forgery the signature exists to prevent. The result must be re-signed by
+        whoever narrowed it.
         """
         if other.principal_id != self.principal_id:
             raise ValueError(

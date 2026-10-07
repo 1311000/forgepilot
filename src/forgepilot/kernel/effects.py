@@ -42,6 +42,7 @@ from typing import Any, TypeVar
 
 from cordis_port import Context, Fiber
 from cordis_port import Service as PluginService  # re-exported for providers
+from cordis_port.utils import _new_symbol as _kernel_new_symbol
 
 from forgepilot.kernel.errors import DisposalError, PluginContractViolation
 
@@ -56,6 +57,9 @@ __all__ = [
     "create_root",
     "fiber_state_name",
     "PluginService",
+    "new_interface_label",
+    "isolate_service",
+    "provide",
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -116,6 +120,36 @@ def make_plugin(
     if name is not None:
         descriptor["name"] = name
     return descriptor
+
+
+def new_interface_label(name: str) -> Any:
+    """A fresh, unique interface label for ``name``.
+
+    Interface labels are what Cordis's isolation compares, so a label must be
+    **new** for each scope that should be isolated.
+    """
+    return _kernel_new_symbol(f"forgepilot.isolate.{name}")
+
+
+def isolate_service(ctx: Context, name: str) -> Context:
+    """Return a child context with its own interface label for ``name``.
+
+    ⚠️ **Always use this rather than ``ctx.isolate(name)``.** In this kernel a
+    *bare* ``isolate(name)`` inherits the parent's label for that name, so the
+    labels compare equal, no boundary is detected, and lookups cross freely — it
+    silently does not isolate at all. Isolation happens only when the label
+    differs, which means passing a fresh one. This was measured, not read.
+
+    The practical consequence for ForgePilot: a service provided in a request
+    scope reaches the root unless the scope was opened through here, which would
+    quietly turn the fail-closed property into decoration.
+    """
+    return ctx.isolate(name, new_interface_label(name))
+
+
+def provide(ctx: Context, name: str, value: Any) -> Any:
+    """Register ``name`` in ``ctx``'s own scope. Thin wrapper, kept for symmetry."""
+    return ctx.provide(name, value)
 
 
 def create_root() -> Context:

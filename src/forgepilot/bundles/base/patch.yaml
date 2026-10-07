@@ -45,6 +45,24 @@
     verify_ref: true
   tier: trusted
 
+# --- identity and authorisation --------------------------------------------
+# Identity answers "who is this"; policy answers "may they do this here". Neither
+# is authority on its own — `identity/constraints.py` intersects the two and signs
+# the result, and only a signed set can open a request scope.
+- id: principal
+  plugin: forgepilot.identity.principal:PrincipalServicePlugin
+  tier: trusted
+
+- id: policy
+  plugin: forgepilot.identity.policy:PolicyServicePlugin
+  config:
+    # Deny by default: an operation nobody granted is not permitted by omission.
+    default: deny
+    # Operations that always need a human, whatever the grant says.
+    ask_operations:
+      - open_pr
+  tier: trusted
+
 # --- work item and repository ---------------------------------------------
 - id: tickets
   plugin: forgepilot.providers.tickets.mock:MockTicketSourcePlugin

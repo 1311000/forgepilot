@@ -24,7 +24,10 @@ from forgepilot.kernel.effects import (
     create_root,
     dispose_fiber,
     fiber_state_name,
+    isolate_service,
     make_plugin,
+    new_interface_label,
+    provide,
 )
 from forgepilot.kernel.errors import (
     ApprovalUnavailable,
@@ -62,6 +65,9 @@ __all__ = [
     "create_root",
     "fiber_state_name",
     "PluginService",
+    "new_interface_label",
+    "isolate_service",
+    "provide",
     # contracts
     "requires_inject",
     "assert_declares_inject",
