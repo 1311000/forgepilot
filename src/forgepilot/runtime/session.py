@@ -19,7 +19,7 @@ by a caller remembering to call flush.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -52,6 +52,7 @@ class Session:
         self._committed: list[SessionEvent] = list(committed)
         self._pending: list[SessionEvent] = []
         self._next_seq = (self._committed[-1].seq + 1) if self._committed else 1
+        self._listeners: list[Callable[[SessionEvent], None]] = []
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -173,7 +174,40 @@ class Session:
         )
         self._pending.append(event)
         self._next_seq += 1
+        self._notify(event)
         return event
+
+    def subscribe(self, listener: Callable[[SessionEvent], None]) -> Callable[[], None]:
+        """Watch this session's timeline live. Returns an unsubscribe callable.
+
+        **Fires on append, before the event is durable.** That is deliberate: an
+        event that has been appended has already been decided, and waiting for
+        the flush would make a live reader lag by a whole step. It also means a
+        listener can see an event that a crash before the next flush then loses —
+        acceptable because the *log* remains the truth and a reconnecting reader
+        rebuilds from it, but it is why nothing may treat a notification as proof
+        of durability.
+
+        Listeners run synchronously on the writing task and must not block or
+        raise: a slow or broken observer would otherwise stall the turn it is
+        watching. Both are enforced here rather than trusted.
+        """
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            try:
+                self._listeners.remove(listener)
+            except ValueError:
+                pass  # Already gone; unsubscribing twice is not an error.
+
+        return unsubscribe
+
+    def _notify(self, event: SessionEvent) -> None:
+        for listener in tuple(self._listeners):
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 - an observer must not break the turn
+                pass
 
     # -- typed helpers -----------------------------------------------------
     #: Thin wrappers so call sites do not have to remember which surface each

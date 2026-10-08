@@ -14,7 +14,7 @@ import json
 from forgepilot.runtime.guards import GuardDecision, GuardResult
 from forgepilot.runtime.tools.pipeline import Phase
 from forgepilot.seams.approval import ApprovalOutcome
-from forgepilot.seams.refs import TurnId
+from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.security import Operation
 from forgepilot.seams.session import EventKind
 from forgepilot.seams.tools import (
@@ -46,6 +46,9 @@ def constraints_for(
     )
 
 TURN = TurnId(1)
+
+#: The id the ``rig`` fixture opens its session under.
+SESSION_ID = SessionId("s-under-test")
 
 
 def call(name: str, arguments: dict | str = "{}") -> ToolCall:
@@ -287,6 +290,39 @@ async def test_approval_is_audited_but_log_only(rig) -> None:
     assert len(asked) == 1 and len(decided) == 1
     assert asked[0].surface is SurfaceOp.LOG_ONLY
     assert decided[0].surface is SurfaceOp.LOG_ONLY
+
+
+async def test_the_prompt_is_durable_while_the_human_is_being_asked(rig) -> None:
+    """``approval/asked`` must be in storage *before* the answerer blocks.
+
+    The prompt is how a human — or an HTTP client — learns there is something to
+    answer. That happens on a *different* request, and it learns it by reading
+    the log. If the event is still in the session's buffer while the answerer
+    waits, the prompt is invisible, nobody answers, and the turn hangs forever
+    with no error to diagnose.
+
+    Read from the **store**, not from ``session.events``: the latter includes the
+    buffer, so asserting against it would pass whether or not anything was
+    durable. This is the same rule ``tool/call`` already follows — durable before
+    the thing that can run away from you.
+    """
+    at_prompt: list[list[str]] = []
+
+    async def answerer(request):
+        at_prompt.append([e.kind async for e in rig.store.read(SESSION_ID)])
+        return ApprovalOutcome.ALLOWED_ONCE
+
+    rig.approval.set_answerer(answerer)
+    rig.pipeline.on_pre_execute(lambda p, s: _ask("dangerous"))
+    await invoke(rig, call("run", {"command": "echo hi"}))
+
+    assert at_prompt, "the answerer was never consulted"
+    assert EventKind.APPROVAL_ASKED in at_prompt[0], (
+        "the prompt was not durable while the answerer was blocked, so nothing "
+        "reading the log could have known there was something to answer"
+    )
+    # And the tool body is genuinely still ahead of us at that moment.
+    assert EventKind.TOOL_RESULT not in at_prompt[0]
 
 
 # ---------------------------------------------------------------------------

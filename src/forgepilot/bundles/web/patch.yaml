@@ -3,11 +3,16 @@
 # This is the frontend-swap boundary: the UI can be replaced without touching
 # anything below it, because everything reaches the runtime through this API.
 
-# Lands at M10. Disabled so that a profile including this bundle still boots.
+# Enabling this row does **not** open a socket. The plugin assembles the app and
+# returns it; `forgepilot --serve` is what starts uvicorn. A plugin that bound a
+# port as a side effect of loading would make `--boot` unusable and every test
+# that boots a profile a race for a fixed port.
 - id: httpapi
   plugin: forgepilot.httpapi.app:HttpApiPlugin
-  disabled: true
   config:
     host: 127.0.0.1
     port: 8000
+    # How long a raised approval waits for a human before it is treated as
+    # silence — which is a refusal, per the approval service's fail-closed rule.
+    approval_timeout: 300.0
   tier: trusted

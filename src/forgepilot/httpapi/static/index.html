@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgePilot</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1e24; --line: #2b3038; --fg: #dfe3ea;
+    --dim: #8b94a3; --accent: #6aa9ff; --warn: #e8b04b; --bad: #ef6b6b;
+    --ok: #63c98a; --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 system-ui, sans-serif;
+    display: grid; grid-template-columns: 260px 1fr; height: 100vh;
+  }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 14px; overflow-y: auto; }
+  main { display: flex; flex-direction: column; min-width: 0; }
+  h1 { font-size: 15px; margin: 0 0 12px; letter-spacing: .04em; }
+  h1 span { color: var(--accent); }
+  button {
+    background: #232833; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0d1014; border-color: var(--accent); font-weight: 600; }
+  button.bad { border-color: var(--bad); color: var(--bad); }
+  button.ok { background: var(--ok); color: #0d1014; border-color: var(--ok); font-weight: 600; }
+  input, textarea {
+    background: #101317; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 9px; font: inherit; width: 100%;
+  }
+  textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .muted { color: var(--dim); font-size: 12px; }
+  #sessions { list-style: none; margin: 10px 0 0; padding: 0; }
+  #sessions li {
+    padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #sessions li:hover { background: #232833; }
+  #sessions li[aria-current="true"] { background: #26334a; }
+  #log { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  #compose { border-top: 1px solid var(--line); padding: 12px 22px; display: flex; gap: 8px; }
+  .ev { margin: 0 0 10px; }
+  .ev > .kind {
+    font: 11px/1 var(--mono); color: var(--dim); text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .ev pre {
+    margin: 4px 0 0; padding: 8px 10px; background: #101317; border-radius: 6px;
+    border-left: 2px solid var(--line); white-space: pre-wrap; word-break: break-word;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .ev.user pre { border-left-color: var(--accent); }
+  .ev.assistant pre { border-left-color: var(--ok); }
+  .ev.reasoning pre { border-left-color: #6a5acd; color: var(--dim); font-style: italic; }
+  .ev.tool pre { border-left-color: var(--warn); }
+  .ev.err pre { border-left-color: var(--bad); color: var(--bad); }
+  .approval {
+    border: 1px solid var(--warn); border-radius: 8px; padding: 12px 14px;
+    background: #221d12; margin: 10px 0;
+  }
+  .approval h3 { margin: 0 0 6px; font-size: 13px; color: var(--warn); }
+  .approval .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .approval.answered { border-color: var(--line); background: var(--panel); opacity: .65; }
+  #review { padding: 18px 22px; overflow-y: auto; }
+  #reviewBody { margin-top: 14px; }
+  .group { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+  .group .why { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .cov { font-family: var(--mono); font-size: 12px; }
+  .cov b { color: var(--warn); }
+  .banner { padding: 10px 22px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px; }
+  .hidden { display: none !important; }
+  .tag { font: 11px/1 var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Forge<span>Pilot</span></h1>
+  <label class="muted" for="token">凭据（Bearer）</label>
+  <input id="token" type="password" placeholder="dev-token" autocomplete="off">
+  <div class="row" style="margin-top:10px">
+    <button id="newSession" class="primary">新建会话</button>
+    <button id="loadSessions">刷新</button>
+  </div>
+  <ul id="sessions"></ul>
+  <div class="row" style="margin-top:18px">
+    <button id="showReview">评审模式</button>
+  </div>
+</aside>
+
+<main>
+  <div class="banner" id="banner">未连接</div>
+
+  <section id="chat" style="display:flex;flex-direction:column;height:100%;min-height:0">
+    <div id="log"></div>
+    <form id="compose">
+      <input id="text" placeholder="问一个关于代码库的问题…" autocomplete="off">
+      <button class="primary" type="submit">发送</button>
+    </form>
+  </section>
+
+  <section id="review" class="hidden">
+    <div id="reviewInput">
+      <div class="row" style="justify-content:space-between">
+        <strong>粘贴一份 unified diff</strong>
+        <button id="hideReview">返回对话</button>
+      </div>
+      <p class="muted">
+        评审模式关心的是顺序与覆盖：先看什么、以及<b>哪些改动没有任何论断覆盖</b>。
+        顺序是按「读它之前需要先知道什么」排的，不是按文件名。
+      </p>
+      <textarea id="diff" rows="10" placeholder="--- a/src/login.py&#10;+++ b/src/login.py&#10;@@ -1,3 +1,4 @@"></textarea>
+      <div class="row" style="margin-top:8px">
+        <input id="reviewTitle" placeholder="标题（可选）">
+        <button id="runReview" class="primary">生成变更说明</button>
+      </div>
+    </div>
+    <div id="reviewBody"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const API = ""; // same origin
+
+let current = null;      // session id
+let abort = null;        // AbortController for the live stream
+let lastEventId = null;  // the log's seq — our resume cursor
+
+function auth() {
+  const token = $("token").value.trim() || localStorage.getItem("forgepilot.token") || "";
+  if (token) localStorage.setItem("forgepilot.token", token);
+  return token ? { Authorization: "Bearer " + token } : {};
+}
+
+async function call(method, path, body) {
+  const response = await fetch(API + path, {
+    method,
+    headers: { ...auth(), ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`${method} ${path} → ${response.status} ${detail.slice(0, 300)}`);
+  }
+  return response.status === 202 || response.status === 204 ? null : response.json();
+}
+
+function note(text, cls) {
+  const main = $("banner");
+  main.textContent = text;
+  main.style.color = cls === "err" ? "var(--bad)" : "";
+}
+
+// -- rendering --------------------------------------------------------------
+function addEvent(kind, payload) {
+  const article = document.createElement("article");
+  article.className = "ev " + classify(kind, payload);
+
+  const label = document.createElement("div");
+  label.className = "kind";
+  label.textContent = kind + (payload.seq ? "  #" + payload.seq : "");
+  article.appendChild(label);
+
+  const pre = document.createElement("pre");
+  pre.textContent = describe(kind, payload);
+  article.appendChild(pre);
+
+  $("log").appendChild(article);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+function classify(kind, payload) {
+  if (kind === "user/message") return "user";
+  if (kind === "assistant/message") return "assistant";
+  if (kind === "assistant/reasoning") return "reasoning";
+  if (kind.startsWith("tool/")) return payload?.data?.isError ? "err" : "tool";
+  return "";
+}
+
+function describe(kind, payload) {
+  const data = payload?.data || {};
+  switch (kind) {
+    case "user/message": return data.text ?? "";
+    case "assistant/message":
+      return (data.text || "(无文本)") +
+        (data.toolCalls?.length ? "\n→ " + data.toolCalls.map((c) => c.name).join(", ") : "");
+    case "assistant/reasoning": return data.text ?? "";
+    case "tool/call": return `${data.name}(${data.arguments ?? ""})`;
+    case "tool/result": return data.content ?? "";
+    case "approval/asked": return `${data.tool} — ${data.reason || "需要确认"}`;
+    case "approval/decided": return data.outcome;
+    case "turn/end": return data.reason;
+    case "task/check": return `${data.command ?? ""}\n${data.output ?? ""}`.trim();
+    case "stream/lost": return String(payload);
+    default: return JSON.stringify(data);
+  }
+}
+
+// -- the live stream --------------------------------------------------------
+// Not `EventSource`: it cannot set an Authorization header, and the only
+// workaround is a token in the query string — which lands in access logs,
+// browser history and Referer headers. So we read the frames ourselves.
+async function stream(sessionId) {
+  if (abort) abort.abort();
+  abort = new AbortController();
+
+  const headers = { ...auth(), Accept: "text/event-stream" };
+  if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+
+  const response = await fetch(`${API}/sessions/${sessionId}/events`, {
+    headers,
+    signal: abort.signal,
+  });
+  if (!response.ok || !response.body) {
+    note(`事件流打不开：${response.status}`, "err");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) !== -1) {
+        handleFrame(buffer.slice(0, cut));
+        buffer = buffer.slice(cut + 2);
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") note("事件流中断：" + err.message, "err");
+  }
+}
+
+function handleFrame(raw) {
+  let kind = "message", id = null, data = "";
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) kind = line.slice(6).trim();
+    else if (line.startsWith("id:")) id = line.slice(3).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data) return;
+  if (id) lastEventId = id; // the log's seq: a resume point the store understands
+
+  let payload;
+  try { payload = JSON.parse(data); } catch { payload = { raw: data } }
+
+  if (kind === "approval/asked") return showApproval(payload);
+  if (kind === "approval/decided") return markApprovalAnswered(payload);
+
+  addEvent(kind, payload);
+}
+
+// -- approvals --------------------------------------------------------------
+// The prompt is only ever rendered because it is in the log — which is also why
+// it appears *before* the tool body that it authorises, rather than after.
+const answered = new Set();
+
+function showApproval(payload) {
+  const callId = payload.data.callId;
+  const requestId = callId + "-approval";
+
+  const box = document.createElement("div");
+  box.className = "approval";
+  box.id = "approval-" + CSS.escape(callId);
+
+  const title = document.createElement("h3");
+  title.textContent = "需要审批：" + payload.data.tool;
+  box.appendChild(title);
+
+  const why = document.createElement("div");
+  why.className = "muted";
+  why.textContent = payload.data.reason || "该工具会改动工作区";
+  box.appendChild(why);
+
+  const args = document.createElement("pre");
+  args.style.margin = "8px 0 0";
+  args.textContent = payload.raw ?? "";
+  box.appendChild(args);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const allow = document.createElement("button");
+  allow.className = "ok";
+  allow.textContent = "允许一次";
+  allow.onclick = () => decide(requestId, "allowed-once", box);
+  actions.appendChild(allow);
+
+  const deny = document.createElement("button");
+  deny.className = "bad";
+  deny.textContent = "拒绝";
+  deny.onclick = () => decide(requestId, "rejected", box);
+  actions.appendChild(deny);
+
+  box.appendChild(actions);
+  $("log").appendChild(box);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+async function decide(requestId, decision, box) {
+  if (answered.has(requestId)) return;
+  answered.add(requestId);
+  try {
+    const result = await call("POST", `/approvals/${encodeURIComponent(requestId)}`, { decision });
+    if (!result || result.answered === false) {
+      // The prompt is in the log but nothing is waiting for it — a turn from a
+      // previous process. Saying "answered" here would be a lie.
+      box.querySelector(".actions").innerHTML =
+        `<span class="muted">这条审批已无人等待（会话已重启），回答未送达。</span>`;
+      box.classList.add("answered");
+      return;
+    }
+    box.querySelector(".actions").innerHTML = `<span class="muted">已答复：${decision}</span>`;
+    box.classList.add("answered");
+  } catch (err) {
+    note(err.message, "err");
+  }
+}
+
+function markApprovalAnswered(payload) {
+  const box = document.getElementById("approval-" + CSS.escape(payload.data.callId));
+  if (box && !box.classList.contains("answered")) {
+    box.querySelector(".actions")?.replaceChildren(
+      Object.assign(document.createElement("span"), {
+        className: "muted",
+        textContent: "已答复：" + payload.data.outcome,
+      })
+    );
+    box.classList.add("answered");
+  }
+}
+
+// -- sessions ---------------------------------------------------------------
+async function refreshSessions() {
+  const payload = await call("GET", "/sessions");
+  const list = $("sessions");
+  list.replaceChildren();
+  for (const item of payload.sessions) {
+    const li = document.createElement("li");
+    li.textContent = item.sessionId + (item.running ? " ●" : "");
+    li.title = item.sessionId;
+    li.setAttribute("aria-current", String(item.sessionId === current));
+    li.onclick = () => openSession(item.sessionId);
+    list.appendChild(li);
+  }
+}
+
+async function openSession(sessionId) {
+  current = sessionId;
+  lastEventId = null;
+  $("log").replaceChildren();
+  note("会话 " + sessionId);
+  await refreshSessions();
+  stream(sessionId); // replays the whole log from seq 0
+}
+
+$("newSession").onclick = async () => {
+  try {
+    const payload = await call("POST", "/sessions", {});
+    await refreshSessions();
+    await openSession(payload.sessionId);
+  } catch (err) { note(err.message, "err"); }
+};
+
+$("loadSessions").onclick = () => refreshSessions().catch((e) => note(e.message, "err"));
+
+$("compose").onsubmit = async (event) => {
+  event.preventDefault();
+  const text = $("text").value.trim();
+  if (!text || !current) return;
+  $("text").value = "";
+  $("log").appendChild(Object.assign(document.createElement("div"), {
+    className: "ev user", innerHTML: `<div class="kind">你</div><pre>${escape(text)}</pre>`,
+  }));
+  try {
+    await call("POST", `/sessions/${current}/messages`, { text });
+  } catch (err) { note(err.message, "err"); }
+};
+
+function escape(text) {
+  return text.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// -- review mode ------------------------------------------------------------
+$("showReview").onclick = () => {
+  $("chat").classList.add("hidden");
+  $("review").classList.remove("hidden");
+};
+$("hideReview").onclick = () => {
+  $("review").classList.add("hidden");
+  $("chat").classList.remove("hidden");
+};
+
+$("runReview").onclick = async () => {
+  const diff = $("diff").value;
+  if (!diff.trim()) return;
+  try {
+    const payload = await call("POST", "/review", { diff, title: $("reviewTitle").value });
+    renderReview(payload);
+  } catch (err) { note(err.message, "err"); }
+};
+
+function renderReview(payload) {
+  const body = $("reviewBody");
+  body.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "cov";
+  head.innerHTML =
+    `${payload.summaryLine || ""} · 分析：${payload.blastRadius.isAst ? "AST" : "文本匹配"}` +
+    `<br>块 ${payload.coverage.total_hunks} · 有论断 ${payload.coverage.annotated_hunks} · ` +
+    `噪声 ${payload.coverage.noise_hunks} · <b>未审视 ${payload.coverage.unexamined_hunks}</b>`;
+  body.appendChild(head);
+
+  const order = document.createElement("h3");
+  order.textContent = "建议的阅读顺序（不是按文件名）";
+  body.appendChild(order);
+
+  payload.groups.forEach((group, index) => {
+    const card = document.createElement("div");
+    card.className = "group";
+    const paths = group.paths.map((p) => `<code>${escape(p)}</code>`).join(", ");
+    card.innerHTML =
+      `<strong>${index + 1}｜${escape(group.title)}</strong> ${paths}` +
+      (index === 0 ? ' <span class="tag">从这里开始</span>' : "") +
+      `<div>${escape(group.rationale.text)}</div>` +
+      `<div class="why">为什么在这里：${escape(group.positionReason)}</div>`;
+    body.appendChild(card);
+  });
+
+  const unverified = document.createElement("div");
+  unverified.className = "group";
+  unverified.innerHTML = payload.unverified.length
+    ? `<strong>未能核实（${payload.unverified.length}）</strong>` +
+      payload.unverified.map((c) =>
+        `<div>· ${escape(c.text)}<div class="why">原因：${escape(c.unverifiedReason || "无证据")}</div></div>`
+      ).join("")
+    : "<strong>未能核实</strong><div>所有论断都通过了校验。</div>";
+  body.appendChild(unverified);
+}
+
+// -- start ------------------------------------------------------------------
+$("token").value = localStorage.getItem("forgepilot.token") || "";
+$("token").onchange = () => refreshSessions().catch(() => {});
+refreshSessions().catch(() => note("填入凭据后点「刷新」", ""));
+</script>
+</body>
+</html>

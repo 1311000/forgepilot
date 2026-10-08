@@ -384,8 +384,11 @@ async def test_markdown_and_json_come_from_one_narrative() -> None:
     assert "fix: bounded retry" in markdown
     assert payload["title"] == "fix: bounded retry"
     assert len(payload["groups"]) == len([g for g in narrative.groups])
-    # Round-trips through JSON, so nothing in it is unserialisable.
-    assert json.loads(json.dumps(payload))["title"] == "fix: bounded retry"
+    # Round-trips **exactly** — not just "is serialisable". A tuple survives
+    # `json.dumps` as an array and comes back a list, so a payload that merely
+    # serialises can still compare unequal to itself after a trip through any
+    # HTTP layer. Asserting only the title is what let that go unnoticed.
+    assert json.loads(json.dumps(payload)) == payload
 
 
 async def test_the_document_leads_with_intent_and_order_before_any_diff() -> None:

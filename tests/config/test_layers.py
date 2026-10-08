@@ -278,9 +278,12 @@ def test_shipped_default_profile_composes_and_user_layer_wins() -> None:
 
     # Untouched rows keep their single-bundle provenance.
     assert cfg.row("sandbox").sources == ("bundle:base",)
-    # The web bundle contributed its row, disabled until M10.
+    # The web bundle contributed its row, enabled since M10 landed the plugin.
+    # Enabling it does not open a socket — `--serve` does that — so a profile
+    # including this row still boots, which is why this is a plain flag flip.
     assert cfg.row("httpapi").sources == ("bundle:web",)
-    assert cfg.row("httpapi").disabled is True
+    assert cfg.row("httpapi").disabled is False
+    assert cfg.row("httpapi").plugin.endswith("HttpApiPlugin")
 
 
 def test_shipped_default_profile_dump_names_every_layer() -> None:

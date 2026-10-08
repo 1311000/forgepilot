@@ -66,7 +66,23 @@ def _claim(claim: Claim) -> dict[str, Any]:
 
 
 def render_json(narrative: ChangeNarrative) -> dict[str, Any]:
-    """A JSON-safe dict of the whole narrative."""
+    """A JSON-safe dict of the whole narrative.
+
+    Everything is passed through :func:`to_jsonable` on the way out, so the
+    returned structure contains only types JSON has. That is not decorative: a
+    ``tuple`` survives ``json.dumps`` as an array and comes back as a *list*, so
+    an object that was never round-tripped would compare unequal to itself after
+    a trip through any HTTP layer. ``Coverage.unexamined`` was exactly that — a
+    tuple — and nothing noticed until an endpoint served it and a test compared
+    the served payload against the local one.
+
+    The fix is here rather than at the call site because "the JSON renderer
+    returns JSON" should not depend on every caller remembering.
+    """
+    return to_jsonable(_payload(narrative))
+
+
+def _payload(narrative: ChangeNarrative) -> dict[str, Any]:
     return {
         "title": narrative.title,
         "summaryLine": narrative.summary_line,

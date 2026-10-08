@@ -185,3 +185,78 @@ async def test_forked_session_continues_its_own_sequence(created) -> None:
     await forked.flush()
 
     assert event.seq == 4
+
+
+# ---------------------------------------------------------------------------
+# Live observers — what the HTTP/SSE layer tails
+# ---------------------------------------------------------------------------
+async def test_a_listener_sees_events_as_they_are_appended(created) -> None:
+    """Not at flush time.
+
+    A reader that waited for durability would lag a whole step behind — and the
+    approval prompt is exactly the case where the reader *is* the thing that has
+    to answer, so a lagging reader is a hung turn rather than a slow one.
+    """
+    store, sid = created
+    session = await Session.open(store, sid)
+    seen: list[int] = []
+    session.subscribe(lambda e: seen.append(e.seq))
+
+    await session.turn_start(TurnId(1))
+    await session.user_message(TurnId(1), "hello")
+
+    assert seen == [1, 2], "notified on append"
+    assert session.durable_seq == 0, "and still nothing is durable"
+
+
+async def test_unsubscribing_stops_delivery_and_is_idempotent(created) -> None:
+    store, sid = created
+    session = await Session.open(store, sid)
+    seen: list[int] = []
+    unsubscribe = session.subscribe(lambda e: seen.append(e.seq))
+
+    await session.turn_start(TurnId(1))
+    unsubscribe()
+    unsubscribe()  # A second call is not an error.
+    await session.turn_end(TurnId(1), "completed")
+
+    assert seen == [1]
+
+
+async def test_a_broken_listener_cannot_break_the_turn_it_watches(created) -> None:
+    """An observer is a bystander. If it could raise into `append`, a UI bug
+    would become a lost turn."""
+    store, sid = created
+    session = await Session.open(store, sid)
+    good: list[int] = []
+
+    def explode(event: SessionEvent) -> None:
+        raise RuntimeError("the UI exploded")
+
+    session.subscribe(explode)
+    session.subscribe(lambda e: good.append(e.seq))
+
+    event = await session.turn_start(TurnId(1))  # Must not raise.
+
+    assert event.seq == 1
+    assert good == [1], "one bad listener does not silence the others"
+
+
+async def test_listeners_run_inline_on_the_writing_task(created) -> None:
+    """The contract the SSE bridge is built around.
+
+    Notifications happen *inside* ``append``, on the task doing the writing, so a
+    listener that writes to a socket inline would stall the turn it is watching.
+    That is why the HTTP layer hands each event to a queue and does the socket
+    work elsewhere — this test exists so that hand-off is not mistaken for
+    politeness that can be optimised away.
+    """
+    store, sid = created
+    session = await Session.open(store, sid)
+    order: list[str] = []
+    session.subscribe(lambda e: order.append(f"notified:{e.seq}"))
+
+    await session.turn_start(TurnId(1))
+    order.append("after-append-returned")
+
+    assert order == ["notified:1", "after-append-returned"]

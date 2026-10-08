@@ -22,7 +22,24 @@ from forgepilot.identity.scope import RequestScope, open_request_scope
 from forgepilot.seams.refs import PrincipalId, TenantId
 from forgepilot.seams.security import Principal
 
-__all__ = ["RequestContext", "authenticate"]
+__all__ = ["Credential", "RequestContext", "resolve_credential", "authenticate"]
+
+
+@dataclass(frozen=True, slots=True)
+class Credential:
+    """Who is calling, and what they may do — before any scope exists.
+
+    Separate from :class:`RequestContext` because the two have different
+    lifetimes. A credential is checked **per request**; the scope it authorises
+    may belong to something longer-lived than one request — a session, say, which
+    outlives the POST that created it. Conflating the two would force a
+    long-lived scope to be reopened per request, or a per-request one to be held
+    open indefinitely.
+    """
+
+    principal: Principal
+    constraints: Any
+    project: ProjectPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +63,33 @@ class RequestContext:
         self.scope.close()
 
 
+def resolve_credential(
+    root: Any,
+    credential: str,
+    *,
+    project: ProjectPolicy | None = None,
+    key: bytes | None = None,
+) -> Credential:
+    """Turn a credential into a principal and a signed authority set.
+
+    No scope is opened, so this is also the right entry point for a caller that
+    intends to hand the constraints to something that opens its own —
+    ``runtime.assembly.assemble_session``, for instance, which opens the scope a
+    session lives in and must open it *after* the session exists.
+
+    An unknown or expired credential raises
+    :class:`~forgepilot.identity.errors.AuthenticationFailed` rather than
+    producing an anonymous principal — there is no default identity, which is why
+    there is no way to "fall back" to one.
+    """
+    principals: PrincipalServicePlugin = root.principal
+    record = principals.resolve(credential)
+
+    policy = project if project is not None else ProjectPolicy()
+    constraints = derive(record.principal, record.grant, policy, key=key)
+    return Credential(principal=record.principal, constraints=constraints, project=policy)
+
+
 def authenticate(
     root: Any,
     credential: str,
@@ -54,23 +98,12 @@ def authenticate(
     key: bytes | None = None,
     verify_signature: bool = True,
 ) -> RequestContext:
-    """Authenticate, derive authority, and open a scope for one request.
-
-    ``root`` must have the ``principal`` service available. An unknown or expired
-    credential raises :class:`~forgepilot.identity.errors.AuthenticationFailed`
-    rather than producing an anonymous principal — there is no default identity,
-    which is why there is no way to "fall back" to one.
-    """
-    principals: PrincipalServicePlugin = root.principal
-    record = principals.resolve(credential)
-
-    policy = project if project is not None else ProjectPolicy()
-    constraints = derive(record.principal, record.grant, policy, key=key)
-
+    """Authenticate, derive authority, and open a scope for one request."""
+    cred = resolve_credential(root, credential, project=project, key=key)
     scope = open_request_scope(
-        root, constraints, key=key, verify_signature=verify_signature
+        root, cred.constraints, key=key, verify_signature=verify_signature
     )
-    return RequestContext(principal=record.principal, scope=scope, project=policy)
+    return RequestContext(principal=cred.principal, scope=scope, project=cred.project)
 
 
 def principal_id_for(value: str) -> PrincipalId:

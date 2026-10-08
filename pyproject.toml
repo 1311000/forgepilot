@@ -24,6 +24,18 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+# The HTTP/SSE surface the workbench talks to. Optional for the same reason the
+# AST extra is: the runtime is usable without it — `--chat` drives all three
+# modes from a terminal — so a deployment that only ever runs headless should
+# not have to install a web stack.
+#
+# All four have cp314 Windows wheels (verified on this box), unlike tree-sitter.
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sse-starlette>=2.1",
+]
+
 # AST-backed impact analysis for review mode: real definitions and real
 # references, instead of a word-boundary search with known false positives.
 #

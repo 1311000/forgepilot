@@ -340,6 +340,12 @@ class ToolPipeline:
             turn=turn,
             step=step,
         )
+        # Same rule as `tool/call`, and for a sharper reason: the prompt is how a
+        # human learns there is something to answer, and the answer arrives on a
+        # *different* channel that reads the log. Buffered, the prompt is
+        # invisible, nobody answers, and the turn hangs with no error — the
+        # failure mode is a deadlock, not a stack trace.
+        await session.flush()
         try:
             outcome = await self.approval.request(request)
         except Exception:  # noqa: BLE001 - an answerer that breaks is not a yes

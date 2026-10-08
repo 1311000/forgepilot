@@ -4,13 +4,15 @@ Commands available now::
 
     forgepilot --kernel-check                 boot the kernel, report fiber state
     forgepilot --dump-config                  print the resolved plugin tree
-    forgepilot --profile web --dump-config    ...for a named profile
     forgepilot --config-dir configs --dump-config
     forgepilot --patch ./dev.yaml --dump-config
+    forgepilot --boot                        resolve and load every enabled plugin
+    forgepilot --chat                        interactive session against the model
+    forgepilot --serve                       serve the HTTP/SSE API the UI talks to
 
-A real ``boot`` path (materialising the resolved tree into a live context) lands
-with the provider packages at M2 — the seam rows compose today but do not yet
-resolve to importable plugins.
+``--dump-config`` never imports anything; ``--boot``, ``--chat`` and ``--serve``
+do. That split is deliberate — a profile stays inspectable even when a plugin is
+missing, broken, or not installed on this machine.
 """
 
 from __future__ import annotations
@@ -80,6 +82,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "The default refuses them; see the warning this prints."
         ),
     )
+
+    serve = parser.add_argument_group("serve")
+    serve.add_argument(
+        "--serve",
+        action="store_true",
+        help="boot the profile and serve the HTTP/SSE API the workbench talks to",
+    )
+    serve.add_argument("--host", default=None, help="bind address; overrides the bundle")
+    serve.add_argument("--port", type=int, default=None, help="bind port; overrides the bundle")
     return parser
 
 
@@ -149,6 +160,90 @@ def _boot(args: argparse.Namespace) -> int:
 
     print(f"\nresult: {'OK' if failures == 0 else str(failures) + ' row(s) FAILED'}")
     return 0 if failures == 0 else 1
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Boot the profile and serve the HTTP/SSE API.
+
+    The same boot path as everything else, so what runs is what
+    ``--dump-config`` prints — including which plugins are enabled, which is how
+    a missing ``web`` bundle becomes a message rather than a 404 nobody can
+    explain.
+    """
+    import asyncio
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.kernel import create_root
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Read the binding from the *resolved profile* rather than from the live
+    # service. The kernel hands back a proxy whose methods are wrapped, and an
+    # ASGI app must not travel out through one — see the note in
+    # `httpapi/app.py`. Configuration is plain data, so it crosses fine.
+    try:
+        row = resolved.row("httpapi")
+    except KeyError:
+        row = None
+    if row is None or row.disabled:
+        print(
+            "error: this profile enables no `httpapi` service, so there is nothing to "
+            "serve. Add the `web` bundle, e.g. "
+            "--patch src/forgepilot/bundles/web/patch.yaml",
+            file=sys.stderr,
+        )
+        return 2
+
+    # `web` is an optional extra on purpose — a headless deployment should not
+    # have to install a web stack — so its absence is a normal state to be told
+    # about clearly, not an ImportError traceback.
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        print(
+            'error: the HTTP surface needs the `web` extra: '
+            'pip install -e ".[web]"',
+            file=sys.stderr,
+        )
+        return 2
+
+    from forgepilot.httpapi.app import build_app
+
+    host = args.host or str(row.config.get("host", "127.0.0.1"))
+    port = args.port or int(row.config.get("port", 8000))
+    timeout = float(row.config.get("approval_timeout", 300.0))
+    workspace = (args.workspace or Path.cwd()).resolve()
+
+    async def run() -> int:
+        import uvicorn
+
+        root = create_root()
+        try:
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        # Built here, on a context held as a value: see `httpapi/app.py` for why
+        # this is not a method on the plugin.
+        app = build_app(root, workspace_root=workspace, approval_timeout=timeout)
+        print(f"serving on http://{host}:{port}/   workspace {workspace}", file=sys.stderr)
+        print("Ctrl-C to stop", file=sys.stderr)
+        await uvicorn.Server(
+            uvicorn.Config(app, host=host, port=port, log_level="info")
+        ).serve()
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except KeyboardInterrupt:
+        return 0
 
 
 def _chat(args: argparse.Namespace) -> int:
@@ -331,6 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _boot(args)
     if args.chat:
         return _chat(args)
+    if args.serve:
+        return _serve(args)
 
     parser.print_help()
     return 0
