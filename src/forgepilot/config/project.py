@@ -25,6 +25,7 @@ from typing import Any, Mapping
 import yaml
 
 from forgepilot.config.errors import ConfigError
+from forgepilot.config.patch import expand_env
 from forgepilot.identity.constraints import ProjectPolicy
 from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import Budget, NetworkAccess, Operation
@@ -200,6 +201,13 @@ def load_project(path: Path) -> ProjectConfig:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(raw, Mapping):
         raise ConfigError(f"{path} must contain a mapping")
+
+    # `${VAR}` / `${VAR:-default}`, the same rule the profile layer uses. It
+    # matters here for a different reason than it does there: a profile's plugin
+    # config is deployment-wide, while a `test:` command is a *machine's*
+    # business — the interpreter that has pytest, the path to a checkout. Those
+    # differ per developer, and `project.yaml` is a file teams check in.
+    raw = expand_env(raw, where=str(path))
 
     return project_from_mapping(raw, name=path.parent.name)
 

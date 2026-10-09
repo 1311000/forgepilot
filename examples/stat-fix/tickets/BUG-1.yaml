@@ -1,0 +1,21 @@
+# One ticket, as a file. The `tickets` row in `patch.yaml` points here.
+#
+# This is the same shape `MockTicketSourcePlugin` builds in memory, which is the
+# point: the ticket a demo runs is data a reader can open and check, not a
+# literal buried in a script.
+id: BUG-1
+title: moving_average 少返回一个窗口
+status: new
+priority: high
+
+description: |
+  复现步骤：
+  1. 调用 moving_average([1, 2, 3, 4], 2)
+
+  预期结果：3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+  实际结果：只有 2 个窗口
+
+  受影响仓库：git.local/demo/stats
+  相关文件：stats.py
+
+  看板上的移动平均线比预期短一格，末尾那个窗口丢掉了。序列越长越明显。

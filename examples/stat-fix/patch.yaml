@@ -1,0 +1,98 @@
+# The example deployment: a real repository, real tickets, real search, real
+# checks, a real model.
+#
+# Applied over the shipped profile with `--patch`. Paths come from `${...}`
+# because they describe *this machine*, while the shipped `configs/` stays a
+# portable template. `prepare_repo.py` prints the exports to set.
+#
+# Five rows are swapped away from their doubles, and the reason each one has to
+# change is worth reading — together they are the list of what the default
+# profile is honestly *not*:
+#
+#   tickets    -> files on disk, because the mock starts empty and `--task BUG-1`
+#                 would report "no such ticket"
+#   classifier -> the configured model, because the stub declines everything and a
+#                 declined classification sends every ticket to AWAITING_INFO,
+#                 which makes task mode unreachable
+#   workspace  -> a real git worktree per session, over a real repository
+#   retriever  -> ripgrep over the checkout, so `code_search` returns real hits
+#   vcs        -> a repository with no host behind it, which is what makes the
+#                 task end at READY with a draft rather than claiming a PR
+#
+# The sandbox is swapped to the one that actually executes. It is NOT the kernel
+# sandbox: this example runs wherever you are, and on Windows the namespace
+# provider correctly refuses to claim containment. Execution is therefore real and
+# *uncontained*, which is why the command line also passes
+# `--allow-uncontained-exec` — a deliberate, visible act rather than a default.
+
+- id: classifier
+  plugin: forgepilot.providers.classify.llm:LLMClassifierPlugin
+  config:
+    # A reasoning model spends budget thinking before it answers; a small
+    # `max_tokens` lets it return an empty `content` and look broken.
+    model: ${FORGEPILOT_LLM_MODEL:-deepseek-flash}
+    max_tokens: 2048
+  tier: trusted
+
+- id: tickets
+  plugin: forgepilot.providers.tickets.file:FileTicketSourcePlugin
+  config:
+    # Relative to the current directory, so run this from the repository root —
+    # the same place `--config-dir configs` already assumes.
+    root: examples/stat-fix/tickets
+  tier: trusted
+
+- id: workspace
+  plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+  config:
+    repos:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+    worktree_root: ${FORGEPILOT_EXAMPLE_WORKTREES}
+    branch_prefix: forgepilot
+  tier: trusted
+
+- id: retriever
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
+  config:
+    roots:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+  tier: trusted
+
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin
+  config:
+    max_output_bytes: 64000
+  tier: trusted
+
+- id: vcs
+  plugin: forgepilot.providers.vcs.local:LocalRepositoryVcsPlugin
+  config:
+    repos:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+  tier: trusted
+
+# A credential for the example. It inlines a *token* and a grant, never a secret
+# of any other kind; a real deployment reads these from an identity provider.
+#
+# Note `writable_paths: ["."]`, not `[""]` and not `["*"]`. The project's own rule
+# is also `"."` and the two are intersected — a grant that says nothing here means
+# the agent may read and never write, and the refusal will name an empty set.
+- id: principal
+  plugin: forgepilot.identity.principal:PrincipalServicePlugin
+  config:
+    tokens:
+      - token: demo-token
+        principal_id: demo
+        tenant_id: local
+        teams: []
+        operations:
+          - read_code
+          - write_code
+          - run_tests
+          - read_ticket
+          - open_pr
+        repo_prefixes:
+          - git.local/demo/*
+        writable_paths:
+          - "."
+  tier: trusted

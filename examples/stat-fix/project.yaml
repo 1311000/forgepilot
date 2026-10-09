@@ -1,0 +1,68 @@
+# What this project is, and what it permits. Read by `forgepilot --task`.
+#
+# `${VAR}` is expanded here exactly as it is in a profile's plugin config — see
+# `load_project`. It earns its place in this file for a reason it does not have in
+# a profile: a `test:` command is a *machine's* business. The interpreter that has
+# pytest differs per developer, and this file is one a team checks in.
+
+name: stat-fix
+
+# The repositories this project is. Ticket text is scanned against this list and
+# nothing else — extracting an arbitrary `owner/repo` would let a ticket name a
+# repository nobody authorised and the router would treat it as in scope.
+repos:
+  - git.local/demo/stats
+
+repo_prefixes:
+  - git.local/demo/*
+
+default_branch: main
+
+# What the harness runs to decide whether a change is any good. Each entry is its
+# own process, run in order, stopping at the first failure — **not** a shell line,
+# so `&&`, `|` and redirection do not work here and are not meant to.
+test:
+  - ${FORGEPILOT_PYTHON} -m pytest -q
+
+# What a task may do. Absent means "nothing", not "everything": a project that
+# forgot to say is not thereby an open project.
+allowed_operations:
+  - read_code
+  - write_code
+  - run_tests
+  - read_ticket
+
+# `"."` means the whole checkout. Note that this is the *caller's* writable set
+# after intersection — the sandbox's own root is the workspace, and this cannot
+# widen it.
+writable_paths:
+  - "."
+
+network: deny
+
+retry:
+  max_attempts: 2
+  on_failure: stop
+
+# Which tools a category runs with. The classifier picks a *name*; what that name
+# means is decided here — which is what bounds a model's influence over tool
+# selection to "choose one of the sets someone already approved". A category with
+# no entry falls back to `default`, never to everything.
+tool_sets:
+  # A question is answered by reading and searching; it needs no write access.
+  default:
+    - read_file
+    - code_search
+  bugfix:
+    - read_file
+    - code_search
+    - write_file
+    - run
+
+category_tool_sets:
+  bug: bugfix
+  question: default
+
+budget:
+  max_tool_calls: 60
+  max_tokens: 200000

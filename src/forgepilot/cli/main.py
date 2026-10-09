@@ -8,11 +8,12 @@ Commands available now::
     forgepilot --patch ./dev.yaml --dump-config
     forgepilot --boot                        resolve and load every enabled plugin
     forgepilot --chat                        interactive session against the model
+    forgepilot --task T-1                    run one ticket end to end
     forgepilot --serve                       serve the HTTP/SSE API the UI talks to
 
-``--dump-config`` never imports anything; ``--boot``, ``--chat`` and ``--serve``
-do. That split is deliberate — a profile stays inspectable even when a plugin is
-missing, broken, or not installed on this machine.
+``--dump-config`` never imports anything; ``--boot``, ``--chat``, ``--task`` and
+``--serve`` do. That split is deliberate — a profile stays inspectable even when a
+plugin is missing, broken, or not installed on this machine.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from forgepilot import __version__
 
@@ -60,26 +61,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="extra patch layer applied last; repeatable",
     )
 
+    # Shared by every command that acts as someone.
+    acting = parser.add_argument_group("acting as a caller")
+    acting.add_argument("--token", default=None, help="credential; or set FORGEPILOT_TOKEN")
+    acting.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        help="directory the agent may read and write; defaults to the current directory",
+    )
+    acting.add_argument(
+        "--allow-uncontained-exec",
+        action="store_true",
+        help=(
+            "permit shell tools on a host whose sandbox is weaker than `full`. "
+            "The default refuses them; see the warning this prints."
+        ),
+    )
+
     chat = parser.add_argument_group("chat")
     chat.add_argument(
         "--chat",
         action="store_true",
         help="boot the profile and start an interactive session",
     )
-    chat.add_argument("--token", default=None, help="credential; or set FORGEPILOT_TOKEN")
     chat.add_argument("--session", default=None, help="resume an existing session id")
-    chat.add_argument(
-        "--workspace",
+
+    task = parser.add_argument_group("task")
+    task.add_argument(
+        "--task",
+        default=None,
+        metavar="TICKET_ID",
+        help="run the build/test/repair workflow for one ticket, end to end",
+    )
+    task.add_argument(
+        "--project",
         type=Path,
         default=None,
-        help="directory the agent may read and write; defaults to the current directory",
-    )
-    chat.add_argument(
-        "--allow-uncontained-exec",
-        action="store_true",
         help=(
-            "permit shell tools on a host whose sandbox is weaker than `full`. "
-            "The default refuses them; see the warning this prints."
+            "the project.yaml describing repos, checks and writable paths; "
+            "defaults to the nearest one at or above the workspace"
         ),
     )
 
@@ -305,21 +326,7 @@ def _chat(args: argparse.Namespace) -> int:
         # boundary the sandbox enforces.
         workspace = (args.workspace or Path.cwd()).resolve()
 
-        minimum_enforcement = None
-        if args.allow_uncontained_exec:
-            from forgepilot.seams.sandbox import SandboxEnforcement
-
-            enforcement = root.sandbox.probe()
-            if enforcement is not SandboxEnforcement.FULL:
-                print(
-                    f"⚠  allowing shell tools on a host that reports sandbox "
-                    f"enforcement {enforcement.value!r}.\n"
-                    f"   Commands will run WITHOUT real containment. Fine for a local "
-                    f"fixture; do not do this where the agent can reach anything you "
-                    f"care about.\n",
-                    file=sys.stderr,
-                )
-            minimum_enforcement = SandboxEnforcement.NONE
+        minimum_enforcement = _minimum_enforcement(root, args)
 
         runtime = await assemble_session(
             root,
@@ -373,6 +380,254 @@ def _chat(args: argparse.Namespace) -> int:
         return 1
 
 
+def _use_utf8_output() -> None:
+    """Write stdout and stderr as UTF-8.
+
+    A ticket title is whatever the reporter typed, and ``--task`` prints it. When
+    stdout is a pipe — a redirect, a CI log, `| tail` — Python encodes it with the
+    machine's ANSI code page, so a Chinese title arrives as mojibake and a `⚠`
+    arrives as the literal characters ``\\u26a0``. Neither is a rendering choice
+    anyone made; both look like the program is broken.
+
+    ``errors="replace"`` rather than strict: output that cannot be encoded should
+    arrive with a placeholder, not abort a run that has already done the work.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # a stream someone replaced with a plain writer
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Already detached, or a closed stream. Not worth failing a command over.
+            pass
+
+
+def _minimum_enforcement(root: Any, args: argparse.Namespace) -> Any:
+    """What ``--allow-uncontained-exec`` means, in one place.
+
+    Both ``--chat`` and ``--task`` need it, and it has to mean the same thing in
+    both. The flag does exactly one thing: lower the bar `arm` checks before it
+    lets a command run. It does not change what the sandbox *reports* — a backend
+    that says ``none`` goes on saying ``none`` — so the warning below is the only
+    thing standing between an operator and the impression that they are contained.
+    """
+    if not args.allow_uncontained_exec:
+        return None
+
+    from forgepilot.seams.sandbox import SandboxEnforcement
+
+    enforcement = root.sandbox.probe()
+    if enforcement is not SandboxEnforcement.FULL:
+        print(
+            f"⚠  allowing shell tools on a host that reports sandbox "
+            f"enforcement {enforcement.value!r}.\n"
+            f"   Commands will run WITHOUT real containment. Fine for a local "
+            f"fixture; do not do this where the agent can reach anything you "
+            f"care about.\n",
+            file=sys.stderr,
+        )
+    return SandboxEnforcement.NONE
+
+
+def _print_plan(plan: Any, gateway: Any) -> None:
+    print(f"ticket    : {plan.ticket.id}  {plan.ticket.title}")
+    print(f"plan      : {plan.state.value}  ({plan.reason})")
+    if not plan.ready:
+        return
+    understanding = plan.understanding
+    if understanding is not None:
+        print(
+            f"category  : {understanding.category}  "
+            f"(confidence {understanding.confidence:.2f})"
+        )
+    assert plan.selection is not None  # noqa: S101 - invariant of `ready`
+    print(f"tools     : {plan.selection.tool_set} -> {list(plan.selection.tools)}")
+    print(f"repos     : {[r.slug for r in plan.repos]}")
+    print(f"classifier calls: {gateway.calls}")
+
+
+def _print_outcome(outcome: Any) -> None:
+    print()
+    print(f"state     : {outcome.state.value}   ({outcome.reason})")
+    if outcome.branch:
+        print(f"branch    : {outcome.branch}")
+    if outcome.changed_paths:
+        print(f"changed   : {list(outcome.changed_paths)}")
+    for index, check in enumerate(outcome.checks, start=1):
+        verdict = "did-not-run" if check.could_not_run else ("pass" if check.passed else "FAIL")
+        print(f"check {index}   : {verdict}  exit={check.exit_code}")
+        if check.output:
+            for line in check.output.splitlines()[-8:]:
+                print(f"             | {line}")
+    if outcome.pull_request is not None:
+        print(f"pull req  : {outcome.pull_request.url}")
+    if outcome.draft is not None:
+        print()
+        print("--- the draft that would be raised ---")
+        _print_capped(outcome.draft.body_md, 4000)
+
+
+def _print_capped(text: str, limit: int) -> None:
+    """Print, and say so when it is not everything.
+
+    A silent cut reads as "that is the whole body", which is the same mistake as
+    a search returning its first N hits without a marker.
+    """
+    if len(text) <= limit:
+        print(text)
+        return
+    print(text[:limit])
+    print(
+        f"... [{len(text) - limit} more characters not shown. The full body is the "
+        f"`task/state` event's `pullRequest` payload in the session log.]"
+    )
+
+
+def _task(args: argparse.Namespace) -> int:
+    """Run one ticket end to end: plan, branch, work, check, repair, deliver.
+
+    The same boot path as everything else, so what runs is what ``--dump-config``
+    prints. In particular the **ticket comes through the ``tickets`` seam**
+    rather than being built here: a CLI that fabricated its own ticket would keep
+    working after a deployment swapped the tracker out, and would be reporting on
+    a ticket nobody filed.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.config.project import find_project, load_project
+    from forgepilot.identity import ENV_KEY, derive
+    from forgepilot.kernel import create_root
+    from forgepilot.orchestration import ClassifierGateway
+    from forgepilot.orchestration.modes.task import plan_task, run_task
+    from forgepilot.orchestration.task_state import TaskState
+    from forgepilot.runtime.assembly import assemble_session, usage_tracker
+    from forgepilot.seams.refs import TicketId
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    token = args.token or os.environ.get("FORGEPILOT_TOKEN")
+    if not token:
+        print(
+            "error: no credential. Pass --token or set FORGEPILOT_TOKEN.",
+            file=sys.stderr,
+        )
+        return 2
+
+    workspace = (args.workspace or Path.cwd()).resolve()
+
+    # Task mode cannot run without a project: it is where the repositories, the
+    # checks and the writable set come from. Substituting the most restrictive
+    # default would strip every permission at once, which reads as "the agent
+    # refuses to do anything" rather than "the config was not found".
+    try:
+        project = load_project(args.project) if args.project else find_project(workspace)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if project is None:
+        print(
+            f"error: no project.yaml at or above {workspace}. Task mode needs one — "
+            f"it names the repositories, the checks and what may be written. Pass "
+            f"--project, or run from inside a project.",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def run() -> int:
+        root = create_root()
+        try:
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            record = root.principal.resolve(token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+
+        # The project contributes its own policy on top of the caller's grant.
+        # It can only ever narrow — see `derive`.
+        constraints = derive(record.principal, record.grant, project.to_policy(), key=None)
+
+        try:
+            ticket = await root.tickets.fetch(TicketId(args.task))
+        except KeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 4
+
+        runtime = await assemble_session(
+            root,
+            constraints,
+            workspace_root=workspace,
+            tenant=str(record.principal.tenant_id),
+            principal=str(record.principal.principal_id),
+            minimum_enforcement_for_exec=_minimum_enforcement(root, args),
+        )
+        try:
+            gateway = ClassifierGateway(root.classifier)
+            plan = await plan_task(
+                ticket=ticket,
+                project=project,
+                constraints=constraints,
+                registry=root.tools,
+                classifier=gateway,
+                workspace_root=workspace,
+            )
+            _print_plan(plan, gateway)
+            if not plan.ready:
+                print(
+                    "\nthis ticket was not executed. Nothing was run, and no branch "
+                    "was created.",
+                    file=sys.stderr,
+                )
+                return 5
+
+            outcome = await run_task(
+                plan=plan,
+                project=project,
+                session=runtime.session,
+                llm=root.llm,
+                tools=root.tools,
+                vcs=root.vcs,
+                workspace=root.workspace,
+                sandbox=root.sandbox,
+                constraints=constraints,
+                pipeline=runtime.pipeline,
+                tracker=usage_tracker(runtime),
+                model=getattr(root.llm, "model", "?"),
+            )
+            _print_outcome(outcome)
+        finally:
+            await runtime.close()
+
+        # `READY` is a success: the checks passed, the work is committed, and the
+        # only thing missing is a repo host. Exiting non-zero there would tell a
+        # script that nothing happened, when in fact everything but the publish did.
+        return 0 if outcome.state in (TaskState.DELIVERED, TaskState.READY) else 1
+
+    try:
+        return asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if ENV_KEY not in os.environ:
+            print(
+                f"hint: {ENV_KEY} is unset, so authority cannot be signed.",
+                file=sys.stderr,
+            )
+        return 1
+
+
 def _kernel_check() -> int:
     """Boot the kernel through the ``kernel/`` package and report what we found.
 
@@ -413,10 +668,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     # precedence over the file.
     from forgepilot.env import load_local_env
 
+    _use_utf8_output()
     load_local_env()
 
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # These are different commands, not flags that compose. Silently honouring the
+    # first and dropping the rest is how `--task T-1 --chat` opens a chat prompt
+    # and leaves someone wondering why the ticket never ran.
+    chosen = [
+        name
+        for name, on in (
+            ("--kernel-check", args.kernel_check),
+            ("--dump-config", args.dump_config),
+            ("--boot", args.boot),
+            ("--chat", args.chat),
+            ("--task", bool(args.task)),
+            ("--serve", args.serve),
+        )
+        if on
+    ]
+    if len(chosen) > 1:
+        parser.error(f"{' and '.join(chosen)} are separate commands; pass one.")
 
     if args.kernel_check:
         return _kernel_check()
@@ -426,6 +700,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _boot(args)
     if args.chat:
         return _chat(args)
+    if args.task:
+        return _task(args)
     if args.serve:
         return _serve(args)
 
