@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from forgepilot.providers.sandbox.local import LocalProcessSandboxPlugin
+from forgepilot.providers.sandbox.local import LocalProcessSandboxPlugin, PolicyNotEnforceable
 from forgepilot.seams.refs import SessionId
 from forgepilot.seams.sandbox import (
     SandboxEnforcement,
@@ -134,6 +134,53 @@ async def test_each_result_reports_the_enforcement_actually_applied(sandbox, tmp
     result = await run(sandbox, python("pass"), tmp_path)
 
     assert result.enforcement is SandboxEnforcement.NONE
+
+
+async def test_a_read_only_policy_is_refused_rather_than_ignored(sandbox, tmp_path) -> None:
+    """A backend that cannot restrict must not accept a policy that asks it to.
+
+    ``mode`` was accepted and never read, so a caller passing ``READ_ONLY`` got a
+    command that could write anywhere. Nothing did that yet, which is why it was
+    harmless — and why it would have stayed harmless right up until someone used
+    it for something that mattered.
+
+    ``WORKSPACE_WRITE`` is accepted because this backend's honest description is
+    "runs the command, restricts nothing": that is at least *not less* than the
+    caller asked for, and ``enforcement=NONE`` on every result says so. Read-only
+    asks for the opposite of what happens.
+    """
+    with pytest.raises(PolicyNotEnforceable, match="read-only"):
+        await sandbox.run(
+            python("pass"),
+            policy=SandboxExecutionPolicy(
+                mode=SandboxMode.READ_ONLY,
+                workspace_root=tmp_path,
+                session_id=SessionId("s-local"),
+            ),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+
+async def test_nothing_was_spawned_when_a_policy_is_refused(sandbox, tmp_path) -> None:
+    """Refusing after running would be worse than not refusing at all."""
+    marker = tmp_path / "should-not-exist.txt"
+
+    with pytest.raises(PolicyNotEnforceable):
+        await sandbox.run(
+            python(f"open({str(marker)!r}, 'w').write('ran')"),
+            policy=SandboxExecutionPolicy(
+                mode=SandboxMode.READ_ONLY,
+                workspace_root=tmp_path,
+                session_id=SessionId("s-local"),
+            ),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert not marker.exists()
 
 
 # ---------------------------------------------------------------------------

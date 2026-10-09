@@ -43,11 +43,13 @@ from forgepilot.kernel import PluginService
 from forgepilot.seams.sandbox import (
     SERVICE_NAME,
     ExecResult,
+    PolicyNotEnforceable,
     SandboxEnforcement,
     SandboxExecutionPolicy,
+    SandboxMode,
 )
 
-__all__ = ["LocalProcessSandboxPlugin"]
+__all__ = ["LocalProcessSandboxPlugin", "PolicyNotEnforceable"]
 
 #: Conventional shell status for "command not found". Reported rather than
 #: raised, so a typo in `project.yaml` reads as a failed check with a reason.
@@ -90,6 +92,22 @@ class LocalProcessSandboxPlugin(PluginService):
     ) -> ExecResult:
         argv = tuple(str(a) for a in argv)
         started = time.monotonic()
+
+        # Refused *before* anything is spawned. Refusing afterwards would be
+        # worse than not refusing: the effect would already have happened.
+        #
+        # `mode` used to be accepted and never read, so a caller asking for
+        # read-only got a command free to write anywhere. Nothing asked for it,
+        # which is why it was harmless — and why it would have stayed harmless
+        # right up until someone relied on it.
+        if policy.mode is SandboxMode.READ_ONLY:
+            raise PolicyNotEnforceable(
+                f"this backend provides no containment, so it cannot honour a "
+                f"{policy.mode.value!r} policy — a command run here may write anywhere. "
+                f"Refusing rather than running something other than what was asked "
+                f"for. Use a backend that reports `full`, or ask for "
+                f"{SandboxMode.WORKSPACE_WRITE.value!r} and accept NONE enforcement."
+            )
 
         def _spawn() -> subprocess.CompletedProcess:
             return subprocess.run(  # noqa: S603 - the whole point of the provider

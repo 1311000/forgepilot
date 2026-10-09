@@ -19,11 +19,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from forgepilot.errors import ForgePilotError
 from forgepilot.seams.refs import SessionId
 from forgepilot.seams.security import NetworkAccess
 
 __all__ = [
     "SERVICE_NAME",
+    "PolicyNotEnforceable",
     "SandboxMode",
     "SandboxEnforcement",
     "SandboxExecutionPolicy",
@@ -32,6 +34,18 @@ __all__ = [
 ]
 
 SERVICE_NAME = "sandbox"
+
+
+class PolicyNotEnforceable(ForgePilotError):
+    """A policy asked for a restriction this backend cannot apply.
+
+    A contract of the seam, not of one provider: **a backend must refuse a policy
+    it cannot enforce rather than accept it and ignore it.** Ignoring is the worse
+    failure — the caller has stated an expectation, the backend has silently not
+    met it, and nothing in the result says so unless the caller happens to read
+    ``enforcement``. Refusing is the same shape as the seam's other fail-closed
+    rules: an unenforceable boundary is not a boundary.
+    """
 
 
 class SandboxMode(StrEnum):
