@@ -111,21 +111,28 @@ def assemble_system_sections(
     #
     # Neither is a permission — the section above is the one about what may be
     # done, and it says outright that it is information rather than a boundary.
-    # This one is about *how*, and it is here because getting it wrong costs a
-    # whole step: the observed model asked for `ls -la && find . -name "*.py" |
-    # head -50`, which ran as `ls` with five odd arguments and answered
-    # `ls: unknown option -- e`.
+    # This one is about *how*, and each half is here because getting it wrong
+    # cost a whole step. The observed model asked for `find . -name "*.py"` on a
+    # Windows host (Windows `find.exe`, a different program entirely, answered
+    # "Parameter format not correct"), and separately spent a call discovering
+    # whether `&&` worked.
     #
     # The platform is named because it is not inferable from the workspace path,
     # and it decides which of two entirely different command sets exists on the
     # machine. Derived from the host, never from anything a ticket said.
+    #
+    # The shell sentence is the model-facing half of a change made elsewhere:
+    # `run` now launches a shell (see `runtime/commandline.shell_argv`), so the
+    # *previous* text here — "executed as an argv list, not through a shell" —
+    # would have been a lie the moment that landed.
     sections.append(
         PromptSection(
             "environment",
             f"Host platform: {platform.system()} ({sys.platform}).\n"
-            "Commands are executed as an argv list, not through a shell: `&&`, `|`, "
-            "`>` and `;` are passed to the program as ordinary arguments and are not "
-            "interpreted. Run one command per call.",
+            "Commands run through a shell, so `&&`, `|`, `>` and `;` work as usual. "
+            "The shell is this platform's own: `/bin/sh` on Linux and macOS, "
+            "`cmd.exe` on Windows. The workspace has no display, and commands are "
+            "run in the workspace root.",
         )
     )
 

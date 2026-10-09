@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel.errors import CapabilityNotGranted
-from forgepilot.runtime.commandline import shell_hint, split_command
+from forgepilot.runtime.commandline import shell_argv
 from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
@@ -385,17 +385,21 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
 
         args = json.loads(call.arguments_json or "{}")
         command = str(args.get("command", ""))
-        # **`posix=True` here was a defect, and it was the same one already fixed
-        # in `run_checks`.** It treats a backslash as an escape, so on Windows
-        # `C:\…\python.exe` arrived as `C:…python.exe`, nothing was spawned, and
-        # the model was told the *sandbox* had refused. `split_command` is the
-        # one place that knows how this platform defines a command line; two
-        # callers splitting differently is how the same line comes to mean two
-        # things. Measured, not theorised: a real run lost the ability to execute
-        # anything because of it.
-        argv = split_command(command)
-        if not argv:
+        if not command.strip():
             return ToolOutcome(content="empty command", is_error=True)
+
+        # **Through a shell, unlike the project's own checks.** A model writes a
+        # shell line; `pytest -q 2>&1 | tail -30` is one that was actually sent,
+        # and executing it as an argv list hands `2>&1` and `tail` to pytest as
+        # file arguments. This is expressiveness, not authority — the model could
+        # have asked for any argv either way, and the boundary is the sandbox.
+        #
+        # The `posix=True` split that used to be here was a separate defect, and
+        # the same one `run_checks` had already been fixed for: it ate the
+        # backslashes out of `C:\…\python.exe`, nothing was spawned, and the
+        # model was told the *sandbox* had refused. Hence `shell_argv` — the one
+        # place that knows how this platform starts a shell.
+        argv = shell_argv(command)
 
         result = await sandbox.run(
             argv,
@@ -425,7 +429,6 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
                     "the command was NOT executed, so there is no output, and anything "
                     "inferred from this call would be invented.\n"
                     + not_executed_reason(result)
-                    + shell_hint(command)
                 ),
                 is_error=True,
                 meta={
@@ -438,11 +441,6 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
 
         body = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
         body = body.strip()
-        # Said whether or not the command ran: `ls -la && find .` *did* execute,
-        # as `ls` with five odd arguments, and answered `ls: unknown option -- e`
-        # — a message that points at `ls` and says nothing about the `&&` that
-        # caused it.
-        body += shell_hint(command)
 
         # Say out loud when the *boundary* is a plausible cause. Codex #41320 is
         # the failure this prevents: with the sandbox's role dropped, the model

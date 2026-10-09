@@ -1,11 +1,18 @@
-"""Turning a command line into an ``argv``.
+"""Turning a command line into an ``argv``, and deciding whether it gets a shell.
 
-Two callers need this and they must agree: the repair loop's ``project.yaml``
-checks, and the ``run`` tool's ``command`` argument. If they split differently,
-the same command line means one thing to the harness and another to the model —
-and the failure looks like whichever one is being blamed.
+Two callers, and they want **opposite** things from the same answer:
 
-It lives here rather than in either of them because it belongs to neither. It is
+- ``run_checks`` runs the ``project.yaml`` commands. These are lines a human
+  wrote, and they are executed as an argv list with **no shell** — so a ``&&`` in
+  one is a mistake rather than a feature, and the config says so.
+- The ``run`` tool runs a *model's* line. Models write shell lines —
+  ``pytest -q 2>&1 | tail -30`` is what one of them wrote — and handing that to
+  ``exec`` without a shell passes ``2>&1`` to pytest as an argument.
+
+Both used to split their own way, and the two disagreed. See ``split_command``
+and ``shell_argv``.
+
+It lives here rather than in either caller because it belongs to neither. It is
 a fact about the platform.
 """
 
@@ -14,7 +21,7 @@ from __future__ import annotations
 import os
 import shlex
 
-__all__ = ["SHELL_OPERATORS", "looks_like_shell", "shell_hint", "split_command"]
+__all__ = ["shell_argv", "split_command"]
 
 
 def split_command(command: str) -> list[str]:
@@ -41,51 +48,30 @@ def split_command(command: str) -> list[str]:
     return shlex.split(command, posix=True)
 
 
-#: Characters that mean "let a shell interpret this line". Nothing in this
-#: codebase ever gives a command line a shell — see the sandbox notes — so an
-#: operator here is not a syntax error, it is a *literal argument*, and the
-#: command that results is almost never the one that was meant.
-SHELL_OPERATORS: tuple[tuple[str, str], ...] = (
-    ("&&", "run these in sequence"),
-    ("||", "run the second if the first fails"),
-    ("|", "pipe the output into the next command"),
-    (">>", "append the output to a file"),
-    (">", "redirect the output to a file"),
-    ("<", "feed a file in as input"),
-    (";", "separate two commands"),
-    ("`", "substitute a command's output"),
-    ("$(", "substitute a command's output"),
-)
+def shell_argv(command: str) -> tuple[str, ...]:
+    """The argv that runs ``command`` through *this platform's* shell.
 
+    The `run` tool uses this; `run_checks` does not, and the asymmetry is the
+    point. A ``project.yaml`` check is a line a human wrote and can read, and
+    keeping it argv-only keeps it literal — which is what made ``&&`` in it a
+    mistake rather than a feature. A model's ``command`` is a *shell line* by
+    intent: it writes ``pytest -q 2>&1 | tail -30``, and a tool that hands that
+    to ``exec`` without a shell passes ``2>&1`` to pytest as an argument. A real
+    run did exactly that twice.
 
-def looks_like_shell(command: str) -> tuple[str, str] | None:
-    """The first shell operator in ``command``, and what it was probably for.
+    **This adds expressiveness, not authority.** A model can already ask for any
+    argv it likes; ``|`` buys it a pipeline it could have written by hand. The
+    boundary that matters is the sandbox around the process, and that is
+    unchanged — which is also why nothing is relaxed here.
 
-    Reported rather than rejected. There is no shell to reject it *for*, and the
-    model has already been given the tool — what it lacks is the information that
-    the operator will arrive as an ordinary argument, which is why a request for
-    ``ls -la && find .`` came back as ``ls: unknown option -- e``.
+    On Windows this is the platform's own ``cmd.exe`` (named by ``COMSPEC``)
+    rather than Git's ``sh``. Git's shell is present on a developer box and not
+    on a bare host, and — more importantly — it is MSYS, so it rewrites arguments
+    that look like POSIX paths, which is the same behaviour that made ``wsl.exe``
+    unusable as a transport. Production is Linux, where `/bin/sh` is the answer
+    and neither caveat applies.
     """
-    for operator, meaning in SHELL_OPERATORS:
-        if operator in command:
-            return operator, meaning
-    return None
+    if os.name == "nt":
+        return (os.environ.get("COMSPEC", "cmd.exe"), "/c", command)
+    return ("/bin/sh", "-c", command)
 
-
-def shell_hint(command: str) -> str:
-    """A sentence to append when the command used shell syntax, or ``''``.
-
-    Appended to the result whether or not the command ran, because both happen:
-    ``ls -la && find .`` *did* execute — as ``ls`` with five odd arguments — and
-    answered with ``ls: unknown option -- e``, which says nothing about the `&&`
-    that caused it.
-    """
-    found = looks_like_shell(command)
-    if found is None:
-        return ""
-    operator, meaning = found
-    return (
-        f"\n\n[this command ran as an argv list, not through a shell: {operator!r} was "
-        f"passed to the program as an ordinary argument instead of '{meaning}'. Nothing "
-        f"here interprets shell syntax. Run the commands as separate calls.]"
-    )

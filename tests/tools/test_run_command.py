@@ -1,20 +1,20 @@
-"""How the ``run`` tool turns a command into an ``argv``, and what it says when
-nothing happened.
+"""How the ``run`` tool launches a command, and what it says when nothing ran.
 
-Every test here comes from one real run, and each one is a thing that went wrong
-in it. The model asked to run a Windows-path interpreter, the tool shredded the
-path into ``C:UsersAdministrator...``, nothing was spawned, and the tool
-explained the failure as *the sandbox records calls without running them*. The
-model believed it, wrote "the sandbox doesn't actually execute", and stopped
-trying to run anything — including the tests that would have told it whether its
-fix worked.
+Every test here comes from one real run, and each is a thing that went wrong in
+it. Two are about the launch and two are about the explanation:
 
-So there are two defects under test, and the second is the more dangerous:
+- the tool used its own ``shlex.split(posix=True)`` while ``run_checks`` used the
+  platform-correct ``split_command``. On Windows the tool shredded
+  ``C:\\…\\python.exe`` into ``C:…python.exe``, nothing was spawned, and the
+  check that would have caught the model's fix never ran;
+- the failure was then *attributed* to the sandbox — "records calls without
+  running them" — which was false, and which is what turned a fixable command
+  into a dead end. The model wrote "the sandbox doesn't actually execute" and
+  stopped running anything.
 
-- the argv was mangled by a splitter that disagrees with the one ``run_checks``
-  already used correctly;
-- the failure was *attributed* to the wrong party, which is what turned a
-  fixable command into a dead end.
+The split is now shared with ``run_checks``; the launch is deliberately **not**
+shared, because a model writes a shell line and a ``project.yaml`` check is a
+line a human can read. Both differences are asserted below.
 """
 
 from __future__ import annotations
@@ -32,9 +32,8 @@ WINDOWS_PATH = r"C:\tools\py\python.exe -m pytest -q"
 
 
 def constraints_for(workspace):
-    """The same authority `test_pipeline` builds. Duplicated rather than imported
-    because a conftest is not a module you can reach from here, and every test in
-    this suite already spells it out."""
+    """The same authority `test_pipeline` builds. Spelled out rather than
+    imported because a conftest is not a module you can reach from here."""
     from forgepilot.seams.refs import PrincipalId, TenantId
     from forgepilot.seams.security import ExecutionConstraints, Operation, Principal
 
@@ -67,38 +66,101 @@ async def invoke(rig, command: str):
 
 
 # ---------------------------------------------------------------------------
-# The argv
+# The splitter, which the two callers must share
 # ---------------------------------------------------------------------------
 def test_the_platform_decides_how_a_command_line_splits() -> None:
-    """Both callers must split identically, or the same line means two things.
+    """``posix=True`` treats ``\\`` as an escape.
 
-    ``run_checks`` was fixed for this first; the tool was not, which is how a
-    single repository came to contain both the correct rule and a caller that
-    ignored it.
+    Which is how `C:\\…\\python.exe` became `C:…python.exe`, a path that cannot
+    exist, reported to the model as a sandbox refusal.
     """
     from forgepilot.runtime.commandline import split_command
 
     parts = split_command(WINDOWS_PATH)
 
     if os.name == "nt":
-        # The bug: `posix=True` treats `\` as an escape, so this arrived as
-        # `C:toolspypython.exe` — a path that cannot exist, reported to the model
-        # as a sandbox refusal.
         assert parts[0] == r"C:\tools\py\python.exe"
-    else:
-        assert parts[0] == "C:toolspypython.exe" or parts[0] == WINDOWS_PATH.split()[0]
     assert parts[1:] == ["-m", "pytest", "-q"]
 
 
-async def test_the_tool_hands_the_sandbox_the_argv_this_platform_would_build(rig) -> None:
+async def test_run_checks_and_the_run_tool_split_the_same_way() -> None:
+    """The actual defect was not the rule, it was that there were two of it.
+
+    ``run_checks`` had the correct splitter and the tool had its own. Asserting
+    that the two agree is what stops the next correction from being made at one
+    call site again.
+    """
+    from forgepilot.runtime.commandline import split_command
+    from forgepilot.runtime.repair import split_command as checks_splitter
+
+    assert checks_splitter is split_command
+
+
+# ---------------------------------------------------------------------------
+# The launch: a shell for the model, and only for the model
+# ---------------------------------------------------------------------------
+async def test_the_tool_hands_the_sandbox_a_shell_invocation(rig) -> None:
     """Asserted against the *recording* sandbox's record, so it is the argv that
     actually crossed the boundary rather than one recomputed in the test."""
-    from forgepilot.runtime.commandline import split_command
+    from forgepilot.runtime.commandline import shell_argv
 
-    await invoke(rig, WINDOWS_PATH)
+    await invoke(rig, "pytest -q 2>&1 | tail -30")
 
     assert rig.sandbox.calls, "the command never reached the sandbox"
-    assert rig.sandbox.calls[-1].argv == tuple(split_command(WINDOWS_PATH))
+    assert rig.sandbox.calls[-1].argv == shell_argv("pytest -q 2>&1 | tail -30")
+
+
+async def test_a_model_command_really_goes_through_a_shell(tmp_path) -> None:
+    """The behaviour, not the argv shape.
+
+    ``a && b`` is what a model writes and what an argv-only launch cannot do: it
+    ran as ``echo`` with two odd arguments. This runs it for real, through the
+    provider that actually spawns processes.
+    """
+    from forgepilot.providers.sandbox.local import LocalProcessSandboxPlugin
+    from forgepilot.runtime.commandline import shell_argv
+    from forgepilot.runtime.sandbox_env import command_env
+    from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
+
+    plugin = LocalProcessSandboxPlugin.__new__(LocalProcessSandboxPlugin)
+    plugin.max_output_bytes = 64_000
+
+    result = await plugin.run(
+        shell_argv("echo first && echo second"),
+        policy=SandboxExecutionPolicy(
+            mode=SandboxMode.WORKSPACE_WRITE,
+            workspace_root=tmp_path,
+            session_id=SessionId("shell-probe"),
+        ),
+        cwd=tmp_path,
+        env=command_env(),
+        timeout_s=30,
+    )
+
+    assert result.executed
+    assert result.exit_code == 0
+    assert "first" in result.stdout and "second" in result.stdout, (
+        "only one command ran, so this is still an argv list rather than a shell line"
+    )
+
+
+def test_the_checks_do_not_get_a_shell() -> None:
+    """The asymmetry, stated where it could be broken by accident.
+
+    A ``project.yaml`` check is a line a human wrote and can read. Giving it a
+    shell would make `&&` in it a *feature*, and the pipeline has been careful
+    never to hand a configured command line a shell — that is what makes such a
+    `&&` a mistake somebody can see.
+    """
+    import inspect
+
+    from forgepilot.runtime import repair
+
+    source = inspect.getsource(repair)
+    assert "shell_argv" not in source, (
+        "run_checks gained a shell; that changes what a project.yaml `test:` line "
+        "means, and it is a decision rather than a refactor"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -157,35 +219,11 @@ async def test_an_unexecuted_command_names_which_of_the_two_it_was(rig) -> None:
     assert "could not be found" in outcome.content
 
 
-# ---------------------------------------------------------------------------
-# Shell syntax, which nothing here interprets
-# ---------------------------------------------------------------------------
-async def test_shell_syntax_is_called_out_as_a_literal_argument(rig) -> None:
-    """`ls -la && find .` runs as `ls` with five odd arguments.
-
-    It really did happen, and the answer was `ls: unknown option -- e` — an
-    error that names `ls` and says nothing about the `&&` that caused it. There
-    is no shell here to reject the syntax, so the honest thing is to report what
-    the operator became.
-    """
-    outcome = await invoke(rig, 'ls -la && echo "x" | head -3')
-
-    assert "not through a shell" in outcome.content
-    assert "'&&'" in outcome.content
-
-
-@pytest.mark.parametrize("command", ["pytest -q", "git status", "python -m pytest"])
-async def test_a_plain_command_gets_no_shell_lecture(rig, command: str) -> None:
-    """A hint that appears on every result is a hint nobody reads."""
+@pytest.mark.parametrize("command", ["", "   "])
+async def test_an_empty_command_is_refused_before_a_shell_is_started(rig, command: str) -> None:
+    """`sh -c ""` exits 0 and prints nothing, which reads as success."""
     outcome = await invoke(rig, command)
 
-    assert "not through a shell" not in outcome.content
-
-
-def test_a_redirect_operator_is_recognised() -> None:
-    """`>` is read redirection far more often than it is a stray character."""
-    from forgepilot.runtime.commandline import looks_like_shell, shell_hint
-
-    assert looks_like_shell("pytest -q > out.txt") == (">", "redirect the output to a file")
-    assert looks_like_shell("pytest -q") is None
-    assert shell_hint("pytest -q") == ""
+    assert outcome.is_error
+    assert "empty command" in outcome.content
+    assert rig.sandbox.calls == [], "nothing should have been spawned at all"

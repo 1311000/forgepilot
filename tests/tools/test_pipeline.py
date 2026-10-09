@@ -231,7 +231,12 @@ async def test_approval_allowed_once_lets_the_call_proceed(rig) -> None:
 
     assert Phase.APPROVAL in rig.pipeline.trace
     assert "execute" in rig.pipeline.trace
-    assert rig.sandbox.calls and rig.sandbox.calls[0].argv == ("echo", "hi")
+    # The model's line reaches the sandbox **as a shell line** — `run` wraps it so
+    # a model can write `a && b`, which is what one actually wrote. That the
+    # wrapping is the platform's own shell is `test_run_command`'s business; here
+    # the assertion is that the text arrived unaltered inside it.
+    assert rig.sandbox.calls
+    assert rig.sandbox.calls[0].argv[-1] == "echo hi"
 
     # And the outcome says plainly that nothing ran, rather than reporting a
     # successful `(exit 0)` for a command that never happened.
