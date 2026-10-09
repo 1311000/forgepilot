@@ -1,0 +1,35 @@
+# Kernel-sandbox bundle — the deployment-shaped counterpart to `local_exec`.
+#
+# This is the provider a real deployment wants. It runs commands inside Linux
+# namespaces and read-only bind mounts, and `probe()` reports `full` **only after
+# actually creating one** — so `arm` hands out `exec` without the operator having
+# to lower anything. No `--allow-uncontained-exec`, no warning.
+#
+# Why it is not the default, and cannot be: the recording sandbox it replaces
+# never executes, and that is the reason a profile can be *loaded* anywhere. This
+# one needs a Linux kernel, so a default profile carrying it would fail to boot on
+# a developer's Windows machine. Production is Linux; so is this row.
+#
+#   forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml \
+#     --chat
+#
+# What it enforces, per call:
+#
+#   `/` read-only · workspace writable · `.git` read-only again (a hook written
+#   there would run later, outside the sandbox) · a fresh tmpfs on `/tmp` ·
+#   private pid/ipc/uts namespaces · the network namespace cut unless the policy
+#   allows it.
+#
+# `probe()` asks the machine by *running* a trivial sandbox, not by checking for
+# `unshare`: Ubuntu 24.04's default AppArmor policy blocks unprivileged user
+# namespaces, so a presence check reports `full` on a host that cannot isolate
+# anything — and `arm` trusts that number.
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.namespace:NamespaceSandboxPlugin
+  config:
+    # How the boundary is entered, as a command line. `unshare` ships with
+    # util-linux; `["bwrap", ...]` works too once bubblewrap is installed.
+    enter: [unshare]
+    max_output_bytes: 64000
+  tier: trusted

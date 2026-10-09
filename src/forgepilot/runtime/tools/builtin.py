@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel.errors import CapabilityNotGranted
+from forgepilot.runtime.sandbox_denial import likely_denial
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
@@ -419,13 +420,32 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             )
 
         body = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+        body = body.strip()
+
+        # Say out loud when the *boundary* is a plausible cause. Codex #41320 is
+        # the failure this prevents: with the sandbox's role dropped, the model
+        # sees a bare exit code and goes looking for another execution
+        # environment instead of taking the escalation path it was given.
+        #
+        # "possibly", because the classifier is a heuristic — and a confident
+        # wrong answer here sends the model down the escalation path for what is
+        # really a bug in the code under test.
+        denial = likely_denial(result)
+        if denial:
+            body = (
+                f"{body}\n\n[possibly the sandbox: {denial}. This is not proof — the "
+                f"output above is the command's own. If the command needs access the "
+                f"boundary does not grant, say so rather than trying a different route.]"
+            ).strip()
+
         return ToolOutcome(
-            content=body.strip() or f"(exit {result.exit_code})",
+            content=body or f"(exit {result.exit_code})",
             is_error=result.exit_code != 0,
             meta={
                 "exit_code": result.exit_code,
                 "enforcement": str(result.enforcement),
                 "timed_out": result.timed_out,
+                "sandboxSuspected": bool(denial),
             },
         )
 
