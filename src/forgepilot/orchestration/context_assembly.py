@@ -26,6 +26,8 @@ sandbox. A prompt is never a permission policy — see ``CLAUDE.md``.
 
 from __future__ import annotations
 
+import platform
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -104,6 +106,28 @@ def assemble_system_sections(
                 f"The workspace root is {workspace_root}. Tool paths are relative to it.",
             )
         )
+
+    # Two facts a model gets wrong by default, both from watching real runs.
+    #
+    # Neither is a permission — the section above is the one about what may be
+    # done, and it says outright that it is information rather than a boundary.
+    # This one is about *how*, and it is here because getting it wrong costs a
+    # whole step: the observed model asked for `ls -la && find . -name "*.py" |
+    # head -50`, which ran as `ls` with five odd arguments and answered
+    # `ls: unknown option -- e`.
+    #
+    # The platform is named because it is not inferable from the workspace path,
+    # and it decides which of two entirely different command sets exists on the
+    # machine. Derived from the host, never from anything a ticket said.
+    sections.append(
+        PromptSection(
+            "environment",
+            f"Host platform: {platform.system()} ({sys.platform}).\n"
+            "Commands are executed as an argv list, not through a shell: `&&`, `|`, "
+            "`>` and `;` are passed to the program as ordinary arguments and are not "
+            "interpreted. Run one command per call.",
+        )
+    )
 
     return tuple(sections)
 
