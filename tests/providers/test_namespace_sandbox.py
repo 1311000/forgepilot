@@ -279,16 +279,21 @@ def wsl_enter() -> list[str]:
 @pytest.mark.skipif(
     not ON_LINUX,
     reason=(
-        "this host has no Linux syscalls, and WSL2 cannot stand in as one for "
-        "this invocation. Attempted and abandoned: wsl.exe rewrites POSIX-looking "
-        "arguments into Windows paths (proved by `wsl -- cat /tmp/x` opening "
-        "C:/Users/.../x), drops positional parameters after the first operand "
-        "(`sh -c 'echo $#' sh a b` reports 0), falls back to /bin/bash which the "
-        "docker-desktop distro does not have, and that distro has no python3 to "
-        "drive the provider from inside. Every failure was in the transport, not "
-        "in the provider. The containment itself was verified by hand on the WSL "
-        "kernel (a write into a read-only bind is refused; `--net` yields zero "
-        "routes) — production is Linux, and this is the test that runs there."
+        "this host has no Linux syscalls, and wsl.exe cannot carry this argv. "
+        "Measured, in order of discovery: it rewrites POSIX-looking arguments into "
+        "Windows paths (`/bin/sh` arrived at the kernel as "
+        "`D:/software/Git/usr/bin/sh`, so `unshare` could not exec it), and it "
+        "drops every positional parameter after the first operand following `-c` "
+        "(`sh -c 'echo n=$#; echo $@' sh printf hi` reports n=0). The argv this "
+        "provider builds ends in `sh -c <script> sh <command...>`, so the command "
+        "cannot arrive. "
+        "What *was* verified by hand on the WSL kernel, with `sh` substituted for "
+        "`/bin/sh` to get past the rewrite and the mount script taken verbatim from "
+        "`_mount_script`: `unshare --mount --pid --ipc --uts --fork --mount-proc "
+        "--net sh -c '<script>' sh` -> a write into the read-only root is refused "
+        "(`Read-only file system`), and `--net` yields `0 /proc/net/route`. The "
+        "containment is real; only its automation is blocked. Production is Linux, "
+        "and this is the test that runs there."
     ),
 )
 async def test_a_write_outside_the_workspace_is_refused() -> None:
