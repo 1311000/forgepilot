@@ -51,7 +51,7 @@ from forgepilot.seams import (
 from forgepilot.providers.llm.replay import text_turn, tool_call_turn
 from forgepilot.providers.memory.memory import UnprovenMemoryWrite
 from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
-from forgepilot.seams.vcs import CommitAuthor, PullRequestDraft
+from forgepilot.seams.vcs import PullRequestDraft
 
 ACME = RepoRef(host="git.corp", namespace="team", name="svc-a")
 OTHER = RepoRef(host="git.corp", namespace="other", name="secret")
@@ -237,12 +237,14 @@ async def test_vcs_refuses_pull_request_without_the_operation(container) -> None
 
 
 async def test_vcs_opens_pull_request_with_the_operation(container) -> None:
+    """No branch or commit setup: a pull request is opened from a *draft*.
+
+    The setup used to create a branch and a commit first, because ``vcs`` owned
+    both. It does not any more — a branch and a commit belong to the working tree
+    they are made in — and a host is asked to open a PR from a source branch name,
+    not from a local commit it has never seen.
+    """
     vcs = container.vcs
-    await vcs.create_branch(ACME, "fix/T-1", "main", constraints_for(ACME))
-    await vcs.commit(
-        ACME, "fix/T-1", "fix: retry loop",
-        CommitAuthor(name="nil", email="nil@example.com"), constraints_for(ACME),
-    )
 
     ref = await vcs.open_pull_request(
         PullRequestDraft(
@@ -255,7 +257,23 @@ async def test_vcs_opens_pull_request_with_the_operation(container) -> None:
     assert ref.number == 1
     assert len(vcs.pull_requests) == 1
     assert vcs.pull_requests[0].ticket_id == "T-1", "a PR must stay traceable to its ticket"
-    assert len(vcs.commits) == 1
+
+
+async def test_vcs_refuses_to_open_a_pull_request_without_the_operation(container) -> None:
+    """The boundary that made the move worth doing: publishing is privileged."""
+    vcs = container.vcs
+    no_open_pr = constraints_for(ACME, operations=(Operation.READ_CODE,))
+
+    with pytest.raises(PermissionError, match="open_pr"):
+        await vcs.open_pull_request(
+            PullRequestDraft(
+                repo=ACME, source_branch="fix/T-1", target_branch="main",
+                title="fix", body_md="body",
+            ),
+            no_open_pr,
+        )
+
+    assert vcs.pull_requests == ()
 
 
 # ---------------------------------------------------------------------------

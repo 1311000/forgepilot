@@ -27,6 +27,25 @@ REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
 SLUG = REPO.slug
 
 
+def writer():
+    """Constraints that may write code in the one repository these tests use."""
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import (
+        ExecutionConstraints,
+        NetworkAccess,
+        Operation,
+        Principal,
+    )
+
+    return ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+        allowed_repos=frozenset({REPO}),
+        permitted_operations=frozenset({Operation.READ_CODE, Operation.WRITE_CODE}),
+        writable_paths=("src",),
+        network=NetworkAccess.DENY,
+    )
+
+
 def git(*args: str, cwd: Path | None = None) -> str:
     """Run git for real, with an identity, so a commit cannot fail on config."""
     completed = subprocess.run(
@@ -223,3 +242,93 @@ async def test_two_sessions_do_not_see_each_others_edits(workspace) -> None:
     (first.root / "src" / "app.py").write_text("def main():\n    return 7\n", encoding="utf-8")
 
     assert await workspace.changed_paths(second) == ()
+
+
+# ---------------------------------------------------------------------------
+# commit — the operation that makes the workspace a deliverable
+# ---------------------------------------------------------------------------
+async def test_commit_records_the_working_tree_as_a_real_commit(workspace, origin) -> None:
+    """A real sha, in a real repository, containing the model's change.
+
+    This is the operation that turns a directory of edits into something a
+    colleague can review. It used to live on ``vcs``, whose signature
+    ``commit(repo, branch, message, author, constraints)`` **takes no path** —
+    so it named the repository but not the tree to commit. The mock hid that,
+    because it fabricated shas and never touched a tree at all.
+    """
+    from forgepilot.seams.refs import CommitAuthor
+
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    (handle.root / "src" / "app.py").write_text("def main():\n    return 42\n", encoding="utf-8")
+
+    ref = await workspace.commit(
+        handle,
+        "fix: bounded retry",
+        CommitAuthor(name="nil", email="nil@example.test"),
+        writer(),
+    )
+
+    assert ref.sha and len(ref.sha) == 40, "a real commit has a real sha"
+    assert ref.repo == REPO
+    assert git("log", "-1", "--format=%s", cwd=handle.root).strip() == "fix: bounded retry"
+    assert git("show", "--stat", "HEAD", cwd=handle.root).count("src/app.py") >= 1
+    # The commit is on the session's own branch, not on the base branch.
+    assert git("log", "-1", "--format=%an", cwd=handle.root).strip() == "nil"
+
+
+async def test_commit_refuses_when_the_caller_may_not_write_code(workspace) -> None:
+    """The check that used to live on ``vcs.commit`` must not be lost in the move."""
+    from forgepilot.seams.security import (
+        ExecutionConstraints,
+        NetworkAccess,
+        Operation,
+        Principal,
+    )
+    from forgepilot.seams.refs import PrincipalId, TenantId
+
+    read_only = ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+        allowed_repos=frozenset({REPO}),
+        permitted_operations=frozenset({Operation.READ_CODE}),
+        writable_paths=("src",),
+        network=NetworkAccess.DENY,
+    )
+    from forgepilot.seams.refs import CommitAuthor
+
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    (handle.root / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+
+    with pytest.raises(PermissionError, match="write_code"):
+        await workspace.commit(
+            handle, "sneaky", CommitAuthor(name="x", email="x@y.z"), read_only
+        )
+
+    assert git("log", "--format=%s", cwd=handle.root).strip() == "initial", (
+        "a commit was written despite the refusal"
+    )
+
+
+async def test_commit_refuses_a_repository_the_caller_cannot_reach(workspace) -> None:
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import (
+        ExecutionConstraints,
+        NetworkAccess,
+        Operation,
+        Principal,
+    )
+    from forgepilot.seams.vcs import CommitAuthor
+
+    elsewhere = ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+        allowed_repos=frozenset(),
+        permitted_operations=frozenset(Operation),
+        writable_paths=("src",),
+        network=NetworkAccess.DENY,
+    )
+
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+
+    with pytest.raises(PermissionError, match="not permitted"):
+        await workspace.commit(
+            handle, "x", CommitAuthor(name="x", email="x@y.z"), elsewhere
+        )

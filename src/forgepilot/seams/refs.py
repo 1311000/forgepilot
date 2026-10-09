@@ -78,6 +78,20 @@ class RepoRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CommitAuthor:
+    """Who a commit is attributed to.
+
+    Lives here rather than with the ``vcs`` seam because both ``vcs`` and
+    ``workspace`` produce commits, and a working tree that has to import the
+    remote-host seam in order to name an author has the dependency the wrong way
+    round.
+    """
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True)
 class CommitRef:
     repo: RepoRef
     sha: str

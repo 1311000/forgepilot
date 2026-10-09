@@ -25,8 +25,14 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel import PluginService
-from forgepilot.seams.refs import RepoRef, SessionId
-from forgepilot.seams.workspace import SERVICE_NAME, UnifiedDiff, WorkspaceHandle
+from forgepilot.seams.refs import CommitAuthor, CommitRef, RepoRef, SessionId
+from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.workspace import (
+    SERVICE_NAME,
+    NotARepository,
+    UnifiedDiff,
+    WorkspaceHandle,
+)
 
 __all__ = ["LocalTempWorkspacePlugin"]
 
@@ -98,6 +104,28 @@ class LocalTempWorkspacePlugin(PluginService):
         names = set(current) | set(baseline)
         return tuple(
             sorted(name for name in names if current.get(name) != baseline.get(name))
+        )
+
+    async def commit(
+        self,
+        handle: WorkspaceHandle,
+        message: str,
+        author: CommitAuthor,
+        constraints: ExecutionConstraints,
+    ) -> CommitRef:
+        """Refused: this workspace is a directory, not a repository.
+
+        Handing back an invented sha would be the worst available answer — it
+        looks like delivery, it lands in the session log as evidence, and nothing
+        downstream can tell that no commit exists. Use
+        :class:`~forgepilot.providers.workspace.git_worktree.GitWorktreeWorkspacePlugin`
+        when the work has to become a commit.
+        """
+        raise NotARepository(
+            "this workspace is a temporary directory, not a repository, so it cannot "
+            "produce a commit. Its diff and changed_paths are real; its history is not, "
+            "because it has none. Configure a workspace provider that checks the code "
+            "out of a repository."
         )
 
     async def reset(self, handle: WorkspaceHandle) -> None:

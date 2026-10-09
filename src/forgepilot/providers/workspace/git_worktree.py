@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel import PluginService
-from forgepilot.seams.refs import RepoRef, SessionId
+from forgepilot.seams.refs import CommitAuthor, CommitRef, RepoRef, SessionId
+from forgepilot.seams.security import ExecutionConstraints, Operation
 from forgepilot.seams.workspace import (
     SERVICE_NAME,
     UnifiedDiff,
@@ -197,6 +198,46 @@ class GitWorktreeWorkspacePlugin(PluginService):
             if chunk:
                 seen.setdefault(chunk, None)
         return tuple(seen)
+
+    async def commit(
+        self,
+        handle: WorkspaceHandle,
+        message: str,
+        author: CommitAuthor,
+        constraints: ExecutionConstraints,
+    ) -> CommitRef:
+        """Stage the whole working tree and commit it on the session's branch.
+
+        ``add -A`` rather than a path list: the point is to record *what the
+        session produced*, and an agent's new file is as much a product as its
+        edit to an existing one. Anything deliberately left out would have to be
+        excluded on purpose, which no caller does today.
+
+        The identity is passed per-invocation (``-c user.name=…``) rather than
+        read from the repository's config, so a commit cannot silently be
+        attributed to whoever happens to own the checkout — and so this works in
+        a container with no global git config at all.
+        """
+        if not constraints.allows_repo(handle.repo):
+            raise PermissionError(f"repo {handle.repo.slug!r} is not permitted")
+        if not constraints.allows_operation(Operation.WRITE_CODE):
+            raise PermissionError(
+                f"principal {constraints.principal_id!r} may not write_code on "
+                f"{handle.repo.slug!r}, so it may not commit to it"
+            )
+
+        self._git("add", "-A", cwd=handle.root)
+        self._git(
+            "-c",
+            f"user.name={author.name}",
+            "-c",
+            f"user.email={author.email}",
+            "commit",
+            "-m",
+            message,
+            cwd=handle.root,
+        )
+        return CommitRef(repo=handle.repo, sha=self._git("rev-parse", "HEAD", cwd=handle.root).strip())
 
     async def reset(self, handle: WorkspaceHandle) -> None:
         """Return the checkout to the base commit, untracked files included.

@@ -315,6 +315,36 @@ PROJECT = ProjectConfig(
 )
 
 
+def make_origin_repo(root: Path, files: dict[str, str]) -> Path:
+    """A real git repository whose ``main`` holds ``files``.
+
+    Real rather than seeded: the point of the worktree provider is that the
+    session's checkout *is* a checkout, and a fixture that faked the repository
+    would put the lie back one layer down.
+    """
+    import subprocess
+
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    for relative, content in files.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    def run(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@test", *args],
+            cwd=str(root),
+            capture_output=True,
+            check=True,
+        )
+
+    run("init", "-b", "main")
+    run("add", "-A")
+    run("commit", "-m", "initial")
+    return root
+
+
 @pytest.fixture
 async def task_rig(tmp_path: Path):
     root = create_root()
@@ -335,8 +365,14 @@ async def task_rig(tmp_path: Path):
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "ask"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
     await load("forgepilot.providers.vcs.mock:MockVcsPlugin", {})
+    # A **real** repository with a **real** worktree, because `commit` now lives on
+    # the workspace seam and the temp-directory provider refuses it — correctly:
+    # it has no history to commit to, and inventing a sha would put a fabricated
+    # commit in the session log as evidence.
+    origin = make_origin_repo(tmp_path / "origin", SEED)
     await load(
-        "forgepilot.providers.workspace.local:LocalTempWorkspacePlugin", {"seed": SEED}
+        "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin",
+        {"repos": {REPO.slug: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
     )
 
     tracker = UsageTracker()

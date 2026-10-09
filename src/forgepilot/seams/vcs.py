@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from forgepilot.seams.refs import BranchRef, CommitRef, RepoRef
+from forgepilot.seams.refs import BranchRef, CommitAuthor, CommitRef, RepoRef
 from forgepilot.seams.security import ExecutionConstraints
 
 __all__ = [
@@ -25,12 +25,6 @@ __all__ = [
 ]
 
 SERVICE_NAME = "vcs"
-
-
-@dataclass(frozen=True, slots=True)
-class CommitAuthor:
-    name: str
-    email: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,19 +84,6 @@ class Vcs(Protocol):
         ...
 
     async def ensure_mirror(self, repo: RepoRef, constraints: ExecutionConstraints) -> Path: ...
-
-    async def create_branch(
-        self, repo: RepoRef, branch: str, from_ref: str, constraints: ExecutionConstraints
-    ) -> BranchRef: ...
-
-    async def commit(
-        self,
-        repo: RepoRef,
-        branch: str,
-        message: str,
-        author: CommitAuthor,
-        constraints: ExecutionConstraints,
-    ) -> CommitRef: ...
 
     async def push(self, repo: RepoRef, branch: str, constraints: ExecutionConstraints) -> None: ...
 

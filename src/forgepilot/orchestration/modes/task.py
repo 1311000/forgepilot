@@ -289,8 +289,12 @@ async def run_task(
 
     repo = plan.repos[0]
     session_id = session.header.session_id
+    # `prepare` already made a branch: a worktree is checked out *onto* one. The
+    # old `vcs.create_branch(repo, handle.branch, …)` was creating a second name
+    # for a branch the workspace had already made, which is the sort of thing that
+    # only looks reasonable while nothing is real.
     handle = await workspace.prepare(repo, project.default_branch, session_id)
-    branch = await vcs.create_branch(repo, handle.branch, project.default_branch, constraints)
+    branch = handle.branch
 
     # Enforce the routing selection at the point of execution. Restricting the
     # schemas the model is *shown* is not enough: a model can name a tool it was
@@ -358,24 +362,26 @@ async def run_task(
             checks=tuple(checks),
             diff=diff,
             changed_paths=changed,
-            branch=branch.name,
+            branch=branch,
             transitions=tuple(machine.history),
         )
 
-    from forgepilot.seams.vcs import CommitAuthor
+    from forgepilot.seams.refs import CommitAuthor
 
-    await vcs.commit(
-        repo,
-        branch.name,
+    # The commit belongs to the working tree, so the workspace makes it — the
+    # tree is what is being committed, and `vcs` names a repository without ever
+    # having been told which checkout it meant.
+    await workspace.commit(
+        handle,
         f"fix: {plan.ticket.title}",
         author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
         constraints,
     )
-    await vcs.push(repo, branch.name, constraints)
+    await vcs.push(repo, branch, constraints)
 
     draft = PullRequestDraft(
         repo=repo,
-        source_branch=branch.name,
+        source_branch=branch,
         target_branch=project.default_branch,
         title=f"fix: {plan.ticket.title}",
         body_md=_pull_request_body(plan, checks, changed, diff),
@@ -402,7 +408,7 @@ async def run_task(
             EventKind.TASK_STATE,
             {
                 "state": str(TaskState.READY),
-                "branch": branch.name,
+                "branch": branch,
                 # Explicitly absent, so a reader does not have to infer it.
                 "pullRequest": None,
                 "reason": "no repo host configured",
@@ -412,7 +418,7 @@ async def run_task(
         return TaskOutcome(
             state=TaskState.READY,
             reason=(
-                f"the change is committed on {branch.name!r} and the checks passed, but no "
+                f"the change is committed on {branch!r} and the checks passed, but no "
                 f"repo host is configured, so no pull request was opened. The draft is "
                 f"ready to be raised by hand or by a configured host provider."
             ),
@@ -421,7 +427,7 @@ async def run_task(
             checks=tuple(checks),
             diff=diff,
             changed_paths=tuple(changed),
-            branch=branch.name,
+            branch=branch,
             draft=draft,
             transitions=tuple(machine.history),
         )
@@ -443,7 +449,7 @@ async def run_task(
         checks=tuple(checks),
         diff=diff,
         changed_paths=changed,
-        branch=branch.name,
+        branch=branch,
         pull_request=pull_request,
         transitions=tuple(machine.history),
     )

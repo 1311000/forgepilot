@@ -43,6 +43,7 @@ class MockVcsPlugin(PluginService):
         self._mirror_root = Path(cfg.get("mirror_root", "fixtures/repos"))
         self._commits: list[tuple[RepoRef, str, str, CommitAuthor]] = []
         self._branches: dict[tuple[RepoRef, str], BranchRef] = {}
+        self._pushes: list[tuple[RepoRef, str]] = []
         self._pull_requests: list[PullRequestDraft] = []
         self._diffs: dict[tuple[RepoRef, str, str], DiffBundle] = {}
         self._seq = 0
@@ -98,37 +99,22 @@ class MockVcsPlugin(PluginService):
         # must not create state a test did not ask for.
         return self._mirror_root / repo.host / repo.namespace / repo.name
 
-    async def create_branch(
-        self, repo: RepoRef, branch: str, from_ref: str, constraints: ExecutionConstraints
-    ) -> BranchRef:
-        self._authorise(repo, constraints, Operation.WRITE_CODE)
-        head = CommitRef(repo=repo, sha=self._next_sha())
-        ref = BranchRef(repo=repo, name=branch, head=head)
-        self._branches[(repo, branch)] = ref
-        return ref
-
-    async def commit(
-        self,
-        repo: RepoRef,
-        branch: str,
-        message: str,
-        author: CommitAuthor,
-        constraints: ExecutionConstraints,
-    ) -> CommitRef:
-        self._authorise(repo, constraints, Operation.WRITE_CODE)
-        if (repo, branch) not in self._branches:
-            raise KeyError(f"branch {branch!r} does not exist on {repo.slug}")
-        commit = CommitRef(repo=repo, sha=self._next_sha())
-        self._commits.append((repo, branch, message, author))
-        self._branches[(repo, branch)] = BranchRef(repo=repo, name=branch, head=commit)
-        return commit
-
     async def push(
         self, repo: RepoRef, branch: str, constraints: ExecutionConstraints
     ) -> None:
+        """Publish a branch to the host.
+
+        It used to refuse a branch it had not seen created — an artefact of the
+        old flow, where ``vcs`` owned branch creation and so could assume it had
+        been told. A push is precisely how a remote *learns* about a branch that
+        exists locally, so requiring prior knowledge modelled the wrong thing.
+        The branch is now created by the working tree, which is where it exists.
+        """
         self._authorise(repo, constraints, Operation.WRITE_CODE)
-        if (repo, branch) not in self._branches:
-            raise KeyError(f"cannot push unknown branch {branch!r} on {repo.slug}")
+        self._pushes.append((repo, branch))
+        self._branches.setdefault(
+            (repo, branch), BranchRef(repo=repo, name=branch, head=CommitRef(repo=repo, sha=self._next_sha()))
+        )
 
     async def open_pull_request(
         self, draft: PullRequestDraft, constraints: ExecutionConstraints

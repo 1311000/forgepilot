@@ -137,6 +137,7 @@ from forgepilot.seams.vcs import (
     Vcs,
 )
 from forgepilot.seams.workspace import (
+    NotARepository,
     UnifiedDiff,
     UnknownRepository,
     Workspace,
@@ -181,5 +182,5 @@ __all__ = [
     "ChangedFile", "CommitAuthor", "DiffBundle", "PullRequestDraft", "PullRequestRef",
     "Vcs",
     # workspace
-    "UnifiedDiff", "UnknownRepository", "Workspace", "WorkspaceHandle",
+    "NotARepository", "UnifiedDiff", "UnknownRepository", "Workspace", "WorkspaceHandle",
 ]

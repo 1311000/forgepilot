@@ -231,6 +231,7 @@ async def test_a_command_containing_a_path_survives_splitting(
 # The loop closes: a real command, a real result
 # ---------------------------------------------------------------------------
 REAL_SANDBOX = "forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin"
+REPO_SLUG = RepoRef(host="git.corp", namespace="team", name="svc-a").slug
 
 FAILING_TEST = "def test_thing():\n    assert False, 'the retry loop is unbounded'\n"
 PASSING_TEST = "def test_thing():\n    assert True\n"
@@ -348,8 +349,12 @@ async def real_task_rig(tmp_path):
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "never"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
     await load("forgepilot.providers.vcs.mock:MockVcsPlugin", {})
+    from tests.conftest import make_origin_repo  # noqa: PLC0415 - see below
+
+    origin = make_origin_repo(tmp_path / "origin", REAL_SEED)
     await load(
-        "forgepilot.providers.workspace.local:LocalTempWorkspacePlugin", {"seed": REAL_SEED}
+        "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin",
+        {"repos": {REPO_SLUG: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
     )
 
     tracker = UsageTracker()

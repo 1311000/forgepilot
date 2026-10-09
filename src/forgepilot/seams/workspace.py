@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from forgepilot.errors import ForgePilotError
-from forgepilot.seams.refs import RepoRef, SessionId
+from forgepilot.seams.refs import CommitAuthor, CommitRef, RepoRef, SessionId
+from forgepilot.seams.security import ExecutionConstraints
+
+
+class NotARepository(ForgePilotError):
+    """This workspace is a directory, and the caller asked it to be a repository.
+
+    Refused rather than answered with a made-up sha, which is the worst of the
+    available options: it looks like delivery, it lands in the session log as
+    evidence, and nothing downstream can tell that no commit exists.
+    """
 
 
 class UnknownRepository(ForgePilotError):
@@ -27,6 +37,7 @@ class UnknownRepository(ForgePilotError):
 
 __all__ = [
     "SERVICE_NAME",
+    "NotARepository",
     "UnknownRepository",
     "WorkspaceHandle",
     "UnifiedDiff",
@@ -60,6 +71,28 @@ class Workspace(Protocol):
     async def diff(self, handle: WorkspaceHandle) -> UnifiedDiff: ...
 
     async def changed_paths(self, handle: WorkspaceHandle) -> Sequence[str]: ...
+
+    async def commit(
+        self,
+        handle: WorkspaceHandle,
+        message: str,
+        author: CommitAuthor,
+        constraints: ExecutionConstraints,
+    ) -> CommitRef:
+        """Record the working tree as a commit on the session's branch.
+
+        ⚠️ **This is the one ``Workspace`` method that takes constraints**, and
+        the asymmetry is deliberate. The others read or rearrange a working
+        directory; this one writes to version-control history, which is the
+        artefact a reviewer sees. It used to live on ``vcs`` — whose signature
+        ``commit(repo, branch, message, author, constraints)`` names the
+        repository but **not the tree to commit**, which is why it could only ever
+        be satisfied by a provider that keeps the two implicitly connected.
+
+        A provider that is not a repository must refuse rather than fabricate a
+        sha.
+        """
+        ...
 
     async def reset(self, handle: WorkspaceHandle) -> None: ...
 
