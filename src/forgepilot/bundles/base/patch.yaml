@@ -160,6 +160,17 @@
   plugin: forgepilot.runtime.tools.builtin:BuiltinToolsPlugin
   tier: trusted
 
+# `code_search`, in its own plugin because it needs a different service.
+#
+# Separate so that a host with no retriever loses *search* rather than losing
+# every tool — `read_file` does not become unavailable because `code_search` has
+# nothing to talk to. Each plugin declares the services its own tools actually
+# need, and fail-closed then means "this tool is absent" instead of "the tool set
+# is absent".
+- id: tools-search
+  plugin: forgepilot.runtime.tools.builtin:CodeSearchToolPlugin
+  tier: trusted
+
 # The table of agent engines this deployment can run. `agent-loop` registers
 # itself here, and the loop is then selected **by key** — so replacing the
 # built-in engine with the company's own is a patch line, not a refactor. Order

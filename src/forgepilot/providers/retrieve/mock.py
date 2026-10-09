@@ -105,6 +105,13 @@ class MockRetrieverPlugin(PluginService):
             covers_working_tree=True,
         )
 
+    def repositories(self) -> tuple[RepoRef, ...]:
+        """The repos the seeded corpus covers. Covers, not a grant."""
+        seen: dict[RepoRef, None] = {}
+        for file in self._files:
+            seen.setdefault(file.repo, None)
+        return tuple(seen)
+
     async def search(
         self, query: SearchQuery, constraints: ExecutionConstraints
     ) -> Sequence[CodeHit]:

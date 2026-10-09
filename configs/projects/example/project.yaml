@@ -38,10 +38,13 @@ retry:
 # name means is decided here, which is what bounds a model's influence over tool
 # selection to "choose one of the sets someone already approved".
 tool_sets:
+  # A question is answered by reading and searching; it needs no write access.
   default:
     - read_file
+    - code_search
   bugfix:
     - read_file
+    - code_search
     - write_file
     - run
 category_tool_sets:

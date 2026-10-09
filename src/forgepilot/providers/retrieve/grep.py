@@ -42,6 +42,7 @@ from forgepilot.kernel import PluginService
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
 from forgepilot.seams.retriever import (
     SERVICE_NAME,
+    WORKING_TREE,
     CodeHit,
     FileSlice,
     RetrieverCapabilities,
@@ -151,6 +152,18 @@ class GrepRetrieverPlugin(PluginService):
                 f"Configured: {sorted(self._roots)}"
             )
         return root
+
+    def repositories(self) -> tuple[RepoRef, ...]:
+        """The checkouts this provider was configured with.
+
+        Covers, not a grant: the caller intersects this with its own constraints.
+        """
+        out: list[RepoRef] = []
+        for slug in sorted(self._roots):
+            parts = slug.split("/")
+            if len(parts) == 3:
+                out.append(RepoRef(host=parts[0], namespace=parts[1], name=parts[2]))
+        return tuple(out)
 
     def _ref(self, root: Path, requested: str) -> str:
         """The revision the results actually came from.

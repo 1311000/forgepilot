@@ -24,6 +24,7 @@ from forgepilot.seams.security import ExecutionConstraints
 
 __all__ = [
     "SERVICE_NAME",
+    "WORKING_TREE",
     "SearchQuery",
     "CodeHit",
     "SymbolKind",
@@ -35,6 +36,15 @@ __all__ = [
 ]
 
 SERVICE_NAME = "retriever"
+
+#: A ``SearchQuery.ref`` meaning "whatever is checked out right now".
+#:
+#: A sentinel rather than a branch name, because the alternative is worse: a
+#: caller editing a checkout does not have a revision to name, and passing
+#: ``"HEAD"`` would claim a commit while the results actually include uncommitted
+#: edits. A provider that honours this reports in each hit the commit it really
+#: read — including ``+dirty`` when the tree is not clean.
+WORKING_TREE = "<worktree>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +131,22 @@ class RetrieverCapabilities:
 @runtime_checkable
 class Retriever(Protocol):
     def capabilities(self) -> RetrieverCapabilities: ...
+
+    def repositories(self) -> tuple[RepoRef, ...]:
+        """The repositories this provider can address.
+
+        Exists because a caller cannot narrow to repos it has no way to name.
+        ``SearchQuery.repos`` must be an already-narrowed set — an empty tuple
+        means "no repositories", never "all" — and a model shown only a
+        *prefix* (``git.corp/team/*``) has nothing to write into that set except
+        a guess.
+
+        What comes back is what the provider **covers**, not what the caller may
+        read: the caller still intersects with its constraints. A provider that
+        returned everything as a convenience would be moving the authorisation
+        decision into the thing being authorised.
+        """
+        ...
 
     async def search(
         self, query: SearchQuery, constraints: ExecutionConstraints

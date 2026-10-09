@@ -81,6 +81,7 @@ from forgepilot.seams.retriever import (
     Retriever,
     RetrieverCapabilities,
     SearchQuery,
+    WORKING_TREE,
     SymbolHit,
     SymbolKind,
     SymbolQuery,

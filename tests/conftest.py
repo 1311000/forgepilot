@@ -178,6 +178,14 @@ async def rig(tmp_path: Path):
     await load("forgepilot.runtime.tools.registry:ToolRegistryPlugin")
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "ask"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
+    # `code_search` is its own plugin because it needs a different service, so
+    # the dedicated tool suite loads it explicitly. A rig that does not care about
+    # search is not made to carry it.
+    await load(
+        "forgepilot.providers.retrieve.grep:GrepRetrieverPlugin",
+        {"roots": {REPO.slug: str(tmp_path / "ws")}},
+    )
+    await load("forgepilot.runtime.tools.builtin:CodeSearchToolPlugin")
 
     tracker = UsageTracker()
     guards = GuardRegistry()
@@ -308,8 +316,8 @@ PROJECT = ProjectConfig(
     allowed_operations=frozenset(Operation),
     writable_paths=("src",),
     tool_sets={
-        "default": ("read_file",),
-        "bugfix": ("read_file", "write_file", "run"),
+        "default": ("read_file", "code_search"),
+        "bugfix": ("read_file", "code_search", "write_file", "run"),
     },
     category_tool_sets={"bug": "bugfix"},
 )
