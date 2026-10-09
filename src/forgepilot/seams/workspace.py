@@ -94,6 +94,26 @@ class Workspace(Protocol):
         """
         ...
 
+    async def restore(
+        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
+    ) -> None:
+        """Make ``paths`` in the working tree match ``ref``.
+
+        A path ``ref`` does not contain is **removed**, not skipped: "the agent
+        created a new test file" and "the agent weakened an existing one" have to
+        be undone the same way, or the newer one survives as an untracked file and
+        keeps being collected.
+
+        This exists for one caller — the harness pinning a project's tests to the
+        revision the checks are supposed to be judging against. It is not a tool
+        and no model may reach it; it restores *away* the agent's work by
+        definition, which is exactly what makes it dangerous to expose.
+
+        A provider that is not a repository must refuse rather than leave the
+        working tree in a state the caller believes it changed.
+        """
+        ...
+
     async def reset(self, handle: WorkspaceHandle) -> None: ...
 
     async def dispose(self, handle: WorkspaceHandle) -> None: ...

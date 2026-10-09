@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from forgepilot.runtime.commandline import split_command
+from forgepilot.runtime.pinning import unpinned_notice
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.sandbox import (
@@ -77,8 +78,16 @@ async def run_checks(
     turn: TurnId | None = None,
     step: int | None = None,
     timeout_s: float = 900.0,
+    pinned: Sequence[str] = (),
 ) -> CheckResult:
-    """Run the project's check commands as one chained command."""
+    """Run the project's check commands, in order, stopping at the first failure.
+
+    ``pinned`` names the test paths that were restored to the base revision for
+    this run — see :mod:`forgepilot.runtime.pinning`. It changes nothing about
+    how the commands run; it is carried so the model is told, because a repair
+    loop that edits a test, fails again, and cannot find out why is a loop that
+    spends its whole budget on the wrong file.
+    """
     if not commands:
         return CheckResult(
             passed=True,
@@ -174,13 +183,19 @@ async def run_checks(
             break
 
     if broken is None:
+        body = "\n".join(sections).strip()
+        # Prepended rather than appended: on a failure the tail is the traceback,
+        # and a note after it is a note nobody reads — including the model, which
+        # is the one that has to act on it.
+        notice = unpinned_notice(pinned)
         result = CheckResult(
             passed=exit_code == 0,
             commands=tuple(commands),
             command=command,
-            output="\n".join(sections).strip(),
+            output=f"{notice}\n{body}".strip() if notice else body,
             exit_code=exit_code,
             meta={
+                "pinned": list(pinned),
                 "enforcement": str(enforcement),
                 "timed_out": timed_out,
                 # Which command stopped the chain, when one did.

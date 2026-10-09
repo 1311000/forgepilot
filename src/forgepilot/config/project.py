@@ -18,6 +18,7 @@ Mixing those would be the same mistake as treating a prompt as a policy.
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -30,9 +31,52 @@ from forgepilot.identity.constraints import ProjectPolicy
 from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import Budget, NetworkAccess, Operation
 
-__all__ = ["RetryPolicy", "ProjectConfig", "load_project", "project_from_mapping"]
+__all__ = [
+    "DEFAULT_TEST_PATHS",
+    "RetryPolicy",
+    "ProjectConfig",
+    "load_project",
+    "matches_test_path",
+    "project_from_mapping",
+]
 
 DEFAULT_FILENAME = "project.yaml"
+
+#: Which changed paths count as "the check's own oracle", when a project does not
+#: say. A convention, and the default errs toward pinning *more*: pinning a path
+#: that turns out not to be a test makes a check run against older code, which
+#: fails loudly; missing one lets a weakened test decide the run, which does not
+#: fail at all.
+#:
+#: A trailing slash names a directory **at any depth**, matched component-wise —
+#: `tests/` therefore covers `tests/x.py` and `a/tests/x.py`, and does not cover
+#: `mytests/x.py`.
+DEFAULT_TEST_PATHS: tuple[str, ...] = (
+    "tests/",
+    "test/",
+    "test_*.py",
+    "*_test.py",
+    "conftest.py",
+)
+
+
+def matches_test_path(path: str, pattern: str) -> bool:
+    """Does ``path`` (a repository-relative path) match one test-path pattern?
+
+    Both sides are normalised to ``/`` because the pattern was written for a
+    repository and the path may have arrived from `git` on Windows.
+    """
+    cleaned = path.replace("\\", "/").strip("/")
+    if not cleaned:
+        return False
+
+    if pattern.endswith("/"):
+        directory = pattern.rstrip("/")
+        return directory in cleaned.split("/")[:-1]
+
+    return fnmatch.fnmatch(cleaned.rsplit("/", 1)[-1], pattern) or fnmatch.fnmatch(
+        cleaned, pattern
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +120,21 @@ class ProjectConfig:
     category_engines: Mapping[str, str] = field(default_factory=dict)
     default_tool_set: str = "default"
     default_engine: str = "forgepilot"
+    #: Paths that are the check's own oracle. A change here does not decide the
+    #: check — see `runtime/pinning.py`. An explicit empty list means "pin
+    #: nothing", which is a project saying its tests are somewhere this
+    #: convention does not describe.
+    test_paths: tuple[str, ...] = DEFAULT_TEST_PATHS
     #: Free-form, for context assembly only. Never read by a decision.
     notes: str = ""
+
+    def tests_in(self, paths: "list[str] | tuple[str, ...]") -> tuple[str, ...]:
+        """The subset of ``paths`` this project counts as tests, in order."""
+        return tuple(
+            path
+            for path in paths
+            if any(matches_test_path(path, pattern) for pattern in self.test_paths)
+        )
 
     def to_policy(self) -> ProjectPolicy:
         """The project's contribution to authority.
@@ -179,6 +236,13 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         category_engines=_string_map("category_engines"),
         default_tool_set=str(raw.get("default_tool_set", "default")),
         default_engine=str(raw.get("default_engine", "forgepilot")),
+        # Absent means "use the convention"; `[]` means "pin nothing", which is a
+        # different statement and one a project is entitled to make.
+        test_paths=(
+            DEFAULT_TEST_PATHS
+            if raw.get("test_paths") is None
+            else tuple(str(p) for p in raw["test_paths"])
+        ),
         notes=str(raw.get("notes", "")),
     )
 

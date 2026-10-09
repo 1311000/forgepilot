@@ -44,6 +44,21 @@ retry:
   max_attempts: 2
   on_failure: stop
 
+# Which changed paths are the check's own oracle.
+#
+# A path matching one of these is restored to the task's base revision while the
+# checks run, so an edit to it cannot be what makes them pass. The agent's edit is
+# kept and stays in the diff — it just does not decide the verdict. Without this,
+# "the tests pass" means one thing when the code was fixed and another when the
+# assertion was relaxed, and nothing in the harness can tell them apart.
+#
+# The value here is the default; a project whose tests live elsewhere says so.
+# An explicit empty list means "pin nothing".
+test_paths:
+  - tests/
+  - "test_*.py"
+  - conftest.py
+
 # Which tools a category runs with. The classifier picks a *name*; what that name
 # means is decided here — which is what bounds a model's influence over tool
 # selection to "choose one of the sets someone already approved". A category with

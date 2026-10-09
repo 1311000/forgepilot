@@ -128,6 +128,22 @@ class LocalTempWorkspacePlugin(PluginService):
             "out of a repository."
         )
 
+    async def restore(
+        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
+    ) -> None:
+        """Refused: a directory has no revisions to restore from.
+
+        Best-effort here would be worse than failing. The caller's whole reason
+        for calling is that a check is about to decide something, and it believes
+        the tests have been pinned. A silent no-op means the agent's version of
+        the tests decides the run while the log says otherwise.
+        """
+        raise NotARepository(
+            f"this workspace is a temporary directory, not a repository, so {ref!r} "
+            f"names nothing it could restore {len(paths)} path(s) from. Pinning a "
+            f"check to a revision needs a workspace that has revisions."
+        )
+
     async def reset(self, handle: WorkspaceHandle) -> None:
         for child in handle.root.iterdir():
             if child.is_dir():

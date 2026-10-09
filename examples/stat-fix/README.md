@@ -108,8 +108,15 @@ instead of lying.
   `--allow-uncontained-exec` — a deliberate act that prints a warning, not a
   default.
 - **No repo host.** See `ready`, above.
-- **Nothing stops the agent editing the tests.** The check would pass either way
-  and the harness has no defence. This example is arranged so it does not arise —
-  the fixture's tests agree with its own docstrings, so the correct fix is a
-  genuine one and the model left `tests/` alone — but that is a property of the
-  fixture, not a guarantee of the harness. It is a known gap.
+- **The tests are pinned, so editing them will not help.** Whatever the agent
+  changes under `test_paths` — here `tests/` — is restored to the base revision
+  for the duration of the check, then put back. If you want to see that happen,
+  change the check command in `project.yaml` to something impossible and watch
+  the agent eventually try the test instead; the check keeps failing and the
+  output says why.
+
+  Worth being precise about what this does and does not do: the agent's edit is
+  *kept*, appears in the diff, and is named in the draft's body for the reviewer.
+  It simply does not decide whether the checks pass. And it only covers paths the
+  project calls tests — a build step that writes artefacts into the checkout
+  still shows up as the agent's work.

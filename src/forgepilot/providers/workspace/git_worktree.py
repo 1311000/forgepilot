@@ -273,6 +273,44 @@ class GitWorktreeWorkspacePlugin(PluginService):
         )
         return CommitRef(repo=handle.repo, sha=self._git("rev-parse", "HEAD", cwd=handle.root).strip())
 
+    def _in_ref(self, ref: str, path: str, cwd: Path) -> bool:
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}:{path}"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed.returncode == 0
+
+    async def restore(
+        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
+    ) -> None:
+        """Put ``paths`` back to ``ref``, deleting the ones ``ref`` never had.
+
+        The two halves are both needed and they are not symmetric. ``checkout``
+        restores a file that existed; a file the agent *created* has nothing to
+        restore to, and leaving it in place means a new test the agent wrote
+        keeps taking part in the run it was supposed to be excluded from.
+
+        ``git checkout <ref> -- <path>`` writes the base blob into the **index**
+        as well as the working tree. That is left alone deliberately: the next
+        thing to touch the index is ``commit``'s ``add -A``, which recomputes it
+        from the tree — and clearing it here would mean this method mutating
+        state the caller did not ask about.
+        """
+        for path in paths:
+            if self._in_ref(ref, path, handle.root):
+                self._git("checkout", ref, "--", path, cwd=handle.root)
+                continue
+            target = handle.root / path
+            if target.is_dir():
+                import shutil
+
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists():
+                target.unlink()
+
     async def reset(self, handle: WorkspaceHandle) -> None:
         """Return the checkout to the base commit, untracked files included.
 

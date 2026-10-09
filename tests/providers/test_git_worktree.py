@@ -388,3 +388,53 @@ async def fresh_workspace(origin: Path, tmp_path: Path):
         {"repos": {SLUG: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
     )
     return root.workspace
+
+
+# ---------------------------------------------------------------------------
+# restore — pinning a path to a revision
+# ---------------------------------------------------------------------------
+async def test_restore_puts_a_modified_file_back_to_the_ref(workspace) -> None:
+    """The mechanism behind "the checks ran against the project's own tests".
+
+    An agent that cannot make a check pass can make the check stop testing the
+    thing. Restoring is what turns that from a green run into a red one.
+    """
+    handle = await workspace.prepare(REPO, "main", SessionId("s-restore"))
+    (handle.root / "src" / "app.py").write_text("def main():\n    return 'weakened'\n", encoding="utf-8")
+
+    await workspace.restore(handle, "main", ["src/app.py"])
+
+    assert (handle.root / "src" / "app.py").read_text(encoding="utf-8") == (
+        "def main():\n    return 1\n"
+    )
+
+
+async def test_restore_deletes_a_file_the_ref_never_had(workspace) -> None:
+    """The other half, and the easier one to forget.
+
+    A test the agent *added* has nothing to restore to, so `checkout` cannot
+    remove it — and leaving it in place means it keeps taking part in a run it
+    was supposed to be excluded from. Deleting the whole test file is the
+    cheapest way to make a suite pass and leaves the least trace in a diff.
+    """
+    handle = await workspace.prepare(REPO, "main", SessionId("s-delete"))
+    created = handle.root / "src" / "test_new.py"
+    created.write_text("def test_nothing():\n    pass\n", encoding="utf-8")
+    assert created.exists()
+
+    await workspace.restore(handle, "main", ["src/test_new.py"])
+
+    assert not created.exists(), "a file the base revision never had survived the pin"
+
+
+async def test_restore_leaves_paths_it_was_not_asked_about_alone(workspace) -> None:
+    """Pinning is a scalpel. Restoring everything would run the checks against
+    code that does not contain the fix."""
+    handle = await workspace.prepare(REPO, "main", SessionId("s-scoped"))
+    (handle.root / "src" / "app.py").write_text("the fix\n", encoding="utf-8")
+    (handle.root / "src" / "test_other.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+    await workspace.restore(handle, "main", ["src/test_other.py"])
+
+    assert (handle.root / "src" / "app.py").read_text(encoding="utf-8") == "the fix\n"
+    assert not (handle.root / "src" / "test_other.py").exists()

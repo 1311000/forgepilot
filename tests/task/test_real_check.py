@@ -385,7 +385,9 @@ async def real_task_rig(tmp_path):
         # A real runner deciding a real file.
         test=(f"{sys.executable} -m pytest -q",),
         allowed_operations=frozenset(Operation),
-        writable_paths=("src",),
+        # "tests" is writable so a test can express the thing this suite exists
+        # to rule out: an agent that edits the test instead of the code.
+        writable_paths=("src", "tests"),
         tool_sets={"bugfix": ("read_file", "write_file")},
         category_tool_sets={"bug": "bugfix"},
     )
@@ -408,7 +410,7 @@ async def real_task_rig(tmp_path):
                 permitted_operations=frozenset(
                     {Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR}
                 ),
-                writable_paths=("src",),
+                writable_paths=("src", "tests"),
             ),
         )
     finally:
@@ -561,3 +563,202 @@ async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered
     assert outcome.checks[-1].could_not_run is False
     assert outcome.checks[-1].passed is False, 'a failing test suite reported as passing'
     assert not outcome.delivered, 'a PR was opened for a change that does not fix anything'
+
+
+async def _plan(rig):
+    """The one ticket this suite uses, through the real planner.
+
+    Shared by the pinning tests so each of them is about the *check*, not about
+    ticket plumbing that `test_a_whole_task_is_decided_by_a_real_test_runner`
+    already covers.
+    """
+    from forgepilot.orchestration import ClassifierGateway
+    from forgepilot.orchestration.modes.task import plan_task
+    from forgepilot.seams.classifier import TicketUnderstanding
+    from forgepilot.seams.refs import TicketId
+    from forgepilot.seams.tickets import Ticket, TicketPriority
+
+    return await plan_task(
+        ticket=Ticket(
+            id=TicketId("T-1"),
+            title="登录无限重试",
+            description_md="复现步骤：\n1. 输错密码\n\n预期结果：提示密码错误\n实际结果：无限重试",
+            priority=TicketPriority.HIGH,
+        ),
+        project=rig.project,
+        constraints=rig.constraints,
+        registry=rig.registry,
+        classifier=ClassifierGateway(
+            _FixedClassifier(
+                TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95)
+            )
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The oracle is held fixed
+# ---------------------------------------------------------------------------
+#: What an agent writes when it cannot make the test pass and the test is
+#: writable. This *does* pass: pytest collects it, finds no assertion, and
+#: reports success.
+#:
+#: ``pass`` rather than a comment, and the difference is not cosmetic — a
+#: function whose body is only a comment is a **SyntaxError**, so the first
+#: version of this fixture made the check fail with a collection error. That made
+#: the test below pass while proving nothing at all: it was asserting the check
+#: failed, and the check was failing for a reason that pinning had nothing to do
+#: with. Caught by disabling the pinning and finding the test still green.
+WEAKENED_TEST = "def test_retry_is_bounded():\n    pass\n"
+
+
+async def test_relaxing_the_test_does_not_make_the_check_pass(real_task_rig) -> None:
+    """The gap this closes, and it was the largest one left in the harness.
+
+    Until now nothing distinguished "fixed the code" from "weakened the test".
+    ``run_checks`` passed either way: it runs whatever is in the tree, and the
+    tree is the agent's. An agent that cannot satisfy a check has an obvious
+    second option, and it is cheaper than fixing anything.
+
+    So the project's test paths are restored to the base revision for the run.
+    The agent's version is still written, still in the diff, and still needs
+    reviewing — it simply does not decide the verdict.
+
+    Note what is asserted here and what is not. The weakened file *is* in the
+    tree at the end (the diff shows it), and the check still fails — which is the
+    whole point. Without pinning this test would pass green and the task would be
+    delivered on the strength of an assertion somebody deleted.
+    """
+    import json
+
+    from forgepilot.orchestration import ClassifierGateway
+    from forgepilot.orchestration.modes.task import plan_task, run_task
+    from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+    from forgepilot.seams.classifier import TicketUnderstanding
+    from forgepilot.seams.refs import TicketId
+    from forgepilot.seams.tickets import Ticket, TicketPriority
+
+    rig = real_task_rig
+    plan = await _plan(rig)
+
+    rig.llm.script(
+        tool_call_turn(
+            "write_file",
+            json.dumps({"path": "tests/test_login.py", "content": WEAKENED_TEST}),
+            call_id="c1",
+        ),
+        text_turn("断言太严了，我把它放宽了"),
+        text_turn("还是过不了"),
+        text_turn("放弃"),
+    )
+
+    outcome = await run_task(
+        plan=plan,
+        project=rig.project,
+        session=rig.session,
+        llm=rig.llm,
+        tools=rig.registry,
+        vcs=rig.vcs,
+        workspace=rig.workspace,
+        sandbox=rig.sandbox,
+        constraints=rig.constraints,
+        pipeline=rig.pipeline,
+        tracker=rig.tracker,
+        model="replay-1",
+    )
+
+    final = outcome.checks[-1]
+    assert final.could_not_run is False, final.reason
+    assert final.passed is False, (
+        "the check passed because the agent relaxed the assertion — the oracle was "
+        f"not held fixed.\n{final.output}"
+    )
+    assert not outcome.delivered
+    assert outcome.pinned_tests == ("tests/test_login.py",)
+    assert "tests/test_login.py" in outcome.changed_paths, (
+        "the agent's edit was dropped from the tree rather than set aside for the run"
+    )
+    assert final.meta["pinned"] == ["tests/test_login.py"]
+
+
+async def test_the_model_is_told_why_editing_the_test_cannot_help(real_task_rig) -> None:
+    """Otherwise the repair loop spends its budget on the wrong file.
+
+    A model that reads a failure, adjusts the assertion, fails again, and is
+    given no reason will keep adjusting it. The check output has to say the tests
+    were restored — and it is checked here on the *recorded* event, because that
+    is what reaches the model.
+    """
+    import json
+
+    from forgepilot.orchestration.modes.task import run_task
+    from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+    from forgepilot.seams.session import EventKind
+
+    rig = real_task_rig
+    plan = await _plan(rig)
+
+    rig.llm.script(
+        tool_call_turn(
+            "write_file",
+            json.dumps({"path": "tests/test_login.py", "content": WEAKENED_TEST}),
+            call_id="c1",
+        ),
+        text_turn("改了测试"),
+        text_turn("还是不行"),
+        text_turn("放弃"),
+    )
+
+    await run_task(
+        plan=plan,
+        project=rig.project,
+        session=rig.session,
+        llm=rig.llm,
+        tools=rig.registry,
+        vcs=rig.vcs,
+        workspace=rig.workspace,
+        sandbox=rig.sandbox,
+        constraints=rig.constraints,
+        pipeline=rig.pipeline,
+        tracker=rig.tracker,
+        model="replay-1",
+    )
+
+    checks = [e for e in rig.session.events if e.kind == EventKind.TASK_CHECK]
+    assert checks, "no check reached the log"
+    output = checks[-1].data["output"]
+    assert "restored to the revision this task started from" in output
+    assert "editing a test cannot make this pass" in output
+
+
+async def test_nothing_is_pinned_when_the_agent_touched_no_tests(real_task_rig) -> None:
+    """Pinning is a response to a change, not a habit.
+
+    Restoring a path the agent never edited would be a no-op with a cost: it
+    writes the file, and the report would claim the oracle was held fixed when
+    there was nothing to hold.
+    """
+    from forgepilot.orchestration.modes.task import run_task
+    from forgepilot.providers.llm.replay import text_turn
+
+    rig = real_task_rig
+    plan = await _plan(rig)
+    rig.llm.script(text_turn("nothing to do"), text_turn("nothing to do"), text_turn("nothing to do"))
+
+    outcome = await run_task(
+        plan=plan,
+        project=rig.project,
+        session=rig.session,
+        llm=rig.llm,
+        tools=rig.registry,
+        vcs=rig.vcs,
+        workspace=rig.workspace,
+        sandbox=rig.sandbox,
+        constraints=rig.constraints,
+        pipeline=rig.pipeline,
+        tracker=rig.tracker,
+        model="replay-1",
+    )
+
+    assert outcome.pinned_tests == ()
+    assert outcome.checks[-1].passed is False, "nothing was fixed, so nothing should pass"

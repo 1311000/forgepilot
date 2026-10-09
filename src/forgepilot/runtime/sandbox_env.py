@@ -55,11 +55,33 @@ KEEP: tuple[str, ...] = (
 )
 
 
+#: Set on every command, never inherited. See `command_env`.
+_FORCED: Mapping[str, str] = {
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
+
+
 def command_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """The environment to run a command with.
 
     ``base`` defaults to the process environment and exists so a caller — or a
     test — can supply one explicitly rather than mutating ``os.environ``.
+
+    ``_FORCED`` is applied **on top**, because these are the harness's decision
+    rather than the deployment's. ``PYTHONDONTWRITEBYTECODE`` is there for a
+    reason that is easy to miss until it bites: the check command *runs inside
+    the tree it is judging*, so a pytest run leaves `tests/__pycache__/*.pyc`
+    behind, and `changed_paths` — which asks git what is untracked — reports them
+    as the agent's work. Found by a test that pinned `tests/__pycache__/
+    test_login.cpython-314-pytest-9.1.1.pyc` as a modified test.
+
+    That is the general shape: **a checker must not modify the thing it is
+    checking.** This closes the Python instance of it. A build step that writes
+    real artefacts into the checkout is the same problem and is *not* covered —
+    git's answer to it is a `.gitignore`, and a repository without one will see
+    its build output in its own diff.
     """
     source = os.environ if base is None else base
-    return {name: source[name] for name in KEEP if name in source}
+    env = {name: source[name] for name in KEEP if name in source}
+    env.update(_FORCED)
+    return env

@@ -232,6 +232,10 @@ class TaskOutcome:
     checks: tuple[Any, ...] = ()
     diff: str = ""
     changed_paths: tuple[str, ...] = ()
+    #: Test paths held at the base revision while the checks ran. The honest
+    #: answer to "was the oracle pinned", which a reviewer needs in order to read
+    #: a pass correctly.
+    pinned_tests: tuple[str, ...] = ()
     branch: str = ""
     pull_request: Any = None
     #: The drafted pull request when none was opened. The deliverable in that case:
@@ -269,6 +273,7 @@ async def run_task(
     for, and every capability that exists is one that can be induced.
     """
     from forgepilot.runtime.loop.turn import run_turn
+    from forgepilot.runtime.pinning import pinned_to_base
     from forgepilot.runtime.repair import run_checks
     from forgepilot.seams.agent_loop import UserInput
     from forgepilot.seams.session import EventKind
@@ -306,6 +311,7 @@ async def run_task(
     turns = 0
     passed = False
     attempts = 0
+    pinned: tuple[str, ...] = ()
 
     for attempt in range(project.retry.max_attempts + 1):
         attempts = attempt + 1
@@ -323,14 +329,27 @@ async def run_task(
         )
         turns += 1
 
-        check = await run_checks(
-            commands=project.test,
-            sandbox=sandbox,
-            session=session,
-            constraints=constraints,
-            workspace_root=handle.root,
-            session_id=session_id,
-        )
+        # **The oracle is held fixed.** Whatever the agent changed under the
+        # project's test paths is set aside for the duration of the check, so a
+        # weakened assertion cannot be what makes this pass. This is per attempt
+        # rather than once, because each turn may edit the tests again. See
+        # `runtime/pinning.py` for why this is a mechanism rather than a warning.
+        pins = project.tests_in(tuple(await workspace.changed_paths(handle)))
+        async with pinned_to_base(workspace, handle, pins) as applied:
+            # The union across attempts, not the last one: the report is "what
+            # was kept out of the deciding run", and a path pinned on the first
+            # attempt and reverted by the agent on the second was still kept out
+            # of a run whose verdict is in this outcome.
+            pinned = tuple(dict.fromkeys((*pinned, *applied)))
+            check = await run_checks(
+                commands=project.test,
+                sandbox=sandbox,
+                session=session,
+                constraints=constraints,
+                workspace_root=handle.root,
+                session_id=session_id,
+                pinned=applied,
+            )
         checks.append(check)
 
         if check.passed:
@@ -362,6 +381,7 @@ async def run_task(
             checks=tuple(checks),
             diff=diff,
             changed_paths=changed,
+            pinned_tests=pinned,
             branch=branch,
             transitions=tuple(machine.history),
         )
@@ -390,7 +410,7 @@ async def run_task(
         source_branch=branch,
         target_branch=project.default_branch,
         title=f"fix: {plan.ticket.title}",
-        body_md=_pull_request_body(plan, checks, changed, diff),
+        body_md=_pull_request_body(plan, checks, changed, diff, pinned),
         # Traceable back to the work item, not only to a branch name.
         ticket_id=str(plan.ticket.id),
         draft=True,
@@ -434,6 +454,7 @@ async def run_task(
             checks=tuple(checks),
             diff=diff,
             changed_paths=tuple(changed),
+            pinned_tests=pinned,
             branch=branch,
             draft=draft,
             transitions=tuple(machine.history),
@@ -456,6 +477,7 @@ async def run_task(
         checks=tuple(checks),
         diff=diff,
         changed_paths=changed,
+        pinned_tests=pinned,
         branch=branch,
         pull_request=pull_request,
         transitions=tuple(machine.history),
@@ -463,7 +485,11 @@ async def run_task(
 
 
 def _pull_request_body(
-    plan: TaskPlan, checks: Sequence[Any], changed: Sequence[str], diff: str
+    plan: TaskPlan,
+    checks: Sequence[Any],
+    changed: Sequence[str],
+    diff: str,
+    pinned: Sequence[str] = (),
 ) -> str:
     """Assemble the PR description from what actually happened.
 
@@ -480,6 +506,17 @@ def _pull_request_body(
     for check in checks:
         status = "passed" if check.passed else "FAILED"
         lines.append(f"- `{check.command}` — {status}")
+    if pinned:
+        # A reviewer reading "checks passed" has to know what they were run
+        # against, or the sentence means nothing in the one case it matters.
+        lines.append("")
+        lines.append("## ⚠ Tests were modified, and were not what the checks ran against")
+        lines.append(
+            "The paths below were restored to this task's base revision for the check, "
+            "so a change to them could not be what made it pass. Their changes are in "
+            "the diff and still need reviewing."
+        )
+        lines.extend(f"- `{path}`" for path in pinned)
     if changed:
         lines.append("")
         lines.append("## Changed")
