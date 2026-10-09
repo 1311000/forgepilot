@@ -267,10 +267,16 @@ def test_shipped_default_profile_composes_and_user_layer_wins() -> None:
 
     cfg = apply_layers(compose_layers(profile), profile=profile.name)
 
-    # The shipped user layer tunes local retrieval upward and swaps in a real model.
+    # The shipped user layer names the checkouts and swaps in a real model.
+    #
+    # It used to pin the retriever back to `MockRetrieverPlugin` with a `max_hits`
+    # tweak, which meant the shipped default returned canned hits. `roots` being
+    # repeated here rather than only in the bundle is the point: an override
+    # replaces the whole `config`, so a key left out is a key lost.
     retriever = cfg.row("retriever")
     assert retriever.sources == ("bundle:base", "user")
-    assert retriever.config == {"max_hits": 500}
+    assert retriever.config == {"roots": {"git.corp/team/svc-a": "."}}
+    assert retriever.plugin.endswith("GrepRetrieverPlugin")
 
     llm = cfg.row("llm")
     assert llm.sources == ("bundle:base", "user")
@@ -361,3 +367,33 @@ async def test_the_sync_form_does_not_await_inside_a_running_loop() -> None:
         "inside a running loop the sync form returns before apply runs — which is why "
         "async callers must use materialize_async()"
     )
+
+
+def test_every_enabled_row_in_the_shipped_profile_points_at_real_code() -> None:
+    """A row that names a plugin nobody implemented is a claim, not a placeholder.
+
+    The shipped bundle carried `retriever-remote`, pointing at
+    `forgepilot.providers.retrieve.remote_index` — a module that has never
+    existed. Nothing caught it: `--dump-config` never imports anything (that is
+    its whole point — a profile stays inspectable when a plugin is missing), and
+    `--boot` skips disabled rows. So the one claim nobody checks is the one that
+    is wrong.
+
+    This asks the question the other two cannot: does every row that *would* load
+    actually resolve?
+    """
+    from forgepilot.config import resolve_plugin
+
+    profile = load_profile(SHIPPED_CONFIGS, "default")
+    resolved = apply_layers(compose_layers(profile), profile=profile.name)
+
+    broken = []
+    for row in resolved.rows:
+        if row.disabled:
+            continue
+        try:
+            resolve_plugin(row.plugin)
+        except Exception as exc:  # noqa: BLE001 - any failure is the finding
+            broken.append(f"{row.id} -> {row.plugin}: {exc}")
+
+    assert not broken, "enabled rows that cannot be imported:\n  " + "\n  ".join(broken)

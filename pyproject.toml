@@ -22,6 +22,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # A real ripgrep for the tests. The `grep` retriever deliberately has no
+    # Python fallback — a second scanner would be a different search, with
+    # different glob and ignore semantics, and a caller could not tell which one
+    # produced a hit. So the tests need the real thing, and this is where a
+    # development machine gets it. A deployment installs ripgrep its own way.
+    "ripgrep-bin>=14.0",
 ]
 
 # The HTTP/SSE surface the workbench talks to. Optional for the same reason the

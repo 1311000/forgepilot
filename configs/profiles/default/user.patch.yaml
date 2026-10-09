@@ -5,11 +5,21 @@
 # meant. Note the whole `config` is replaced, not merged: spell out every key you
 # still want.
 
-# Example override: widen local retrieval for a bigger fixture corpus.
+# Real search over real checkouts, with `roots` spelled out.
+#
+# This layer used to pin the retriever back to `MockRetrieverPlugin`, which meant
+# the shipped default returned canned hits and nothing in the system had ever
+# searched a file. Listing the checkouts here is what makes the default useful;
+# a repository absent from this map is refused by name rather than silently
+# searched as empty.
+#
+# `config` is replaced wholesale by an override, not merged — so `roots` has to
+# be repeated here and not only in the bundle.
 - id: retriever
-  plugin: forgepilot.providers.retrieve.mock:MockRetrieverPlugin
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
   config:
-    max_hits: 500
+    roots:
+      git.corp/team/svc-a: ${FORGEPILOT_CHECKOUT_SVC_A:-.}
   tier: trusted
 
 # Use a real model instead of the replay fixture.

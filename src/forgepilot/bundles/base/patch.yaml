@@ -18,32 +18,49 @@
   tier: trusted
 
 # --- code retrieval --------------------------------------------------------
-# Local search is scoped to the branch diff plus uncommitted changes. In the
-# target environment (GVFS: 300GB+, metadata-only locally) scanning the working
-# tree would trigger unbounded on-demand downloads; on ordinary repos it simply
-# does not scale. Either way, global search belongs to the remote provider below.
+# Real search over real checkouts: ripgrep, the same thing Claude Code does. It
+# replaced a mock that returned canned hits, which meant nothing in the system
+# had ever searched a file.
+#
+# `roots` maps a repository slug to where its checkout lives, and is empty here
+# because a shipped default cannot know a deployment's paths. Empty is the loud
+# option: a search for an unconfigured repository raises and names the repository
+# and the roots it does have. The alternative — returning no hits — is
+# indistinguishable from "the symbol does not exist", which is how a caller ends
+# up confidently wrong.
+#
+# ⚠️ In the target environment (GVFS: 300GB+, metadata-only locally) this
+# provider's scope is the *overlay* — the branch diff and uncommitted changes, a
+# small fully-materialised set — not global search. Global search is the
+# enterprise index behind the same `Retriever` Protocol; see the note below.
 - id: retriever
-  plugin: forgepilot.providers.retrieve.mock:MockRetrieverPlugin
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
   config:
-    max_hits: 200
+    roots: {}
   tier: trusted
 
-# The load-bearing global code search in the target design. Reuses the company's
-# existing enterprise search service (full-text inverted index + semantic vector
-# index) rather than rebuilding a per-developer index.
+# --- plugging in an enterprise retriever ------------------------------------
+# There is deliberately **no row here for one**, and there used to be: a
+# `retriever-remote` row pointing at
+# `forgepilot.providers.retrieve.remote_index` — a module that does not exist.
+# Nobody noticed, because `--dump-config` never imports (by design) and `--boot`
+# skips disabled rows. A row that names a plugin nobody implemented is a claim,
+# not a placeholder.
 #
-# Disabled because that service does not exist yet and the skeleton uses fixture
-# repos. An enabled row pointing at a placeholder would be worse than an honest
-# gap — flip this on when the endpoint is real.
-- id: retriever-remote
-  plugin: forgepilot.providers.retrieve.remote_index:RemoteIndexRetrieverPlugin
-  disabled: true
-  config:
-    endpoint: ${FORGEPILOT_SEARCH_ENDPOINT:-http://search.invalid}
-    # Every returned slice must carry its ref so callers can verify they are not
-    # reading trunk while working on a branch.
-    verify_ref: true
-  tier: trusted
+# Adding one is a later layer overriding this row id:
+#
+#   - id: retriever
+#     plugin: your.org.forgepilot.EnterpriseIndexRetriever
+#     config:
+#       endpoint: ${FORGEPILOT_SEARCH_ENDPOINT}
+#     tier: trusted        # or `third-party` — see the tier rules
+#
+# The contract to satisfy is `forgepilot/seams/retriever.py`: `capabilities()`
+# (say `supports_remote=True` and whether results cover the working tree),
+# `search` / `symbols` / `open`, **every hit carrying the ref it came from**, and
+# every effectful method re-checking `ExecutionConstraints` itself rather than
+# trusting its caller. A provider that returns hits without refs cannot be used
+# for editing, because a caller on a branch cannot tell trunk from their own work.
 
 # --- identity and authorisation --------------------------------------------
 # Identity answers "who is this"; policy answers "may they do this here". Neither
