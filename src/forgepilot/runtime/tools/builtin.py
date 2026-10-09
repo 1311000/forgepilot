@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel.errors import CapabilityNotGranted
+from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.security import Operation, normalise_relative
 from forgepilot.seams.tools import (
@@ -166,7 +167,7 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
                 network=ctx.constraints.network,
             ),
             cwd=ctx.workspace_root or Path("."),
-            env={},
+            env=command_env(),
             timeout_s=ctx.timeout_s,
         )
         if not result.executed:

@@ -1,0 +1,27 @@
+# Local-exec bundle — swaps the sandbox for one that really runs commands.
+#
+# Why this is not the default, and must not become one: the sandbox it installs
+# provides **no containment**. A command it runs can read the whole machine,
+# reach the network, and spawn anything. The recording sandbox it replaces never
+# executes, which is useless for real work but is also the reason a profile that
+# is merely *loaded* cannot run anything.
+#
+# Enabling this row is one of **two** deliberate acts. The second is
+# `--allow-uncontained-exec`, because `arm` refuses `exec` on any host reporting
+# enforcement below `full` — and this backend reports `none`, unconditionally and
+# by design, since a backend cannot honestly claim containment it does not
+# apply. Both steps are visible, and neither is a default.
+#
+#   forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/local_exec/patch.yaml \
+#     --chat --allow-uncontained-exec
+#
+# On Linux, prefer a backend that reports `full` and needs no flag. Without one,
+# this is a development convenience, not a deployment configuration.
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin
+  config:
+    # Per-stream cap, so a command that prints a gigabyte does not become a
+    # gigabyte in the session log.
+    max_output_bytes: 64000
+  tier: trusted
