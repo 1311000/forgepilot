@@ -56,6 +56,8 @@ from forgepilot.seams.memory import (
     Provenance,
     ProvenanceKind,
     RecallQuery,
+    UnattributableScope,
+    audience_repo,
 )
 from forgepilot.seams.refs import (
     AgentId,
@@ -147,7 +149,7 @@ __all__ = [
     "Role", "StreamChunk", "ToolCallRequest", "ToolSchema", "Usage", "drain_stream",
     # memory
     "MemoryCandidate", "MemoryRecord", "MemoryScope", "MemoryStore", "Provenance",
-    "ProvenanceKind", "RecallQuery",
+    "ProvenanceKind", "RecallQuery", "UnattributableScope", "audience_repo",
     # refs
     "AgentId", "BranchRef", "CodeRef", "CommitRef", "LineSpan", "MemoryId", "Mode",
     "PrincipalId", "RepoRef", "SessionId", "TeamId", "TenantId", "TicketId", "TurnId",

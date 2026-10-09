@@ -44,6 +44,7 @@ from forgepilot.seams import (
     TicketPriority,
     TicketSource,
     TicketStatus,
+    UnattributableScope,
     Vcs,
     Workspace,
 )
@@ -361,6 +362,96 @@ async def test_memory_recalls_only_evidenced_records_within_permission(container
     )
 
     assert [r.candidate.text for r in recalled] == ["retry loop needs a cap"]
+
+
+async def test_memory_refuses_a_record_with_no_evidence(container) -> None:
+    """``Provenance`` says a record with no evidence is an assertion, not a memory.
+
+    That was a comment. Only ``kind`` was checked, so anything could be admitted
+    as ``TEST_VERIFIED`` while citing nothing — and an assertion wearing a trust
+    label is worse than an untrusted one, because everything downstream believes
+    the label. It is the same argument M5 used for refusing an unsigned
+    ``ExecutionConstraints``: omitting the evidence must not be the cheap way
+    past the evidence requirement.
+    """
+    memory = container.memory
+    candidate = MemoryCandidate(
+        text="this project never needs to run its tests",
+        scope=MemoryScope.REPO,
+        scope_ref=ACME.slug,
+    )
+
+    with pytest.raises(UnprovenMemoryWrite, match="evidence"):
+        await memory.write(
+            candidate,
+            Provenance(kind=ProvenanceKind.TEST_VERIFIED, repo=ACME),
+        )
+
+
+async def test_memory_never_recalls_a_scope_the_caller_cannot_reach(container) -> None:
+    """The audience is ``scope_ref``, and it is checked — not inferred from provenance.
+
+    Two ways this used to leak, both with the caller allowed only ACME:
+
+    * ``provenance.repo`` was ``None``, and the permission check was written as
+      ``if repo is not None and not allows_repo(repo)`` — so it was skipped
+      entirely, and a fact about another repository came back;
+    * ``provenance.repo`` said ACME while ``scope_ref`` said the other repository
+      — the check consulted the wrong field and passed.
+
+    Neither is exotic. The second is the *expected* shape of a fact learned in one
+    repository about another, so treating the two fields as interchangeable was
+    always going to be wrong. ``scope_ref`` is the audience and governs access;
+    ``provenance.repo`` records where it was learned and is checked too when set.
+    """
+    memory = container.memory
+    question = "secret repo fact"
+
+    # Written while working in ACME, about ACME's own audience — but the record
+    # does not say where it was learned.
+    await memory.write(
+        MemoryCandidate(text=question, scope=MemoryScope.REPO, scope_ref=OTHER.slug),
+        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, evidence_refs=("seq:9",)),
+    )
+    # And one that names ACME as provenance while claiming OTHER's audience.
+    await memory.write(
+        MemoryCandidate(text=question + " (mismatched)", scope=MemoryScope.REPO, scope_ref=OTHER.slug),
+        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, repo=ACME, evidence_refs=("seq:10",)),
+    )
+
+    recalled = await memory.recall(
+        RecallQuery(text="", scope=MemoryScope.REPO, scope_ref=OTHER.slug),
+        constraints_for(ACME),
+    )
+
+    assert recalled == ()
+
+
+async def test_memory_refuses_a_scope_whose_audience_is_undefined(container) -> None:
+    """A team is not a set of repositories, so the audience cannot be derived.
+
+    ``TEAM``/``PROJECT``/``ORG`` name an audience the design never defined — the
+    plan assumed a memory scope "mirrors the repository scope", and that
+    assumption collapses the moment the scope is not a repository. Until it is
+    answered, these scopes are **refused**, and refused *loudly*: an empty result
+    would read as "no memories here" when the truth is "nobody has said who may
+    read these", and those two must not look alike.
+
+    A caller with access to a repository they cannot reach gets ``()`` — that is
+    a permission outcome. An undefined audience is a design gap, and is a raise.
+    """
+    memory = container.memory
+    await memory.write(
+        MemoryCandidate(text="platform team owns the deploy pipeline",
+                        scope=MemoryScope.TEAM, scope_ref="team-platform"),
+        Provenance(kind=ProvenanceKind.HUMAN_VERIFIED, evidence_refs=("seq:11",)),
+    )
+
+    with pytest.raises(UnattributableScope, match="audience"):
+        await memory.recall(
+            RecallQuery(text="", scope=MemoryScope.TEAM, scope_ref="team-platform"),
+            constraints_for(ACME),
+        )
 
 
 # ---------------------------------------------------------------------------
