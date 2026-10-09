@@ -136,7 +136,12 @@ from forgepilot.seams.vcs import (
     PullRequestRef,
     Vcs,
 )
-from forgepilot.seams.workspace import UnifiedDiff, Workspace, WorkspaceHandle
+from forgepilot.seams.workspace import (
+    UnifiedDiff,
+    UnknownRepository,
+    Workspace,
+    WorkspaceHandle,
+)
 
 __all__ = [
     # agent loop
@@ -176,5 +181,5 @@ __all__ = [
     "ChangedFile", "CommitAuthor", "DiffBundle", "PullRequestDraft", "PullRequestRef",
     "Vcs",
     # workspace
-    "UnifiedDiff", "Workspace", "WorkspaceHandle",
+    "UnifiedDiff", "UnknownRepository", "Workspace", "WorkspaceHandle",
 ]

@@ -12,9 +12,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from forgepilot.errors import ForgePilotError
 from forgepilot.seams.refs import RepoRef, SessionId
 
-__all__ = ["SERVICE_NAME", "WorkspaceHandle", "UnifiedDiff", "Workspace"]
+
+class UnknownRepository(ForgePilotError):
+    """A repository the provider has no local source for.
+
+    Raised rather than creating an empty checkout: a workspace that silently
+    contains nothing is indistinguishable from a repository that is genuinely
+    empty, and every diff taken against it would look like the agent deleted the
+    whole codebase.
+    """
+
+__all__ = [
+    "SERVICE_NAME",
+    "UnknownRepository",
+    "WorkspaceHandle",
+    "UnifiedDiff",
+    "Workspace",
+]
 
 SERVICE_NAME = "workspace"
 
