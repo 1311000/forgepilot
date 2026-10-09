@@ -93,7 +93,14 @@ def path_scope_guard(view: GuardView) -> GuardResult:
         if not view.constraints.allows_write_to(path) and writes:
             return GuardResult(
                 decision=GuardDecision.DENY,
-                reason=f"path {path!r} is outside the caller's writable set",
+                # The set is named. A refusal that does not say what *would* have
+                # been allowed leaves the caller — model or operator — guessing:
+                # a real run had the model try eleven spellings of the same path
+                # before giving up, each answered identically.
+                reason=(
+                    f"path {path!r} is outside the caller's writable set "
+                    f"({sorted(view.constraints.writable_paths) or 'nothing is writable'})"
+                ),
                 guard="path-scope",
             )
         if _escapes_workspace(path):

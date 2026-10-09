@@ -63,3 +63,57 @@ def test_it_reads_the_process_environment_when_none_is_given(monkeypatch) -> Non
 
     assert command_env()["LANG"] == "en_US.UTF-8"
     assert command_env({"LANG": "C"})["LANG"] == "C"
+
+
+# ---------------------------------------------------------------------------
+# "the whole workspace" has to be expressible
+# ---------------------------------------------------------------------------
+def test_a_dot_rule_means_the_whole_workspace() -> None:
+    """⚠️ `<project>.yaml` says `writable_paths: ["."]` for "everything here".
+
+    It silently meant *nothing*. `normalise_relative(".")` returns `None`, and
+    `allows_write_to` skipped any rule that normalised to `None` — so the obvious
+    spelling was discarded without a word, and **every write was refused**.
+
+    Found by running a real task: the model tried eleven different spellings of a
+    `stats.py` path, each answered `outside the caller's writable set`, and gave
+    up honestly. Nothing in the message said what the set actually was.
+    """
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import ExecutionConstraints, Principal
+
+    constraints = ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("demo"), tenant_id=TenantId("local")),
+        writable_paths=(".",),
+    )
+
+    assert constraints.allows_write_to("stats.py")
+    assert constraints.allows_write_to("src/deep/nested.py")
+
+
+def test_a_dot_rule_does_not_widen_to_an_absolute_path() -> None:
+    """"Everything under the workspace" is not "everything"."""
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import ExecutionConstraints, Principal
+
+    constraints = ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("demo"), tenant_id=TenantId("local")),
+        writable_paths=(".",),
+    )
+
+    assert not constraints.allows_write_to("/etc/passwd")
+    assert not constraints.allows_write_to("../../escape.py")
+
+
+def test_an_empty_writable_set_is_still_read_only() -> None:
+    """The existing rule, which the fix must not quietly undo: absent means
+    nothing is writable, not everything."""
+    from forgepilot.seams.refs import PrincipalId, TenantId
+    from forgepilot.seams.security import ExecutionConstraints, Principal
+
+    constraints = ExecutionConstraints.for_principal(
+        Principal(principal_id=PrincipalId("demo"), tenant_id=TenantId("local")),
+        writable_paths=(),
+    )
+
+    assert not constraints.allows_write_to("stats.py")

@@ -99,6 +99,16 @@ class GitWorktreeWorkspacePlugin(PluginService):
             raise GitFailed(args, completed.stderr or completed.stdout)
         return completed.stdout
 
+    def _branch_exists(self, source: Path, branch: str) -> bool:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=str(source),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed.returncode == 0
+
     def _untracked(self, root: Path) -> tuple[str, ...]:
         raw = self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=root)
         return tuple(chunk for chunk in raw.split("\0") if chunk)
@@ -133,14 +143,38 @@ class GitWorktreeWorkspacePlugin(PluginService):
         path = self._worktree_path(session_id)
         branch = f"{self._branch_prefix}/{session_id}"
 
+        # **Prune before deciding, and the order is the whole point.** There are
+        # four states, not two, and the third one is easy to miss:
+        #
+        #   1. the directory exists and is registered  -> reuse it
+        #   2. the directory is gone, registration left -> `add` refuses:
+        #      "a missing but already registered worktree"
+        #   3. the branch exists, nothing registered   -> check the branch out
+        #   4. neither                                 -> create both
+        #
+        # `prune` clears any registration whose directory is gone, which turns
+        # state 2 into state 3. Without it, a session whose worktrees were
+        # deleted by hand — or by a cleanup job, or by `rm -rf` — can never be
+        # prepared again. Found by running the same demo task a third time.
+        self._git("worktree", "prune", cwd=source)
+
         if path.exists():
             # Registered from an earlier run. Reuse it rather than failing: a
             # resumed session must land in the tree its earlier work is in.
             self._git("worktree", "repair", str(path), cwd=source)
+        elif self._branch_exists(source, branch):
+            # ⚠️ The branch outlives the worktree. A run that was cancelled, that
+            # crashed, or whose worktrees were cleaned by hand leaves the branch
+            # behind — and `worktree add -b` then fails outright with "a branch
+            # named X already exists", so the session can never be resumed.
+            #
+            # Reusing it is also the *correct* behaviour rather than a
+            # convenience: the branch name is derived from the session id, so it
+            # names this session's work and nothing else. Found by running a real
+            # task twice.
+            self._git("worktree", "add", str(path), branch, cwd=source)
         else:
-            self._git(
-                "worktree", "add", "-b", branch, str(path), base_ref, cwd=source
-            )
+            self._git("worktree", "add", "-b", branch, str(path), base_ref, cwd=source)
 
         handle = WorkspaceHandle(
             session_id=session_id,

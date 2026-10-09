@@ -377,7 +377,13 @@ async def run_task(
         author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
         constraints,
     )
-    await vcs.push(repo, branch, constraints)
+    # Guarded like the pull request below it, and for the same reason: a push
+    # needs a remote. A provider that says it cannot push is telling the truth
+    # about this deployment, and calling it anyway would turn a configuration
+    # fact into a crash at the last step of a task that otherwise succeeded.
+    published = "push" in vcs.capabilities()
+    if published:
+        await vcs.push(repo, branch, constraints)
 
     draft = PullRequestDraft(
         repo=repo,
@@ -398,7 +404,7 @@ async def run_task(
     #
     # So the capability decides, and `capabilities()` — the seam's own mechanism
     # for saying what a provider can do — is consulted for the first time here.
-    if "pull_requests" not in vcs.capabilities():
+    if not published or "pull_requests" not in vcs.capabilities():
         machine.to(
             TaskState.READY,
             "checks passed and the draft is written; no repo host is configured, so "
@@ -418,9 +424,10 @@ async def run_task(
         return TaskOutcome(
             state=TaskState.READY,
             reason=(
-                f"the change is committed on {branch!r} and the checks passed, but no "
-                f"repo host is configured, so no pull request was opened. The draft is "
-                f"ready to be raised by hand or by a configured host provider."
+                f"the change is committed on the local branch {branch!r} and the checks "
+                f"passed, but this deployment has no repo host configured, so nothing was "
+                f"pushed and no pull request was opened. The draft is ready to be raised "
+                f"by hand, or by a deployment that has a host provider."
             ),
             attempts=attempts,
             turns=turns,

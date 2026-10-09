@@ -332,3 +332,59 @@ async def test_commit_refuses_a_repository_the_caller_cannot_reach(workspace) ->
         await workspace.commit(
             handle, "x", CommitAuthor(name="x", email="x@y.z"), elsewhere
         )
+
+
+async def test_a_branch_left_by_an_earlier_run_is_reused_not_fatal(
+    workspace, origin, tmp_path
+) -> None:
+    """⚠️ The branch outlives the worktree.
+
+    A run that was cancelled, that crashed, or whose worktrees were deleted by
+    hand leaves the branch behind — and `worktree add -b` then fails outright
+    with "a branch named X already exists", so the session can never be resumed.
+
+    Found by running a real task twice. Reusing it is also correct rather than
+    merely convenient: the branch name is derived from the session id, so it
+    names this session's work and nothing else.
+    """
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    # Remove the worktree but leave the branch — what an aborted run leaves, and
+    # what `dispose` deliberately does not clean up: the branch is the session's
+    # work, and deleting it would destroy uncommitted history.
+    git("worktree", "remove", "--force", str(handle.root), cwd=origin)
+    assert git("branch", "--list", handle.branch, cwd=origin).strip(), "no branch left to reuse"
+
+    # A **fresh provider**, because that is what a restarted process is. Reusing
+    # this one would hit its handle cache and never reach `git worktree add`.
+    provider = await fresh_workspace(origin, tmp_path)
+    again = await provider.prepare(REPO, "main", SessionId("s-1"))
+
+    assert again.root.exists()
+    assert again.branch == handle.branch
+
+    # And the state a cleanup job leaves: **the directory gone, the registration
+    # still there**. `worktree add` refuses that outright — "a missing but already
+    # registered worktree" — so this is a third state, not a variant of the two
+    # above, and it was found by running the same task a third time.
+    import shutil
+
+    shutil.rmtree(again.root, ignore_errors=True)
+    third = await fresh_workspace(origin, tmp_path)
+    repaired = await third.prepare(REPO, "main", SessionId("s-1"))
+
+    assert repaired.root.exists(), "a stale registration blocked the worktree"
+
+
+async def fresh_workspace(origin: Path, tmp_path: Path):
+    """A newly loaded provider over the same repository, as after a restart."""
+    from forgepilot.config import resolve_plugin
+    from forgepilot.kernel import create_root
+
+    root = create_root()
+    await root.plugin(
+        resolve_plugin(
+            "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"
+        ),
+        {"repos": {SLUG: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
+    )
+    return root.workspace

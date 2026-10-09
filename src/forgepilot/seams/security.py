@@ -189,10 +189,16 @@ class ExecutionConstraints:
         if candidate is None:
             return False
         for allowed in self.writable_paths:
-            allowed_norm = normalise_relative(allowed)
+            allowed_norm = _normalise_write_rule(allowed)
             if allowed_norm is None:
                 continue
-            if candidate == allowed_norm or candidate.startswith(allowed_norm.rstrip("/") + "/"):
+            # `""` is the workspace root: every candidate is under it. Written as
+            # a rule so that "everything here" is expressible, which `"."` — the
+            # obvious spelling, and the one a project config reaches for first —
+            # previously was not.
+            if allowed_norm == "" or candidate == allowed_norm or candidate.startswith(
+                allowed_norm.rstrip("/") + "/"
+            ):
                 return True
         return False
 
@@ -259,6 +265,26 @@ def normalise_relative(path: str) -> str | None:
             continue
         parts.append(part)
     return "/".join(parts) or None
+
+
+def _normalise_write_rule(rule: str) -> str | None:
+    """A writable-path *rule* as a comparable path, or ``None`` if unusable.
+
+    Differs from :func:`normalise_relative` in exactly one place, and that place
+    was a defect: ``"."`` and ``""`` normalise to ``None`` as *paths*, because
+    "the workspace root" is not a file anyone can address. As a **rule** it is
+    the most meaningful thing there is — everything under the root — and the
+    previous code discarded it silently, so `writable_paths: ["."]` granted
+    nothing at all and every write was refused with a message that did not say
+    why.
+
+    An absolute or escaping rule still returns ``None``: "everything under the
+    workspace" must not become "everything".
+    """
+    cleaned = rule.replace("\\", "/").strip()
+    if cleaned in ("", ".", "./"):
+        return ""
+    return normalise_relative(cleaned)
 
 
 def _min_budget(a: Budget, b: Budget) -> Budget:

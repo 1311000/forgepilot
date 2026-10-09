@@ -85,7 +85,11 @@ class MockVcsPlugin(PluginService):
 
     # -- Vcs ---------------------------------------------------------------
     def capabilities(self) -> frozenset[str]:
-        return frozenset({"branches", "commits", "pull_requests", "diff"})
+        # `push` was missing here while `push` was implemented below — an
+        # omission nobody could notice while nothing read this list. It is read
+        # now, and the effect was that the mock took the no-host path and every
+        # task ended at READY instead of DELIVERED.
+        return frozenset({"branches", "commits", "push", "pull_requests", "diff"})
 
     async def resolve(self, slug: str) -> RepoRef:
         parts = slug.split("/")
