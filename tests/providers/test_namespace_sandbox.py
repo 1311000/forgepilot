@@ -340,3 +340,85 @@ async def test_a_write_outside_the_workspace_is_refused() -> None:
     assert outside.enforcement is SandboxEnforcement.FULL
     assert outside.exit_code != 0, "a write outside the workspace succeeded"
     assert "Read-only file system" in outside.stderr or "read-only" in outside.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# The sequence, not just the list
+# ---------------------------------------------------------------------------
+def test_a_writable_bind_states_its_mode_explicitly() -> None:
+    """⚠️ The defect this pins was shipped, and only a real kernel found it.
+
+    After `/` is remounted read-only, a *later* bind of a subdirectory **inherits
+    the read-only flag**. So binding the workspace is not enough — it has to be
+    remounted `rw` afterwards, or every write the agent makes fails with
+    `Read-only file system`: no fixture written, no edit applied, `run_checks`
+    failing every time.
+
+    The tests that existed asserted the *rule list* — `/` first, workspace
+    second, `.git` third — and never that the sequence produces a writable
+    workspace. A rule list and a mount sequence are not the same thing, and the
+    gap between them is invisible until something runs.
+    """
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
+    script = argv[argv.index("-c") + 1]
+
+    assert f"mount -o remount,bind,rw {WORKSPACE.as_posix()}" in script
+    assert f"mount -o remount,bind,ro {WORKSPACE.as_posix()}/.git" in script
+
+
+def test_a_failed_mount_stops_the_script_rather_than_running_uncontained() -> None:
+    """Without `set -e`, a bind that did not take effect is followed by the
+    command running anyway — uncontained, while `probe()` already said `FULL`
+    and `arm` already allowed `exec`. Nothing downstream could tell."""
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
+    script = argv[argv.index("-c") + 1]
+
+    assert script.splitlines()[0] == "set -e"
+
+
+def test_the_script_verifies_the_boundary_before_handing_over_control() -> None:
+    """`set -e` catches a mount that failed. This catches one that "succeeded"
+    without taking effect — the failure mode that would otherwise be silent."""
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
+    script = argv[argv.index("-c") + 1]
+
+    assert "forgepilot-boundary-check" in script
+    assert script.index("forgepilot-boundary-check") < script.index('exec "$@"')
+
+
+def test_the_generated_script_is_pure_ascii() -> None:
+    """It is passed to `sh -c` on a minimal container image, which may have no
+    locale at all. A non-ASCII byte in an error message is enough to make the
+    launcher fail in a way that looks like the sandbox misbehaving."""
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    for mode in (SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE):
+        argv = build_argv(["true"], policy=policy(mode), cwd=WORKSPACE)
+        script = argv[argv.index("-c") + 1]
+        assert script.isascii(), [c for c in script if not c.isascii()]
+
+
+def test_a_protected_subpath_that_does_not_exist_is_skipped_not_bound() -> None:
+    """It has to be conditional, or the rule defeats itself.
+
+    A repository has `.git`; it almost never has `.codex`, `.claude` and
+    `.agents` too. Binding a path that is not there fails — and with `set -e`
+    that aborts the launcher, so a rule meant to *protect against* writing
+    somewhere would instead stop the sandbox from running at all, on nearly
+    every repository. Traced in a container:
+    `mount: /ws/.codex: mount point does not exist`, script dead.
+    """
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
+    script = argv[argv.index("-c") + 1]
+
+    for name in (".git", ".codex", ".claude", ".agents"):
+        target = f"{WORKSPACE.as_posix()}/{name}"
+        assert f"[ -e {target} ]" in script, f"{name} is bound unconditionally"

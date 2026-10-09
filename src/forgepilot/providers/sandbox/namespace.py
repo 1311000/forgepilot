@@ -84,6 +84,16 @@ class MountRule:
     target: Path
     read_only: bool
     kind: MountKind = MountKind.BIND
+    #: Skip the rule when the path does not exist.
+    #:
+    #: Protected subpaths need this and nothing else does. A repository has
+    #: ``.git``; it almost never has ``.codex``, ``.claude`` and ``.agents`` as
+    #: well. Binding a path that is not there fails, and with ``set -e`` that
+    #: failure aborts the whole launcher — so a rule meant to *protect* something
+    #: would instead make the sandbox refuse to run at all, on nearly every
+    #: repository. Measured: the first traced run stopped at
+    #: ``mount: /ws/.codex: mount point does not exist``.
+    only_if_present: bool = False
 
 
 def mount_rules(policy: SandboxExecutionPolicy) -> tuple[MountRule, ...]:
@@ -106,7 +116,11 @@ def mount_rules(policy: SandboxExecutionPolicy) -> tuple[MountRule, ...]:
         rules.append(MountRule(target=policy.workspace_root, read_only=False))
         for name in PROTECTED_SUBPATHS:
             rules.append(
-                MountRule(target=policy.workspace_root / name, read_only=True)
+                MountRule(
+                    target=policy.workspace_root / name,
+                    read_only=True,
+                    only_if_present=True,
+                )
             )
 
     # Always last, and always writable: a read-only root leaves compilers and
@@ -124,6 +138,11 @@ def _mount_script(rules: Sequence[MountRule], cwd: Path, argv: Sequence[str]) ->
     there is no extra process holding the namespace open after the command exits.
     """
     lines = [
+        # `set -e` so a mount that fails **stops the script**. Without it, a bind
+        # that did not take effect is followed by the command running anyway —
+        # uncontained, while `probe()` has already reported `FULL` and `arm` has
+        # already allowed `exec`. Nothing downstream could tell.
+        "set -e",
         # A private mount table, or the bind mounts would propagate to the host.
         "mount --make-rprivate / 2>/dev/null || true",
     ]
@@ -137,9 +156,37 @@ def _mount_script(rules: Sequence[MountRule], cwd: Path, argv: Sequence[str]) ->
         if rule.kind is MountKind.TMPFS:
             lines.append(f"mount -t tmpfs none {quoted}")
             continue
-        lines.append(f"mount --bind {quoted} {quoted}")
-        if rule.read_only:
-            lines.append(f"mount -o remount,bind,ro {quoted}")
+        bind = [f"mount --bind {quoted} {quoted}"]
+        # ⚠️ **Every** bind states its mode explicitly, including the writable
+        # ones. This is not symmetry for its own sake: after `/` has been
+        # remounted read-only, a *later* bind of a subdirectory inherits the
+        # read-only flag, so the workspace would come out unwritable and every
+        # write the agent makes — every test fixture, every edit — would fail
+        # with `Read-only file system`.
+        #
+        # That was the shipped behaviour until this was run in a container and
+        # measured, and no unit test caught it: the tests asserted the *rule
+        # list*, and never that the sequence produces a writable workspace.
+        mode = "ro" if rule.read_only else "rw"
+        bind.append(f"mount -o remount,bind,{mode} {quoted}")
+
+        if rule.only_if_present:
+            lines.append(f"if [ -e {quoted} ]; then " + " && ".join(bind) + "; fi")
+        else:
+            lines.extend(bind)
+
+    # A positive check that the boundary exists, before handing over control.
+    # `set -e` catches a mount that failed; this catches one that "succeeded"
+    # without taking effect — busybox's `mount` remounts a bind to nothing and
+    # returns failure, but a different tool might return success.
+    checker = shlex.quote("/.forgepilot-boundary-check")
+    lines.append(
+        f"if ( : > {checker} ) 2>/dev/null; then "
+        f"rm -f {checker} 2>/dev/null; "
+        f'echo "refusing to run: the boundary did not take effect; / is writable" >&2; '
+        f"exit 125; "
+        f"fi"
+    )
 
     lines.append(f"cd {shlex.quote(cwd.as_posix())} || exit 126")
     lines.append('exec "$@"')
