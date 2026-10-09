@@ -29,12 +29,23 @@ from __future__ import annotations
 
 from forgepilot.seams.sandbox import ExecResult
 
-__all__ = ["likely_denial", "DENIAL_SIGNALS"]
+__all__ = [
+    "DENIAL_SIGNALS",
+    "NOT_FOUND",
+    "SIGSYS_EXIT",
+    "likely_denial",
+    "not_executed_reason",
+]
 
 #: ``128 + SIGSYS``. A process killed by an unhandled signal reports this, and
 #: SIGSYS is what the kernel raises for a syscall seccomp refused — the one
 #: signal nothing but a syscall filter produces.
 SIGSYS_EXIT = 128 + 31
+
+#: Conventional shell status for "command not found". It is the discriminator
+#: between the two ways a command can be *not executed*, which need opposite
+#: answers from whoever reads the result.
+NOT_FOUND = 127
 
 #: ``(needle in stderr, what to tell the model)``. Lower-cased matching.
 DENIAL_SIGNALS: tuple[tuple[str, str], ...] = (
@@ -71,3 +82,47 @@ def likely_denial(result: ExecResult) -> str:
         if needle in haystack:
             return explanation
     return ""
+
+
+def not_executed_reason(result: ExecResult) -> str:
+    """Why nothing ran, when ``executed`` is ``False``.
+
+    This is the *certain* half of the module — no guessing, because the provider
+    has already said what happened. But it is not one case, it is two, and they
+    call for opposite responses:
+
+    - **The executable was not there.** ``127``, and the provider's own stderr
+      says so. Nothing about the host is wrong; the command is. Fix the command.
+    - **The provider does not execute at all.** A recording sandbox, or a host
+      with no backend. There is no command to fix, and retrying differently is
+      wasted effort.
+
+    Telling them apart is the whole job. The message this replaced named the
+    second in both cases, and a real model — told "the configured sandbox records
+    calls without running them" when in fact the harness had mangled its own argv
+    — concluded that execution was impossible on this host and stopped running
+    anything. That is Codex #41320 with the blame on the wrong party: the model
+    saw a wall, and it was not the wall it was standing at.
+    """
+    detail = result.stderr.strip() or "the sandbox gave no reason"
+    argv0 = result.argv[0] if result.argv else "?"
+    head = (
+        f"exit: {result.exit_code}   enforcement: {result.enforcement.value!r}\n"
+        f"argv: {list(result.argv)}\n"
+        f"reason given: {detail}"
+    )
+
+    if result.exit_code == NOT_FOUND:
+        return (
+            f"{head}\n"
+            f"Nothing was spawned: {argv0!r} could not be found. That is a problem "
+            f"with the command, not with the sandbox — check the path and the spelling, "
+            f"and try a command that does not depend on it."
+        )
+
+    return (
+        f"{head}\n"
+        f"The sandbox provider in use may not execute commands at all. If every command "
+        f"reports this, say so plainly rather than looking for another way to run things "
+        f"— on a host with no executing backend there is none."
+    )

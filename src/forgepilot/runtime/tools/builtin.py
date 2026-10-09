@@ -18,13 +18,13 @@ Two habits are enforced here rather than assumed:
 
 from __future__ import annotations
 
-import shlex
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel.errors import CapabilityNotGranted
-from forgepilot.runtime.sandbox_denial import likely_denial
+from forgepilot.runtime.commandline import shell_hint, split_command
+from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
@@ -384,7 +384,16 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
         import json
 
         args = json.loads(call.arguments_json or "{}")
-        argv = shlex.split(str(args.get("command", "")), posix=True)
+        command = str(args.get("command", ""))
+        # **`posix=True` here was a defect, and it was the same one already fixed
+        # in `run_checks`.** It treats a backslash as an escape, so on Windows
+        # `C:\…\python.exe` arrived as `C:…python.exe`, nothing was spawned, and
+        # the model was told the *sandbox* had refused. `split_command` is the
+        # one place that knows how this platform defines a command line; two
+        # callers splitting differently is how the same line comes to mean two
+        # things. Measured, not theorised: a real run lost the ability to execute
+        # anything because of it.
+        argv = split_command(command)
         if not argv:
             return ToolOutcome(content="empty command", is_error=True)
 
@@ -401,19 +410,27 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             timeout_s=ctx.timeout_s,
         )
         if not result.executed:
-            # Never dress this up as a result. A model handed "(exit 0)" for a
-            # command that never ran will summarise its output confidently.
+            # `executed=False` says exactly one thing: nothing ran. It does **not**
+            # say the sandbox refused — an executable that does not exist is also
+            # "not executed" — and the two need opposite responses. The message
+            # this replaced asserted the sandbox was the cause either way, and a
+            # model that read "the sandbox cannot execute" stopped trying to run
+            # anything at all: Codex #41320 with the blame on the wrong party.
+            # `not_executed_reason` is where the two are told apart.
+            #
+            # Never dress this up as a result, either: a model handed "(exit 0)"
+            # for a command that never ran will summarise its output confidently.
             return ToolOutcome(
                 content=(
-                    f"the command was NOT executed: the configured sandbox "
-                    f"({result.enforcement.value!r} enforcement) records calls without "
-                    f"running them. There is no output to report, and anything inferred "
-                    f"from this call would be invented. A sandbox provider that actually "
-                    f"executes is required."
+                    "the command was NOT executed, so there is no output, and anything "
+                    "inferred from this call would be invented.\n"
+                    + not_executed_reason(result)
+                    + shell_hint(command)
                 ),
                 is_error=True,
                 meta={
                     "executed": False,
+                    "exit_code": result.exit_code,
                     "enforcement": str(result.enforcement),
                     "argv": list(result.argv),
                 },
@@ -421,6 +438,11 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
 
         body = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
         body = body.strip()
+        # Said whether or not the command ran: `ls -la && find .` *did* execute,
+        # as `ls` with five odd arguments, and answered `ls: unknown option -- e`
+        # — a message that points at `ls` and says nothing about the `&&` that
+        # caused it.
+        body += shell_hint(command)
 
         # Say out loud when the *boundary* is a plausible cause. Codex #41320 is
         # the failure this prevents: with the sandbox's role dropped, the model

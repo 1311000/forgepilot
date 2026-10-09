@@ -21,12 +21,11 @@ how a broken build consumes a day.
 
 from __future__ import annotations
 
-import os
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from forgepilot.runtime.commandline import split_command
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.sandbox import (
@@ -38,7 +37,11 @@ from forgepilot.seams.sandbox import (
 from forgepilot.seams.security import ExecutionConstraints, Operation
 from forgepilot.seams.session import EventKind, SurfaceOp
 
-__all__ = ["CheckResult", "run_checks", "split_command"]
+# `split_command` moved to `runtime/commandline.py` when the `run` tool needed
+# it too. It was never about repair; it is a fact about the platform, and two
+# callers that split differently is how the same command line comes to mean two
+# things.
+__all__ = ["CheckResult", "run_checks"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,30 +209,6 @@ def _section(index: int, total: int, command: str, outcome: Any) -> str:
     if total == 1:
         return body
     return f"$ {command}\n{body}"
-
-
-def split_command(command: str) -> list[str]:
-    """Split a configured command line the way *this platform* defines one.
-
-    ``shlex.split(posix=True)`` treats a backslash as an escape, so on Windows an
-    absolute path loses its separators — ``C:\\…\\python.exe`` becomes
-    ``C:…python.exe`` — the sandbox reports "command not found", and the check
-    reads as a configuration problem rather than as the harness mangling its own
-    argv. Production is Linux, where either form works; the dev machine is not,
-    and a check that cannot run where you develop is a loop that never closes
-    there.
-
-    Non-posix mode preserves the path but keeps one layer of quoting, so that is
-    removed. The result is the same argv on both platforms for the same command
-    line, which is what "the same code" should mean.
-    """
-    if os.name == "nt":
-        parts = shlex.split(command, posix=False)
-        return [
-            part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part
-            for part in parts
-        ]
-    return shlex.split(command, posix=True)
 
 
 async def _record(
