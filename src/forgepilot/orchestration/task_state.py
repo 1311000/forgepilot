@@ -36,6 +36,14 @@ class TaskState(StrEnum):
     #: Waiting on a person to answer an approval prompt.
     AWAITING_APPROVAL = "awaiting_approval"
     DELIVERED = "delivered"
+    #: The work is done — checks passed, the commit exists, the draft is written —
+    #: and it has **not** been published, because no repo host is configured.
+    #:
+    #: Distinct from :attr:`DELIVERED` on purpose. Publishing needs a service that
+    #: owns pull requests; without one there is nothing to open against, and
+    #: calling that "delivered" would be the same lie as a mock reporting success
+    #: for work it did not do. Distinct from :attr:`FAILED` too: nothing failed.
+    READY = "ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -48,6 +56,7 @@ ALLOWED_TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = {
             TaskState.AWAITING_INFO,
             TaskState.AWAITING_APPROVAL,
             TaskState.DELIVERED,
+            TaskState.READY,
             TaskState.FAILED,
             TaskState.CANCELLED,
         }
@@ -57,6 +66,7 @@ ALLOWED_TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = {
     ),
     # Terminal.
     TaskState.DELIVERED: frozenset(),
+    TaskState.READY: frozenset(),
     TaskState.FAILED: frozenset(),
     TaskState.CANCELLED: frozenset(),
 }

@@ -377,3 +377,98 @@ async def test_a_ticket_that_cannot_be_scoped_is_never_executed(task_rig) -> Non
     outcome = await run(task_rig, plan)
     assert not outcome.delivered
     assert task_rig.vcs.pull_requests == ()
+
+
+# ---------------------------------------------------------------------------
+# No repo host: stop at the draft, and say so
+# ---------------------------------------------------------------------------
+class NoHostVcs:
+    """Real for everything local; cannot publish.
+
+    A repo host is the service that *owns* pull requests. Without one there is
+    nothing to open a PR against, and inventing a reference would be the
+    mock-that-lies failure this project keeps hitting.
+
+    It says so through `capabilities()` — the seam's own mechanism for
+    declaring what a provider can do, which until now nothing read.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.opened: list = []
+
+    def capabilities(self) -> frozenset[str]:
+        return self._inner.capabilities() - {"pull_requests"}
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def open_pull_request(self, draft, constraints):
+        self.opened.append(draft)
+        raise AssertionError(
+            "open_pull_request was called on a provider that declares it cannot "
+            "publish"
+        )
+
+
+async def test_without_a_repo_host_the_change_stops_as_a_ready_draft(task_rig) -> None:
+    """Publishing needs a service that owns pull requests. Absent one, the
+    harness's job ends — with the work done and the draft written, not with a
+    failure and not with a fabricated PR.
+
+    The document's own demo milestone says the deliverable is a "可评审 PR
+    草稿" — a draft. The seam models that (`PullRequestDraft.draft`), and the
+    code sets the flag and then opens it anyway, which is what turned an
+    optional publish step into a hard dependency on a service that does not
+    exist here.
+    """
+    from forgepilot.orchestration.task_state import TaskState
+
+    vcs = NoHostVcs(task_rig.vcs)
+    task_rig.vcs = vcs
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+
+    outcome = await run(task_rig, plan)
+
+    assert vcs.opened == [], "a provider that cannot publish was asked to publish"
+    assert outcome.state is TaskState.READY
+    assert outcome.state is not TaskState.DELIVERED, (
+        "nothing was published, so claiming delivery is the same lie the mock refused to tell"
+    )
+    assert outcome.pull_request is None
+    assert outcome.draft is not None, 'the draft is the deliverable here'
+    assert outcome.draft.source_branch == outcome.branch
+    assert outcome.draft.title.startswith("fix:")
+    assert "repo host" in outcome.reason, outcome.reason
+
+
+async def test_the_draft_carries_the_evidence_the_run_produced(task_rig) -> None:
+    """The draft is not a placeholder — it is built from the real checks and the
+    real diff, so a human can act on it without rerunning anything.
+    """
+    vcs = NoHostVcs(task_rig.vcs)
+    task_rig.vcs = vcs
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+
+    outcome = await run(task_rig, plan)
+
+    assert "T-1" in outcome.draft.body_md, 'not traceable to the ticket'
+    assert outcome.draft.body_md.strip(), 'an empty PR body is not reviewable'
+
+
+async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
+    """An operator reading the session must not have to infer it."""
+    from forgepilot.orchestration.task_state import TaskState
+
+    task_rig.vcs = NoHostVcs(task_rig.vcs)
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+
+    outcome = await run(task_rig, plan)
+
+    states = [e for e in task_rig.session.events if e.kind == EventKind.TASK_STATE]
+    final = states[-1].data
+    assert final['state'] == TaskState.READY.value
+    assert not final.get('pullRequest'), 'a PR was reported that was never opened'

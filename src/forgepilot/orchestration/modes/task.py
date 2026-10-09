@@ -234,6 +234,9 @@ class TaskOutcome:
     changed_paths: tuple[str, ...] = ()
     branch: str = ""
     pull_request: Any = None
+    #: The drafted pull request when none was opened. The deliverable in that case:
+    #: built from the real checks and the real diff, so a human can act on it.
+    draft: Any = None
     transitions: tuple[tuple[TaskState, str], ...] = field(default_factory=tuple)
 
     @property
@@ -380,6 +383,49 @@ async def run_task(
         ticket_id=str(plan.ticket.id),
         draft=True,
     )
+
+    # Publishing needs a **repo host** — the service that owns pull requests.
+    # Without one there is nothing to open against: the seam hands us a path, a
+    # branch, a commit, a diff and a body, but a pull request is an object the
+    # host owns, with a number it assigned. Inventing a reference would be the
+    # mock-that-lies failure this project keeps running into.
+    #
+    # So the capability decides, and `capabilities()` — the seam's own mechanism
+    # for saying what a provider can do — is consulted for the first time here.
+    if "pull_requests" not in vcs.capabilities():
+        machine.to(
+            TaskState.READY,
+            "checks passed and the draft is written; no repo host is configured, so "
+            "nothing was published",
+        )
+        await session.append(
+            EventKind.TASK_STATE,
+            {
+                "state": str(TaskState.READY),
+                "branch": branch.name,
+                # Explicitly absent, so a reader does not have to infer it.
+                "pullRequest": None,
+                "reason": "no repo host configured",
+            },
+        )
+        await session.flush()
+        return TaskOutcome(
+            state=TaskState.READY,
+            reason=(
+                f"the change is committed on {branch.name!r} and the checks passed, but no "
+                f"repo host is configured, so no pull request was opened. The draft is "
+                f"ready to be raised by hand or by a configured host provider."
+            ),
+            attempts=attempts,
+            turns=turns,
+            checks=tuple(checks),
+            diff=diff,
+            changed_paths=tuple(changed),
+            branch=branch.name,
+            draft=draft,
+            transitions=tuple(machine.history),
+        )
+
     pull_request = await vcs.open_pull_request(draft, constraints)
 
     machine.to(TaskState.DELIVERED, "checks passed and a pull request was opened")

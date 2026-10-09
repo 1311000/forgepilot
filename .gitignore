@@ -13,3 +13,7 @@ dist/
 # Local environment overrides — may hold credentials. Never commit this.
 .env.local
 .env
+
+# Generated knowledge-graph output (the /graphify skill). Build artefact: large,
+# derived, and regenerated on demand — it has no business in the history.
+graphify-out/
