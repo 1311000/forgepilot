@@ -52,7 +52,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
     from forgepilot.runtime.assembly import assemble_session, usage_tracker
     from forgepilot.seams.sandbox import SandboxEnforcement
 
-    scratch = H.HERE / "scratch" / f"{task.name}-{arm.name}-{rep}"
+    scratch = H.scratch_dir(task, arm.name, rep)
     root = None
     runtime = None
     started = time.monotonic()

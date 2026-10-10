@@ -119,6 +119,45 @@ def available_tasks() -> tuple[str, ...]:
     return tuple(sorted(p.parent.name for p in TASKS.glob("*/task.yaml")))
 
 
+def scratch_root() -> Path:
+    """Where a run's repository, worktrees and project file are built.
+
+    ⚠️ **Outside the repository, and that is not tidiness.** The eval's own answers
+    live at `evals/tasks/<name>/solution/`, its expectations at
+    `evals/tasks/<name>/task.yaml`, and the `run` tool has **no containment** — so
+    an agent that walks up from its checkout can read the solution to the task it
+    is being scored on. Keeping scratch inside the repo put that one `..` away: the
+    workspace was `<repo>/evals/scratch/<task>-<arm>-<rep>/repo`, and the answers
+    were `../../../tasks/<task>/solution/`. A `dir /s /b` that went one level too
+    far, or a `..` in a relative path, was all it took.
+
+    It also stops every run from creating a nested git repository inside the
+    project tree — which an IDE reports as *"directories wrongly registered as VCS
+    roots"*, one per worktree, sixty of them after a full sweep.
+
+    **What this does not fix, stated so nobody reads it as closed:** `run` still has
+    no containment, and the project's own path reaches the model anyway through the
+    check command's interpreter (`${FORGEPILOT_PYTHON} -m pytest -q`, expanded to
+    the host venv). An agent that deliberately searched the tree it was told about
+    could still find `evals/tasks/`. What moves out of reach is the *accidental*
+    case — a relative walk, a sibling task's fixture, an over-eager `dir /s /b` —
+    and that is the case that actually happens.
+
+    `$FORGEPILOT_EVAL_SCRATCH` overrides it; the default sits beside the sessions
+    and mirrors the runtime state this project already keeps out of the checkout.
+    """
+    from forgepilot.config.profile import default_home
+
+    override = os.environ.get("FORGEPILOT_EVAL_SCRATCH")
+    return Path(override) if override else default_home() / "eval-scratch"
+
+
+def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
+    """One attempt's directory. Named by task, arm and repetition so a leftover
+    directory says which run made it."""
+    return scratch_root() / f"{task.name}-{arm}-{rep}"
+
+
 def _git(*args: str, cwd: Path) -> None:
     completed = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",

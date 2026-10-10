@@ -21,4 +21,8 @@ graphify-out/
 # Eval results and scratch repos. Output, not source: a run is reproduced by
 # running it, and a committed result file is a claim nobody can check.
 evals/results/
+# Vestigial: scratch moved to `$FORGEPILOT_HOME/eval-scratch` because keeping it
+# inside the repo put the eval's own answers one `..` from the agent's workspace,
+# and created a nested git repository per worktree. Kept so an old checkout that
+# still writes here cannot commit it.
 evals/scratch/

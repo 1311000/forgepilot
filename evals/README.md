@@ -43,6 +43,23 @@ have surfaced as a mystifying live failure (see "Already found", 3).
 Results land in `evals/results/`, one file per invocation, gitignored: a committed
 result is a claim nobody can check, and a run is reproduced by running it.
 
+**Scratch does not land in the repository.** Each attempt builds its repo and
+worktrees under `$FORGEPILOT_HOME/eval-scratch/<task>-<arm>-<rep>` (override with
+`$FORGEPILOT_EVAL_SCRATCH`). It used to be `evals/scratch/`, and that was wrong for
+a reason worth keeping written down: **the eval's own answers are in the repo** —
+`evals/tasks/<name>/solution/` and `task.yaml` — and the `run` tool has no
+containment, so a workspace at `evals/scratch/.../repo` had the solution to its own
+task `../../../tasks/<name>/solution/` away. It also created one nested git
+repository per worktree inside the project, which an IDE reports as *"directories
+wrongly registered as VCS roots"* — sixty of them after a full sweep.
+
+⚠️ **That does not make deliberate searching impossible**, and reading it as closed
+would be the mistake: `run` still has no containment, and the project path reaches
+the model anyway through the check command's interpreter. What moved out of reach
+is the accidental case — a relative walk, a sibling task's fixture, an over-eager
+`dir /s /b`. None of the observed runs strayed; their commands are all relative
+(`dir /s /b`, `type src/metrics.py`) plus the host venv interpreter.
+
 ## The tasks
 
 Four shapes, chosen because each one exercises a *different* mechanism. A set of
