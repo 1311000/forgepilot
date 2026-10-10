@@ -76,7 +76,7 @@ async def make_plan(rig, constraints=None):
     )
 
 
-async def run(rig, plan, constraints=None):
+async def run(rig, plan, constraints=None, policy=None, principal=None):
     return await run_task(
         plan=plan,
         project=rig.project,
@@ -90,6 +90,9 @@ async def run(rig, plan, constraints=None):
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=policy if policy is not None else rig.policy,
+        approval=rig.approval,
+        principal=principal if principal is not None else rig.principal,
     )
 
 
@@ -274,6 +277,9 @@ async def test_a_tool_outside_the_selection_is_refused_at_execution(task_rig) ->
         pipeline=task_rig.pipeline,
         tracker=task_rig.tracker,
         model="replay-1",
+        policy=task_rig.policy,
+        approval=task_rig.approval,
+        principal=task_rig.principal,
     )
 
     results = [e for e in task_rig.session.committed_events if e.kind == EventKind.TOOL_RESULT]
@@ -472,3 +478,99 @@ async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
     final = states[-1].data
     assert final['state'] == TaskState.READY.value
     assert not final.get('pullRequest'), 'a PR was reported that was never opened'
+
+
+# ---------------------------------------------------------------------------
+# Publishing is the harness's own outward-facing act
+# ---------------------------------------------------------------------------
+class AsksForPublishing:
+    """A policy that escalates publishing to a human and allows everything else.
+
+    A stand-in rather than the real `PolicyServicePlugin`, because what is under
+    test here is **`run_task`'s handling** of a decision — the service itself, and
+    the shipped config that drives it, are covered in
+    `tests/identity/test_policy_is_wired.py`. `run_task` needs nothing more than
+    an object with `decide`, and saying so with a two-line fake is clearer than
+    reconfiguring a rig.
+    """
+
+    def decide(self, principal, operation, resource=None):  # noqa: ANN001
+        from forgepilot.identity.policy import PolicyDecision
+
+        if operation is Operation.OPEN_PR:
+            return PolicyDecision.ASK
+        return PolicyDecision.ALLOW
+
+
+async def test_publishing_that_needs_a_human_and_gets_none_stops_at_ready(task_rig) -> None:
+    """**The claim that used to be false.**
+
+    `ask_operations: [open_pr]` was documented as making a task stop and ask
+    before it published. It did not: opening a pull request is not a tool call,
+    so no pre-execute listener could ever see it, and `run_task` called the seam
+    directly.
+
+    With no answerer registered, an `ASK` resolves to `UNAVAILABLE` — and
+    everything except `ALLOWED_ONCE` refuses. So the run ends at `READY`, which is
+    exactly what `READY` is for: checks passed, work committed, **nothing
+    published**, and the draft goes back with the outcome so a person can raise it
+    by hand.
+    """
+    from forgepilot.seams.approval import ApprovalOutcome
+
+    task_rig.llm.script(
+        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"),
+        text_turn("修好了"),
+    )
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    plan = await make_plan(task_rig)
+    task_rig.approval.set_answerer(lambda request: ApprovalOutcome.UNAVAILABLE)
+
+    outcome = await run(
+        task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal
+    )
+
+    from forgepilot.orchestration.task_state import TaskState
+
+    assert outcome.state is TaskState.READY, outcome.reason
+    assert not outcome.delivered
+    # **Nothing went out.** Asserted on the pushes as well as the pull requests:
+    # a branch that reached the host is published whether or not a PR followed.
+    assert task_rig.vcs.pushes == (), "a branch was pushed without approval"
+    assert task_rig.vcs.pull_requests == (), "a pull request was opened without approval"
+    # And the work is not lost — it is a draft somebody can raise.
+    assert outcome.draft is not None
+    assert outcome.checks[-1].passed is True
+
+
+async def test_publishing_proceeds_once_a_human_allows_it(task_rig) -> None:
+    """The other direction, so the test above cannot pass by refusing everything."""
+    from forgepilot.seams.approval import ApprovalOutcome
+
+    task_rig.llm.script(
+        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"),
+        text_turn("修好了"),
+    )
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    plan = await make_plan(task_rig)
+    asked: list[str] = []
+
+    def answer(request):
+        asked.append(request.tool_name)
+        return ApprovalOutcome.ALLOWED_ONCE
+
+    task_rig.approval.set_answerer(answer)
+
+    outcome = await run(
+        task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal
+    )
+
+    assert outcome.delivered, outcome.reason
+    assert asked == ["harness:open_pr"], "the human was not asked, or was asked something else"
+    assert task_rig.vcs.pushes, "the branch was never pushed"
+    assert task_rig.vcs.pull_requests
+    # The prompt has to be in the log, or a human never learns there is one.
+    kinds = [str(e.kind) for e in task_rig.session.committed_events]
+    assert EventKind.APPROVAL_ASKED in kinds

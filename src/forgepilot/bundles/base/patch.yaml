@@ -73,10 +73,29 @@
 - id: policy
   plugin: forgepilot.identity.policy:PolicyServicePlugin
   config:
-    # Deny by default: an operation nobody granted is not permitted by omission.
-    default: deny
-    # Operations that always need a human, whatever the grant says.
+    # ⚠️ **`allow`, and the previous value was a trap.** This read `deny`, on the
+    # reasoning that "an operation nobody granted is not permitted by omission" —
+    # but *granting* is not this service's job. It never sees the grant: that
+    # lives in `ExecutionConstraints`, narrowed by `derive` and enforced by the
+    # guards and by `ToolDefinition.required_operation`. A `deny` here meant
+    # **every tool call refused**, because `read_file` maps to `read_code`, which
+    # nobody had listed.
+    #
+    # Nobody noticed because nothing called `decide()` — the service was written,
+    # tested and never wired. It is wired now, and a shipped config that refuses
+    # everything is exactly the kind of thing that reaches production looking
+    # deliberate. `tests/identity/test_policy_is_wired.py` fails if this flips
+    # back.
+    #
+    # Policy's job is the *call-time* question the grant cannot answer: does this
+    # particular act need a person?
+    default: allow
+    # Operations that always need a human, whatever the grant says. An approval
+    # is one-shot, and no answer is a refusal.
     ask_operations:
+      # Publishing — pushing the branch and opening the pull request. Authorised
+      # together, because they are one step: nothing is pushed unless a pull
+      # request is about to be opened.
       - open_pr
   tier: trusted
 

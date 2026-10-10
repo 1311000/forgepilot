@@ -77,6 +77,28 @@
     max_output_bytes: 64000
   tier: trusted
 
+# ⚠️ **Publishing now really does ask a human, and this example has nobody to
+# ask.** The base bundle lists `open_pr` under `ask_operations`, and since P1-9
+# that is enforced rather than decorative — `run_task` consults policy before it
+# pushes or opens anything. With no answerer registered, the ask resolves to
+# `UNAVAILABLE`, everything except `allowed-once` refuses, and the task stops at
+# **`READY`**: checks passed, commit made, nothing published, draft ready.
+#
+# That is the correct outcome and a perfectly good demonstration of its own. This
+# file turns it off because the point of *this* example is the other half — the
+# branch landing on a real host and a pull request a reviewer can open.
+#
+# To see the ask instead, delete this row and run it: the run ends at `READY`
+# with `pullRequest: null`, and the session log shows the `approval/asked` event
+# that nobody answered. Wiring a real answerer is a deployment's job — the
+# approval service takes one, and the workbench UI is where a person clicks.
+- id: policy
+  plugin: forgepilot.identity.policy:PolicyServicePlugin
+  config:
+    default: allow
+    ask_operations: []
+  tier: trusted
+
 - id: principal
   plugin: forgepilot.identity.principal:PrincipalServicePlugin
   config:

@@ -263,8 +263,7 @@ async def _open_session(root: Any, registry: SessionRegistry, cred: Any, workspa
         cred.constraints,
         session_id=session_id,
         workspace_root=workspace_root,
-        tenant=str(cred.principal.tenant_id),
-        principal=str(cred.principal.principal_id),
+        principal=cred.principal,
     )
     return registry.add(runtime, principal=str(cred.principal.principal_id))
 

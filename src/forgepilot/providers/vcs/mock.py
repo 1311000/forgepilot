@@ -65,6 +65,18 @@ class MockVcsPlugin(PluginService):
     def commits(self) -> tuple[tuple[RepoRef, str, str, CommitAuthor], ...]:
         return tuple(self._commits)
 
+    @property
+    def pushes(self) -> tuple[tuple[RepoRef, str], ...]:
+        """Everything pushed, in order.
+
+        Exposed for the same reason `pull_requests` is: a test asserting that
+        something was *not* published has to be able to look. Asserting on the
+        absence of a pull request alone would not catch a branch that went out
+        anyway — and pushing is the half of publishing that a human approving
+        the pull request has implicitly approved too.
+        """
+        return tuple(self._pushes)
+
     def _next_sha(self) -> str:
         self._seq += 1
         return f"{self._seq:040x}"

@@ -24,12 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from forgepilot.identity.policy import policy_listener
 from forgepilot.identity.scope import RequestScope
 from forgepilot.runtime.guards import UsageTracker
 from forgepilot.runtime.session import Session
 from forgepilot.runtime.tools.pipeline import ToolPipeline
 from forgepilot.seams.refs import SessionId
-from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.security import ExecutionConstraints, Principal
 from forgepilot.seams.session import SessionHeader
 
 __all__ = ["SessionRuntime", "assemble_session"]
@@ -59,13 +60,29 @@ async def assemble_session(
     *,
     session_id: SessionId | None = None,
     workspace_root: Path | None = None,
-    tenant: str = "",
-    principal: str = "",
+    principal: Principal | None = None,
     minimum_enforcement_for_exec: Any = None,
 ) -> SessionRuntime:
-    """Wire a session's pieces together around an already-signed authority set."""
+    """Wire a session's pieces together around an already-signed authority set.
+
+    ``principal`` is the **object**, not an id. The session header needs the id,
+    but the tool pipeline needs the whole thing: `tools/pre-execute` now asks the
+    policy service who is calling, and a permission check that cannot say *who*
+    is not a permission check. Taking the object also removes a chance for the
+    two to disagree — the header used to be built from a string parameter while
+    `constraints` carried the id separately.
+
+    **A session cannot be opened without a decision authority.** See below.
+    """
     from forgepilot.identity.scope import open_request_scope
     from forgepilot.seams.sandbox import SandboxEnforcement
+
+    if principal is None:
+        raise ValueError(
+            "assemble_session needs the caller's Principal. It is not derivable from "
+            "the constraints — those carry an id and a tenant but not team membership, "
+            "and a policy keyed on teams would silently see an empty set."
+        )
 
     resolved_id = session_id or SessionId(
         f"session-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
@@ -78,8 +95,8 @@ async def assemble_session(
             SessionHeader(
                 session_id=resolved_id,
                 created_at=datetime.now(timezone.utc),
-                tenant=tenant or str(constraints.tenant_id),
-                principal=principal or str(constraints.principal_id),
+                tenant=str(principal.tenant_id),
+                principal=str(principal.principal_id),
                 cwd=str(workspace_root or ""),
             )
         )
@@ -92,18 +109,42 @@ async def assemble_session(
         root, constraints, verify_signature=False, extra_services={"session": session}
     )
 
+    # **The decision authority is required, and its absence is not permission.**
+    #
+    # An undeclared read on the *root* context returns `None` rather than raising
+    # (see the fail-closed notes in CLAUDE.md), so a profile with no `policy` row
+    # would reach here as `None` — and the tempting handling is "no policy, so
+    # nothing to check". That is backwards for the one thing in the system whose
+    # entire job is to decide, so it is refused by name instead.
+    policy = root.policy
+    if policy is None:
+        raise RuntimeError(
+            "this profile provides no `policy` service, so no tool call can be "
+            "authorised. The `policy` row is what says whether an operation is "
+            "allowed, needs a human, or is refused — and a session without it has no "
+            "decision authority at all. Add it back to the profile (it is in the base "
+            "bundle) or provide one."
+        )
+
     pipeline = ToolPipeline(
         registry=root.tools,
         guards=scope.guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
         workspace_root=workspace_root,
+        principal=principal,
         minimum_enforcement_for_exec=(
             minimum_enforcement_for_exec
             if minimum_enforcement_for_exec is not None
             else SandboxEnforcement.FULL
         ),
     )
+    # **Registered first, so it is the first opinion.** The chain is
+    # first-opinion-wins, and the decision authority belongs at the front: a later
+    # listener that allowed a call would not be able to re-permit what policy
+    # refused, but the reverse ordering would let a later *refusal* stand while
+    # policy's `ask` never reached the human.
+    pipeline.on_pre_execute(policy_listener(policy, principal))
     # The registry refuses to execute without this, which is the point: there is
     # no code path where a tool runs with no approval, no guards and no sandbox.
     root.tools.attach_pipeline(pipeline)

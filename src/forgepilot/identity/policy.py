@@ -25,7 +25,13 @@ from typing import Any
 from forgepilot.kernel import PluginService
 from forgepilot.seams.security import Operation, Principal
 
-__all__ = ["PolicyDecision", "ResourceRef", "PolicyServicePlugin", "SERVICE_NAME"]
+__all__ = [
+    "PolicyDecision",
+    "ResourceRef",
+    "PolicyServicePlugin",
+    "policy_listener",
+    "SERVICE_NAME",
+]
 
 SERVICE_NAME = "policy"
 
@@ -97,3 +103,57 @@ class PolicyServicePlugin(PluginService):
         if operation in self._ask_operations:
             return PolicyDecision.ASK
         return self._default
+
+
+# ---------------------------------------------------------------------------
+# Reaching the decision authority from the tool pipeline
+# ---------------------------------------------------------------------------
+def policy_listener(policy: Any, principal: Principal) -> Any:
+    """A pre-execute listener that asks :class:`PolicyServicePlugin`.
+
+    **This is what connects the only decision authority to the only phase that
+    decides.** Until it existed, `decide` had no callers anywhere in ``src/``:
+    the service was written, tested to the letter, documented as the single
+    source of decisions, and consulted by nothing. The `policy` row's
+    `default: deny` and `ask_operations: [open_pr]` were read by a function
+    nobody called — so "opening a pull request always needs a human" was a
+    sentence in a config file and nothing more.
+
+    Two of the three kinds pass straight through:
+
+    - ``ASK`` → the pipeline's approval phase, which is one-shot and
+      fail-closed: no answer means refusal.
+    - ``DENY`` → refused before ``arm``, so nothing effectful has happened.
+    - ``ALLOW`` → **``None``, meaning "no opinion", not ``ALLOW``.**
+
+    ⚠️ **That last one is load-bearing and was got wrong first.** The chain is
+    *first opinion wins*, and this listener is registered first, so returning
+    ``ALLOW`` ends the chain on every ordinary call and **silently disables every
+    other pre-execute listener in the process** — including the ones tests
+    register, which is how it was noticed. Policy's `allow` means "I do not
+    object", and a listener that does not object should not be the last word.
+    Abstaining also gives the right asymmetry: another listener can still tighten
+    to deny, and none can loosen what policy refused.
+
+    A tool with no ``required_operation`` abstains for the same reason. Every
+    shipped tool declares one, and a tool that does not is a tool whose permission
+    requirement nobody has stated — inventing one here would be this function
+    deciding what the tool is *for*.
+    """
+    from forgepilot.runtime.tools.pre_execute import PreDecision, PreDecisionKind
+
+    def listener(preview: Any, scope: Any) -> Any:
+        operation = preview.required_operation
+        if operation is None:
+            return None
+
+        decision = policy.decide(principal, operation)
+        if decision is PolicyDecision.ALLOW:
+            return None
+
+        return PreDecision(
+            kind=PreDecisionKind.ASK if decision is PolicyDecision.ASK else PreDecisionKind.DENY,
+            reason=f"policy says {decision.value!r} for {operation.value!r}",
+        )
+
+    return listener

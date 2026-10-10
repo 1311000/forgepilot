@@ -128,6 +128,9 @@ async def _boot(tmp_path: Path) -> _Built:
         ("forgepilot.providers.sandbox.recording:RecordingSandboxPlugin", {"enforcement": "full"}),
         ("forgepilot.runtime.tools.registry:ToolRegistryPlugin", None),
         ("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "ask"}),
+        # A session cannot be opened without a decision authority — see
+        # `assemble_session`. `allow`, because the *grant* is what denies.
+        ("forgepilot.identity.policy:PolicyServicePlugin", {"default": "allow"}),
         ("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin", None),
         ("forgepilot.providers.llm.replay:ReplayLLMPlugin", {"model": "replay-1"}),
         ("forgepilot.runtime.loop.agent_loop:AgentFactoryRegistry", None),

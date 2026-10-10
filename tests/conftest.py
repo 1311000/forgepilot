@@ -22,6 +22,11 @@ from forgepilot.runtime.tools.pipeline import ToolPipeline
 from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.refs import PrincipalId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
+
+#: The caller every rig builds its pipeline for. A pipeline now requires one:
+#: `tools/pre-execute` asks the policy service *who is calling*, and a permission
+#: check that cannot say who is not one.
+RIG_PRINCIPAL = Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme"))
 from forgepilot.seams.session import SessionHeader
 
 
@@ -125,6 +130,7 @@ async def loop_rig(tmp_path: Path):
         guards=guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
+        principal=RIG_PRINCIPAL,
         workspace_root=workspace,
     )
     root.tools.attach_pipeline(pipeline)
@@ -208,6 +214,7 @@ async def rig(tmp_path: Path):
         guards=guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
+        principal=RIG_PRINCIPAL,
         workspace_root=workspace,
     )
     root.tools.attach_pipeline(pipeline)
@@ -293,6 +300,12 @@ class TaskRig:
     sandbox: object
     vcs: object
     workspace: object
+    #: The decision authority and the answerer. `run_task` needs them directly:
+    #: the outward-facing step — push and open a pull request — is not a tool
+    #: call, so nothing in the pipeline ever sees it.
+    policy: object
+    approval: object
+    principal: object
     tracker: UsageTracker
     constraints: ExecutionConstraints
     project: ProjectConfig
@@ -378,6 +391,11 @@ async def task_rig(tmp_path: Path):
     await load("forgepilot.providers.llm.replay:ReplayLLMPlugin", {"model": "replay-1"})
     await load("forgepilot.runtime.tools.registry:ToolRegistryPlugin")
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "ask"})
+    # `allow`, deliberately: the *grant* is what denies, and `run_task` consults
+    # policy only for the outward-facing step. A rig configured `deny` would
+    # refuse every publish and every tool call, which is the shipped-config trap
+    # `tests/identity/test_policy_is_wired.py` exists to catch.
+    await load("forgepilot.identity.policy:PolicyServicePlugin", {"default": "allow"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
     await load("forgepilot.providers.vcs.mock:MockVcsPlugin", {})
     # A **real** repository with a **real** worktree, because `commit` now lives on
@@ -400,6 +418,7 @@ async def task_rig(tmp_path: Path):
         guards=guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
+        principal=RIG_PRINCIPAL,
     )
     root.tools.attach_pipeline(pipeline)
 
@@ -423,6 +442,9 @@ async def task_rig(tmp_path: Path):
             sandbox=root.sandbox,
             vcs=root.vcs,
             workspace=root.workspace,
+            policy=root.policy,
+            approval=root.approval,
+            principal=RIG_PRINCIPAL,
             tracker=tracker,
             constraints=constraints_for(
                 Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR

@@ -44,7 +44,7 @@ from forgepilot.runtime.tools.pre_execute import (
 from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.sandbox import SandboxEnforcement
-from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.security import ExecutionConstraints, Principal
 from forgepilot.seams.session import EventKind
 from forgepilot.seams.tools import (
     ResourceTargets,
@@ -85,6 +85,10 @@ class ToolPipeline:
     approval: Any
     enforcement: Callable[[], SandboxEnforcement]
     workspace_root: Path | None = None
+    #: Who is calling. Required, because a pre-execute listener that cannot say
+    #: *who* cannot make a permission decision — and the phase exists to make one.
+    #: Handed to the scope as data; see `PreExecuteScope`.
+    principal: Principal | None = None
     minimum_enforcement_for_exec: SandboxEnforcement = SandboxEnforcement.FULL
     logger: Any = None
     pre_execute_listeners: list[PreExecuteListener] = field(default_factory=list)
@@ -176,6 +180,7 @@ class ToolPipeline:
             arguments_json=call.arguments_json,
             targets=targets,
             workspace_root=root,
+            required_operation=definition.required_operation,
         )
 
         # Guards are captured now, at call time. A plugin registering a guard
@@ -191,7 +196,22 @@ class ToolPipeline:
 
         # --- phase: pre-execute (pure) -------------------------------------
         self.trace.append(Phase.PRE_EXECUTE)
-        scope = PreExecuteScope(logger=self.logger, constraints=constraints)
+        if self.principal is None:
+            # Refused rather than defaulted. A listener that checks permission
+            # without knowing the caller would have to skip the check, and
+            # "skipped because we did not know who it was" is the wrong way round
+            # for the one phase whose entire job is to decide.
+            return await self._finish(
+                session, call, turn, step,
+                self._refusal(
+                    Phase.PRE_EXECUTE,
+                    "no principal is attached to this pipeline, so no pre-execute "
+                    "listener can decide anything about it",
+                ),
+            )
+        scope = PreExecuteScope(
+            logger=self.logger, constraints=constraints, principal=self.principal
+        )
         try:
             decision = resolve_decision(tuple(self.pre_execute_listeners), preview, scope)
         except Exception as exc:  # noqa: BLE001 - a bad hook must not kill the turn

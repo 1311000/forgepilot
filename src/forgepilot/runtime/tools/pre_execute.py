@@ -30,7 +30,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.security import ExecutionConstraints, Operation, Principal
 from forgepilot.seams.tools import ResourceTargets, ToolEffect
 
 __all__ = [
@@ -57,6 +57,16 @@ class CallPreview:
     arguments_json: str
     targets: ResourceTargets
     workspace_root: Path | None = None
+    #: The ``Operation`` this tool maps to — ``read_code``, ``run_tests``,
+    #: ``open_pr``. **Declared by the tool, never inferred from its effects.**
+    #:
+    #: Without it a listener cannot ask "may this principal do this *kind* of
+    #: thing": "writes a file" and "opens a pull request" can share an effect
+    #: while needing different permission, which is exactly why
+    #: `ToolDefinition.required_operation` exists as its own field. It was simply
+    #: not carried this far, so the one phase whose job is to decide had nothing
+    #: to decide *about*.
+    required_operation: Operation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,10 +82,17 @@ class PreExecuteScope:
     ``session``, ``ctx``, ``open``, ``subprocess``, ``httpx``. A regression test
     asserts those names are absent, because "we did not add one yet" is a
     property worth freezing.
+
+    ``principal`` is **data, not a capability**, and it is here because the phase
+    could not otherwise do its job. A permission check that cannot see *who* is
+    calling is not a permission check; `ExecutionConstraints` carries the
+    principal's id and tenant, so the identity was already visible here — this
+    hands over the object rather than making every listener rebuild one.
     """
 
     logger: Any
     constraints: ExecutionConstraints
+    principal: Principal
 
 
 class PreDecisionKind(StrEnum):

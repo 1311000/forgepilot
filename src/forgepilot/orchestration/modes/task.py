@@ -263,6 +263,11 @@ async def run_task(
     tracker: Any = None,
     model: str = "",
     author: Any = None,
+    #: The decision authority, the answerer, and who is calling — needed for the
+    #: one part of a task that is not a tool call. See `runtime/authority.py`.
+    policy: Any = None,
+    approval: Any = None,
+    principal: Any = None,
 ) -> TaskOutcome:
     """Execute a plan: branch, work, check, repair, deliver.
 
@@ -272,10 +277,12 @@ async def run_task(
     checks pass. Giving the model the tool would add an authority it has no need
     for, and every capability that exists is one that can be induced.
     """
+    from forgepilot.runtime.authority import authorise
     from forgepilot.runtime.loop.turn import run_turn
     from forgepilot.runtime.pinning import pinned_to_base
     from forgepilot.runtime.repair import run_checks
     from forgepilot.seams.agent_loop import UserInput
+    from forgepilot.seams.security import Operation
     from forgepilot.seams.session import EventKind
     from forgepilot.seams.vcs import PullRequestDraft
 
@@ -409,14 +416,6 @@ async def run_task(
         author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
         constraints,
     )
-    # Guarded like the pull request below it, and for the same reason: a push
-    # needs a remote. A provider that says it cannot push is telling the truth
-    # about this deployment, and calling it anyway would turn a configuration
-    # fact into a crash at the last step of a task that otherwise succeeded.
-    published = "push" in vcs.capabilities()
-    if published:
-        await vcs.push(repo, branch, constraints)
-
     draft = PullRequestDraft(
         repo=repo,
         source_branch=branch,
@@ -427,6 +426,73 @@ async def run_task(
         ticket_id=str(plan.ticket.id),
         draft=True,
     )
+
+    # Guarded like the pull request below it, and for the same reason: a push
+    # needs a remote. A provider that says it cannot push is telling the truth
+    # about this deployment, and calling it anyway would turn a configuration
+    # fact into a crash at the last step of a task that otherwise succeeded.
+    published = "push" in vcs.capabilities()
+
+    # --- the harness's own outward-facing act -----------------------------
+    #
+    # **This is the part no pre-execute listener can ever see.** Pushing a branch
+    # and opening a pull request are not tool calls: there is no `tool/call`, no
+    # armed capability, no `describe_targets`. So `ask_operations: [open_pr]`
+    # named precisely the operation that never reached the mechanism it
+    # configures, and the honest reading of that config file was wrong.
+    #
+    # Both acts are authorised together, on `OPEN_PR`, because they are one
+    # publication step: nothing is pushed unless a pull request is about to be
+    # opened. There is no `PUSH` operation, and inventing one here would be this
+    # function deciding what the coarse operation set means.
+    if published:
+        authorisation = await authorise(
+            policy=policy,
+            approval=approval,
+            principal=principal,
+            operation=Operation.OPEN_PR,
+            session=session,
+            summary=(
+                f"publish {len(changed)} changed file(s) on {repo.slug} as branch "
+                f"{branch!r} and open a draft pull request against "
+                f"{project.default_branch!r}. Checks: "
+                + "; ".join(
+                    f"{c.command} -> {'passed' if c.passed else 'FAILED'}" for c in checks
+                )
+            ),
+        )
+        if not authorisation.allowed:
+            # `READY`, not `FAILED`: the work is done, committed and verified,
+            # and the only thing missing is permission to publish it. That is
+            # exactly what `READY` means — "done, not published" — and the draft
+            # goes back with the outcome so a person can raise it by hand.
+            machine.to(TaskState.READY, authorisation.reason)
+            await session.append(
+                EventKind.TASK_STATE,
+                {
+                    "state": str(TaskState.READY),
+                    "branch": branch,
+                    "pullRequest": None,
+                    "reason": authorisation.reason,
+                    "asked": authorisation.asked,
+                },
+            )
+            await session.flush()
+            return TaskOutcome(
+                state=TaskState.READY,
+                reason=authorisation.reason,
+                attempts=attempts,
+                turns=turns,
+                checks=tuple(checks),
+                diff=diff,
+                changed_paths=tuple(changed),
+                pinned_tests=pinned,
+                branch=branch,
+                draft=draft,
+                transitions=tuple(machine.history),
+            )
+
+        await vcs.push(repo, branch, constraints)
 
     # Publishing needs a **repo host** — the service that owns pull requests.
     # Without one there is nothing to open against: the seam hands us a path, a

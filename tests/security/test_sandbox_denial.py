@@ -32,7 +32,8 @@ async def scripted_rig(tmp_path):
     from forgepilot.runtime.guards import GuardRegistry, UsageTracker, default_guards
     from forgepilot.runtime.session import Session
     from forgepilot.runtime.tools.pipeline import ToolPipeline
-    from forgepilot.seams.refs import SessionId
+    from forgepilot.seams.refs import PrincipalId, SessionId, TenantId
+    from forgepilot.seams.security import Principal
     from forgepilot.seams.session import SessionHeader
 
     root = create_root()
@@ -60,6 +61,7 @@ async def scripted_rig(tmp_path):
         guards=guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
+        principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
         workspace_root=workspace,
     )
     root.tools.attach_pipeline(pipeline)

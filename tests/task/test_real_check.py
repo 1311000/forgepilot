@@ -349,6 +349,8 @@ async def real_task_rig(tmp_path):
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "never"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
     await load("forgepilot.providers.vcs.mock:MockVcsPlugin", {})
+    # `allow`: the grant is what denies; policy's job is the call-time question.
+    await load("forgepilot.identity.policy:PolicyServicePlugin", {"default": "allow"})
     from tests.conftest import make_origin_repo  # noqa: PLC0415 - see below
 
     origin = make_origin_repo(tmp_path / "origin", REAL_SEED)
@@ -367,6 +369,7 @@ async def real_task_rig(tmp_path):
         guards=guards,
         approval=root.approval,
         enforcement=root.sandbox.probe,
+        principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
         # The local sandbox reports NONE, so exec is refused unless the
         # requirement is lowered — the same explicit act the CLI asks for.
         minimum_enforcement_for_exec=SandboxEnforcement.NONE,
@@ -403,6 +406,9 @@ async def real_task_rig(tmp_path):
             vcs=root.vcs,
             workspace=root.workspace,
             tracker=tracker,
+            policy=root.policy,
+            approval=root.approval,
+            principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
             project=project,
             constraints=ExecutionConstraints.for_principal(
                 Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
@@ -476,6 +482,9 @@ async def test_a_whole_task_is_decided_by_a_real_test_runner(real_task_rig) -> N
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
 
     assert outcome.checks, "no check was recorded at all"
@@ -557,6 +566,9 @@ async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
 
     assert outcome.checks, 'no check was recorded'
@@ -665,6 +677,9 @@ async def test_relaxing_the_test_does_not_make_the_check_pass(real_task_rig) -> 
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
 
     final = outcome.checks[-1]
@@ -722,6 +737,9 @@ async def test_the_model_is_told_why_editing_the_test_cannot_help(real_task_rig)
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
 
     checks = [e for e in rig.session.events if e.kind == EventKind.TASK_CHECK]
@@ -758,6 +776,9 @@ async def test_nothing_is_pinned_when_the_agent_touched_no_tests(real_task_rig) 
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
 
     assert outcome.pinned_tests == ()

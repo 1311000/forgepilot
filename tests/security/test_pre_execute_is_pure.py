@@ -88,11 +88,29 @@ async def deny_always(request) -> ApprovalOutcome:
 # 1 & 2: the scope holds nothing, and cannot gain anything
 # ---------------------------------------------------------------------------
 def test_scope_holds_nothing_that_can_act(rig) -> None:
-    """A hook is handed a logger and constraints. That is the entire world."""
-    scope = PreExecuteScope(logger=None, constraints=constraints_for(rig.workspace))
+    """A hook is handed a logger, constraints, and who is calling.
+
+    That is the entire world. **`principal` is the interesting one to have
+    added**, so it is worth saying why it does not breach the property this test
+    exists for: it is a frozen value object carrying an id, a tenant and team
+    memberships, with no callable and no handle on anything. The scope already
+    handed over `principal_id` and `tenant_id` — they are fields of
+    `ExecutionConstraints` — so no identity information is new here. What is new
+    is that a permission check can see *who* without rebuilding the object, and a
+    permission check that cannot see who is not one.
+
+    The rule for the next field is unchanged and worth restating: if a hook could
+    **act** through it, the #1863 protection is gone, and privileged preparation
+    belongs in `runtime/tools/arm.py`, which runs after approval.
+    """
+    scope = PreExecuteScope(
+        logger=None,
+        constraints=constraints_for(rig.workspace),
+        principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+    )
 
     field_names = {f.name for f in dataclasses.fields(scope)}
-    assert field_names == {"logger", "constraints"}, (
+    assert field_names == {"logger", "constraints", "principal"}, (
         "PreExecuteScope gained a field. If it is something a hook could act "
         "through, the #1863 protection is gone — privileged preparation belongs in "
         "runtime/tools/arm.py, which runs after approval."
@@ -100,10 +118,19 @@ def test_scope_holds_nothing_that_can_act(rig) -> None:
     for name in FORBIDDEN_ON_SCOPE:
         assert not hasattr(scope, name), f"pre-execute scope exposes {name!r}"
 
+    # The new field is data: no callable, and nothing reachable from it that
+    # could be called. A handle would fail this.
+    assert not any(callable(getattr(scope, f.name)) for f in dataclasses.fields(scope))
+    assert dataclasses.fields(type(scope.principal)), "principal is not a value object"
+
 
 def test_scope_is_frozen_and_slotted(rig) -> None:
     """It cannot be extended at runtime either."""
-    scope = PreExecuteScope(logger=None, constraints=constraints_for(rig.workspace))
+    scope = PreExecuteScope(
+        logger=None,
+        constraints=constraints_for(rig.workspace),
+        principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
+    )
 
     with pytest.raises(AttributeError):
         scope.sandbox = object()  # type: ignore[misc]

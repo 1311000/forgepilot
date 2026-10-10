@@ -333,8 +333,7 @@ def _chat(args: argparse.Namespace) -> int:
             constraints,
             session_id=SessionId(args.session) if args.session else None,
             workspace_root=workspace,
-            tenant=str(record.principal.tenant_id),
-            principal=str(record.principal.principal_id),
+            principal=record.principal,
             minimum_enforcement_for_exec=minimum_enforcement,
         )
 
@@ -570,8 +569,7 @@ def _task(args: argparse.Namespace) -> int:
             root,
             constraints,
             workspace_root=workspace,
-            tenant=str(record.principal.tenant_id),
-            principal=str(record.principal.principal_id),
+            principal=record.principal,
             minimum_enforcement_for_exec=_minimum_enforcement(root, args),
         )
         try:
@@ -606,6 +604,11 @@ def _task(args: argparse.Namespace) -> int:
                 pipeline=runtime.pipeline,
                 tracker=usage_tracker(runtime),
                 model=getattr(root.llm, "model", "?"),
+                # The outward-facing step is not a tool call, so it needs the
+                # decision authority and the answerer directly.
+                policy=root.policy,
+                approval=root.approval,
+                principal=record.principal,
             )
             _print_outcome(outcome)
         finally:

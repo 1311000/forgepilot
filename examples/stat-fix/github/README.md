@@ -91,17 +91,26 @@ token travels through `url.<base>.insteadOf` in the environment. The token is
 also scrubbed from every message git produces, because git quotes URLs back in
 its failures.
 
-**A pull request is an outward-facing act, and nothing stops to ask you.**
-`run_task` decides when it happens — after the checks pass — and the model has no
-`open_pr` tool, so a pull request is not something the agent can do on its own.
-What gates it is `ExecutionConstraints`: a caller without `open_pr` is refused.
+**A pull request is an outward-facing act, and the harness decides when it
+happens.** The model has no `open_pr` tool, so a pull request is not something the
+agent can do on its own: `run_task` opens one after the checks pass.
 
-⚠️ **The base bundle's `ask_operations: [open_pr]` does not apply here.** It is
-read by `PolicyService.decide()`, and nothing in `src/` calls `decide()` — the
-policy service is loaded, tested and consulted by nobody. So this run **will open
-a pull request on the target repository without asking**, and the flag that looks
-like it should prevent that has no effect. This was written down wrongly here
-once, and corrected after checking. See the defect table in `CLAUDE.md`.
+Two independent things gate it, and they answer different questions:
+
+- **`ExecutionConstraints`** — may this principal open a pull request *at all*.
+  A caller without `open_pr` is refused outright.
+- **`policy`** — does this particular act need a person. The base bundle lists
+  `open_pr` under `ask_operations`, and since P1-9 that is **enforced**:
+  `run_task` consults policy before it pushes or opens anything, and an `ASK` with
+  no answerer resolves to `UNAVAILABLE`, which is a refusal. The run would stop at
+  `READY` with the draft unraised and an `approval/asked` event in the log that
+  nobody answered.
+
+⚠️ **This example turns that off on purpose**, with a `policy` row that sets
+`ask_operations: []`. There is no answerer in a terminal, so leaving it on would
+mean the demo never gets as far as the pull request — which is the half this
+example exists to show. Delete that row to watch the ask happen instead; the
+outcome is `READY` rather than `DELIVERED`, and nothing is pushed.
 
 **The three paths must agree.** The mirror lives at
 `<mirror_root>/<host>/<namespace>/<name>` — derived by the `vcs` provider — and

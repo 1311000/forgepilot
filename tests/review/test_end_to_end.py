@@ -98,6 +98,9 @@ async def deliver_a_fix(rig):
         pipeline=rig.pipeline,
         tracker=rig.tracker,
         model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
     )
     assert outcome.delivered, outcome.reason
     return outcome
