@@ -76,7 +76,7 @@ async def make_plan(rig, constraints=None):
     )
 
 
-async def run(rig, plan, constraints=None, policy=None, principal=None):
+async def run(rig, plan, constraints=None, policy=None, principal=None, **kwargs):
     return await run_task(
         plan=plan,
         project=rig.project,
@@ -93,6 +93,7 @@ async def run(rig, plan, constraints=None, policy=None, principal=None):
         policy=policy if policy is not None else rig.policy,
         approval=rig.approval,
         principal=principal if principal is not None else rig.principal,
+        **kwargs,
     )
 
 
@@ -196,6 +197,35 @@ async def test_the_retry_bound_is_respected(task_rig) -> None:
     assert outcome.state.value == "failed"
     assert outcome.attempts == task_rig.project.retry.max_attempts + 1
     assert task_rig.vcs.pull_requests == (), "nothing is delivered when checks fail"
+
+
+async def test_task_mode_honours_the_configured_step_ceiling(task_rig) -> None:
+    """⚠️ **`run_task` drives `run_turn` directly, so it never saw `max_steps`.**
+
+    It runs the whole repair loop, and each attempt is a turn — so the real bound
+    on a task is `attempts × max_steps`, and the configured ceiling reached only
+    the chat path. A profile with `max_steps: 3` got 12 per attempt here.
+
+    The count is asserted **exactly**, not bounded: the old test in the loop suite
+    wrote `<= max_steps`, which passes whether the ceiling yields 3 steps or 2 —
+    and it yields 2. See `test_the_step_ceiling_is_the_number_of_steps`.
+    """
+    from forgepilot.seams.session import EventKind
+
+    plan = await make_plan(task_rig)
+    for index in range(10):
+        task_rig.llm.script(
+            tool_call_turn(
+                "read_file",
+                json.dumps({"path": "src/login.py"}),
+                call_id=f"c{index}",
+            )
+        )
+
+    await run(task_rig, plan, max_steps=4)
+
+    steps = sum(1 for e in task_rig.session.committed_events if e.kind == EventKind.STEP_START)
+    assert steps == 4, f"{steps} step(s) ran against a ceiling of 4"
 
 
 async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(task_rig, constraints_factory) -> None:

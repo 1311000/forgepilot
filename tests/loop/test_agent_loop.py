@@ -203,8 +203,17 @@ async def test_budget_exhaustion_closes_the_turn_with_a_reason(loop_rig) -> None
     assert events(loop_rig)[-1].data["reason"] == "budget"
 
 
-async def test_the_step_ceiling_bounds_looping(loop_rig) -> None:
-    """A cheap tool called forever stays inside budget but not inside this ceiling."""
+async def test_the_step_ceiling_is_the_number_of_steps(loop_rig) -> None:
+    """⚠️ **`max_steps` used to mean `max_steps - 1` steps.**
+
+    The ceiling was checked *inside* the loop as `if step == max_steps - 1: break`,
+    one iteration early, so the last permitted step never ran: a ceiling of 4
+    produced 3, and `DEFAULT_MAX_STEPS = 12` meant 11.
+
+    This asserted `<= max_steps`, which passes for either number — the same shape
+    as the sandbox test that asserted a `--` was present because the test and the
+    code shared the wrong assumption. Counted exactly now.
+    """
     for index in range(20):
         loop_rig.llm.script(
             tool_call_turn("read_file", json.dumps({"path": "src/a.py"}), call_id=f"c{index}")
@@ -212,8 +221,8 @@ async def test_the_step_ceiling_bounds_looping(loop_rig) -> None:
 
     result = await drive(loop_rig, max_steps=3)
 
-    assert result.reason == "error"
-    assert kinds(loop_rig).count(EventKind.STEP_START) <= 3
+    assert result.reason == "error", "the ceiling ends the turn with a reason of its own"
+    assert kinds(loop_rig).count(EventKind.STEP_START) == 3
     assert kinds(loop_rig)[-1] == EventKind.TURN_END
 
 

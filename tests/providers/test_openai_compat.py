@@ -22,6 +22,7 @@ import pytest
 from forgepilot.providers.llm.openai_compat import (
     OpenAICompatError,
     OpenAICompatLLMPlugin,
+    apply_price,
     chunk_from_delta,
     chunks_from_events,
     iter_chunks,
@@ -205,6 +206,50 @@ def test_usage_is_extracted_from_the_final_event() -> None:
 
     assert response.usage == Usage(input_tokens=11, output_tokens=7)
     assert response.message.content == "x"
+
+
+# ---------------------------------------------------------------------------
+# Pricing — the producer `max_cost_usd` never had
+# ---------------------------------------------------------------------------
+def test_a_configured_rate_becomes_a_cost() -> None:
+    """Without this there was no writer for `usage.cost_usd` on any path, so the
+    budget guard's cost check read a field nothing ever set — a limit that could
+    not be reached, described as a guard because exceeding it "must be final".
+    """
+    priced = apply_price(
+        Usage(input_tokens=1_000, output_tokens=500),
+        price_per_1k_input=0.03,
+        price_per_1k_output=0.06,
+    )
+    assert priced.cost_usd == pytest.approx(0.03 + 0.03)
+
+
+def test_no_configured_rate_leaves_the_cost_alone() -> None:
+    """Zero is the honest answer, not a guess.
+
+    A deployment that has not said what a token costs has not said what the call
+    cost, and inventing a figure would make a cost budget fire on a number nobody
+    supplied. It does leave `max_cost_usd` unusable on that row — which is why the
+    rates live on the same config row as the model, where `--dump-config` shows
+    them.
+    """
+    usage = Usage(input_tokens=1_000, output_tokens=500)
+    assert apply_price(usage, price_per_1k_input=0.0, price_per_1k_output=0.0) == usage
+
+
+def test_cached_reads_are_not_priced_as_input() -> None:
+    """Pinned as *behaviour*, not as a wish: `cache_read_tokens` is not billed at
+    the input rate here. A cached read is cheaper than a fresh one everywhere that
+    publishes rates, so pricing it as input would overstate the cost — the safe
+    direction for a budget, but wrong, and it should be a deliberate change rather
+    than something that drifts in.
+    """
+    priced = apply_price(
+        Usage(input_tokens=100, output_tokens=0, cache_read_tokens=10_000),
+        price_per_1k_input=0.30,
+        price_per_1k_output=0.60,
+    )
+    assert priced.cost_usd == pytest.approx(0.03)
 
 
 # ---------------------------------------------------------------------------

@@ -126,8 +126,11 @@ class UsageTracker:
     cost_usd: float = 0.0
     wall_seconds: float = 0.0
 
-    def record_call(self) -> None:
-        self.tool_calls += 1
+    # ⚠️ `record_call()` used to live here and was called by nothing. The loop
+    # counts with `tracker.tool_calls += len(result.tool_calls)`, so the method was
+    # not merely dead — it made the tracker look like an object whose counting goes
+    # through a method, which is a large part of how the two-tracker defect below
+    # stayed invisible. Deleted rather than kept "in case".
 
 
 #: The name this tracker is provided under inside a request scope.
