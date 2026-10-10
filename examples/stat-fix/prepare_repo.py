@@ -58,6 +58,20 @@ def _git(*args: str, cwd: Path) -> str:
     return completed.stdout
 
 
+def assignment(name: str, value: str, shell: str) -> str:
+    """One line that sets ``name`` in ``shell``.
+
+    The two shells are not interchangeable, and pretending otherwise is how
+    somebody pastes `eval "$(...)"` into PowerShell and is told `eval` is not
+    recognised. `export` is not a PowerShell verb either, so the output has to
+    differ rather than merely be wrapped differently.
+    """
+    quoted = value.replace("'", "''")  # both shells escape a quote by doubling it
+    if shell == "powershell":
+        return f"$env:{name} = '{quoted}'"
+    return f"export {name}='{quoted}'"
+
+
 def _force_remove(path: Path) -> None:
     """``rmtree`` that survives Windows read-only files.
 
@@ -165,6 +179,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only `export` lines, for `eval \"$(... --export)\"`",
     )
+    parser.add_argument(
+        "--shell",
+        choices=("posix", "powershell"),
+        default="posix",
+        help=(
+            "which shell `--export` writes for. PowerShell has no `eval`, and "
+            "`export` is not a PowerShell verb, so the two forms are not "
+            "interchangeable - see the printed instructions for both."
+        ),
+    )
     args = parser.parse_args(argv)
 
     root = _default_root() if args.into is None else args.into.resolve()
@@ -187,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, value in exports.items():
             # Single-quoted: this is shell input, and a path is not something to
             # interpolate bare.
-            print(f"export {name}='{value}'")
+            print(assignment(name, value, args.shell))
         return 0
 
     print(f"{action} {repo}")
@@ -204,12 +228,23 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print("run the example with:\n")
-    print('  eval "$(.venv/Scripts/python.exe examples/stat-fix/prepare_repo.py --export)"')
+    print("  Git Bash:")
+    print('    eval "$(.venv/Scripts/python.exe examples/stat-fix/prepare_repo.py --export)"')
     print()
-    print("  .venv/Scripts/python.exe -m forgepilot --config-dir configs \\")
-    print("      --patch examples/stat-fix/patch.yaml \\")
-    print("      --project examples/stat-fix/project.yaml \\")
-    print("      --task BUG-1 --token demo-token --allow-uncontained-exec")
+    print("  PowerShell (no `eval`; `export` is not a verb there):")
+    print(
+        "    .venv/Scripts/python.exe examples/stat-fix/prepare_repo.py --export "
+        "--shell powershell | Invoke-Expression"
+    )
+    print()
+    print("  Then, one line (`\\` continuation is bash-only):")
+    print()
+    print(
+        "    .venv/Scripts/python.exe -m forgepilot --config-dir configs "
+        "--patch examples/stat-fix/patch.yaml "
+        "--project examples/stat-fix/project.yaml "
+        "--task BUG-1 --token demo-token --allow-uncontained-exec"
+    )
     print()
     print("(the model credential comes from .env.local - see CLAUDE.md)")
     return 0 if ok else 1

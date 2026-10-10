@@ -60,6 +60,20 @@ def _git(
     return completed.stdout
 
 
+def assignment(name: str, value: str, shell: str) -> str:
+    """One line that sets ``name`` in ``shell``.
+
+    The two shells are not interchangeable, and pretending otherwise is how
+    somebody ends up pasting `eval "$(...)"` into PowerShell and being told
+    `eval` is not recognised. `export` is not a PowerShell verb either, so the
+    output has to differ rather than merely be wrapped differently.
+    """
+    quoted = value.replace("'", "''")  # both shells escape a quote by doubling it
+    if shell == "powershell":
+        return f"$env:{name} = '{quoted}'"
+    return f"export {name}='{quoted}'"
+
+
 def _force_remove(path: Path) -> None:
     """`rmtree` that survives the read-only object files git leaves behind.
 
@@ -158,10 +172,20 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "override the https base the clone URL is built from. Point it at a "
             "local bare repository to rehearse the whole flow without a token or a "
-            "network — only the URL differs."
+            "network - only the URL differs."
         ),
     )
     parser.add_argument("--export", action="store_true", help="print only `export` lines")
+    parser.add_argument(
+        "--shell",
+        choices=("posix", "powershell"),
+        default="posix",
+        help=(
+            "which shell `--export` writes for. PowerShell has no `eval`, and "
+            "`export` is not a PowerShell verb, so the two forms are not "
+            "interchangeable - see the printed instructions for both."
+        ),
+    )
     args = parser.parse_args(argv)
 
     home = os.environ.get("FORGEPILOT_HOME")
@@ -191,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         # on the network. Seeding is what the plain run is for, and it prints the
         # line below for you to copy.
         for key, value in exports.items():
-            print(f"export {key}='{value}'")
+            print(assignment(key, value, args.shell))
         return 0
 
     # Load the gitignored .env.local the same way the CLI does, so the token does
@@ -218,17 +242,30 @@ def main(argv: list[str] | None = None) -> int:
     print(f"seeding {args.slug} from {FIXTURE}")
     seed(token, args.slug, into, force=args.force, remote_base=args.remote_base)
 
+    seeder = "examples/stat-fix/github/seed_github.py"
+    run = (
+        ".venv/Scripts/python.exe -m forgepilot --config-dir configs "
+        "--patch examples/stat-fix/github/patch.yaml "
+        "--project examples/stat-fix/github/project.yaml "
+        "--task BUG-1 --token demo-token --allow-uncontained-exec"
+    )
+
     print(f"pushed main to {args.slug}")
     print()
-    print("run the GitHub example with:\n")
+    print("Two steps. First, the three variables the patch needs.")
+    print()
+    print("  Git Bash:")
+    print(f'    eval "$(.venv/Scripts/python.exe {seeder} --export)"')
+    print()
+    print("  PowerShell (no `eval`; `export` is not a verb there):")
     print(
-        '  eval "$(.venv/Scripts/python.exe examples/stat-fix/github/seed_github.py --export)"'
+        f"    .venv/Scripts/python.exe {seeder} --export --shell powershell "
+        f"| Invoke-Expression"
     )
     print()
-    print("  .venv/Scripts/python.exe -m forgepilot --config-dir configs \\")
-    print("      --patch   examples/stat-fix/github/patch.yaml \\")
-    print("      --project examples/stat-fix/github/project.yaml \\")
-    print("      --task BUG-1 --token demo-token --allow-uncontained-exec")
+    print("Then the task itself (one line; `\\` continuation is bash-only):")
+    print()
+    print(f"    {run}")
     print()
     print("(the model credential comes from .env.local - see CLAUDE.md)")
     return 0
