@@ -1,0 +1,62 @@
+# **Finding it is the task.** The ticket names a file and the file is not the bug.
+#
+# The failing assertion lives at the invoice level and names a *value*
+# (`assert 112 == 113`), so its traceback has no frame inside `billing/` at all.
+# The rule that produced the 112 is three calls down, in a module the ticket never
+# mentions, and the symbol is imported by two other modules on the way.
+#
+# This is the task the `no-search` arm exists for, and the relation between them is
+# weaker than the other two, stated here rather than left to be discovered:
+#
+# ⚠️ **`no-search` removes `code_search`, not the ability to search.** The `run`
+# tool is still there, and on this host `findstr /s` or a recursive `dir` can do the
+# same job. So what the arm measures is *the dedicated tool against the shell*, and
+# its signal is **cost — tool calls and wall-clock — not pass or fail**. Both arms
+# can succeed on this task; the report's call column is where the difference appears,
+# and a difference of zero is a result too: it would say the tool is not earning its
+# place on work this size.
+name: find-the-bug
+fixture: fixture
+
+ticket:
+  id: BUG-5
+  title: 发票合计少一分钱
+  description: |
+    复现步骤：
+    1. 开一张发票，单价 1.125，数量 1
+    2. 看合计
+
+    预期结果：119 分（113 的费用 + 6 的税）
+    实际结果：118 分
+
+    受影响仓库：git.local/demo/stats
+    相关文件：invoice.py
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  # One expression, in the module that owns the rule. A run that rewrites the
+  # call sites instead has treated a symptom.
+  max_changed_paths: 2
+  max_tool_calls: 40
+  max_turns: 4
+
+understanding:
+  category: bug
+  symptom: an invoice total is a cent lower than the lines add up to
+  expected: half a cent rounds up, away from zero
+  actual: it rounds to the nearest even whole number
+  confidence: 0.95
+
+# --- offline: what a correct agent does -------------------------------------
+#
+# Deliberately a *straight* script: write the fix, say what it was. The offline run
+# is here to prove the task is solvable and that its own solution scores — not to
+# model the search. A scripted model knows where the bug is, so this run can say
+# nothing about localisation, and it does not try to.
+script:
+  - write: {path: billing/rounding.py, from: solution/rounding.py}
+  - say: |
+      问题不在 invoice.py，在 billing/rounding.py：round_half_up 用的是内置
+      round，那是「四舍六入五成双」，1.125 这种正好半分的会往下取。改成先加
+      0.5 再向下取整，负数对称处理。

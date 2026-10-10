@@ -205,22 +205,43 @@ def export_environment(repo: Path, worktrees: Path) -> dict[str, str]:
     return values
 
 
-def project_mapping(task: EvalTask) -> dict[str, Any]:
-    """The example's project with the task's own overrides — **and no arm**.
+def project_mapping(task: EvalTask, *, arm: Any = None) -> dict[str, Any]:
+    """The example's project, the task's overrides, and an arm's on top of both.
 
-    Kept separate from `write_project` because the runner needs it that way: what
-    counts as a test path is the task's declaration, and the `no-pinning` arm
-    empties `test_paths` on purpose. Letting an arm redefine the expectation would
-    make a task fail for a reason it does not measure.
+    ⚠️ **An arm's `project` override is what makes that arm an arm**, and this
+    argument did not exist. `no-search` removes a tool, `no-pinning` empties
+    `test_paths`, `no-repair` sets `max_attempts: 0` — all three are *project*
+    settings, and `write_project` was called without them, so three of the five arms
+    ran the baseline configuration under a different name.
+
+    That is what the first ablation actually measured:
+
+        full 92%   no-search 100%   no-pinning 100%   no-repair 100%   tight-window 75%
+
+    Three identical rates were **the same run repeated**. `tight-window` was the
+    only arm that behaved differently, because it is the only one that uses
+    `patches` — and `boot()` did apply those. The reading given at the time ("the
+    tasks are too easy for these mechanisms to matter") was unsupported: nobody had
+    ever switched them off.
+
+    ⚠️ **The `arm` argument exists, and it is optional on purpose.** The
+    *expectation* must not see an arm: what counts as a test path is the task's
+    declaration, and letting `no-pinning` redefine it would make the task fail for a
+    reason it does not measure. Config and expectation are two questions about the
+    same file and only one of them may be overridden — which is the distinction the
+    old docstring drew correctly and then applied to both.
     """
     base = yaml.safe_load(
         (FORGE / "examples" / "stat-fix" / "project.yaml").read_text(encoding="utf-8")
     )
-    return {**base, **task.project}
+    merged = {**base, **task.project}
+    if arm is not None:
+        merged = {**merged, **arm.project}
+    return merged
 
 
-def write_project(task: EvalTask, into: Path):
-    """The example's project plus the arm's override, written out and loaded.
+def write_project(task: EvalTask, into: Path, *, arm: Any = None):
+    """The example's project plus the task's and the arm's overrides, written and loaded.
 
     ⚠️ **Through `load_project`, not `project_from_mapping`.** They differ in
     exactly one way and it bit immediately: only the loader expands `${VAR}`, and
@@ -240,7 +261,7 @@ def write_project(task: EvalTask, into: Path):
     into.mkdir(parents=True, exist_ok=True)
     path = into / "project.yaml"
     path.write_text(
-        yaml.safe_dump(project_mapping(task), allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(project_mapping(task, arm=arm), allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
     return load_project(path)

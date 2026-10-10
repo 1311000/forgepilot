@@ -72,7 +72,10 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         if scripted and task.script:
             root.llm.script(*H.script_turns(task))
 
-        project = H.write_project(task, scratch / "config")
+        # ⚠️ **With the arm.** Without it, an arm that switches something off in the
+        # *project* — which is three of the five — runs the baseline configuration,
+        # and the comparison is the baseline against itself.
+        project = H.write_project(task, scratch / "config", arm=arm)
         record = root.principal.resolve("demo-token")
         constraints = derive(record.principal, record.grant, project.to_policy(), key=None)
 

@@ -1,0 +1,67 @@
+# The task the `no-repair` arm exists for: **the first fix is wrong, and the
+# check says so.**
+#
+# The ticket reports one example — `page_count(11, 10)` — and the obvious repair
+# satisfies exactly that example while breaking three cases the ticket never
+# mentions. An agent that writes the fix and stops is *plausibly* finished; only
+# something that runs the suite and reports back can tell it otherwise.
+#
+# ⚠️ **What this task can and cannot prove.** It makes the repair loop the thing
+# that decides the outcome, so `full` delivers and `no-repair` does not — that
+# difference is measurable offline, in both directions, and is checked that way.
+# What it cannot guarantee is that a *live* model needs the second attempt: a model
+# that runs the tests before it claims to be done gets it right the first time, and
+# then both arms pass and the row says nothing about repair. That is not a defect in
+# the task, it is the honest reading of the comparison — and it is why the arm table
+# is a hint and not a measurement.
+name: two-attempts
+fixture: fixture
+
+ticket:
+  id: BUG-4
+  title: 分页少算一页
+  description: |
+    复现步骤：
+    1. 调用 page_count(11, 10)
+
+    预期结果：2（10 条一页，剩下 1 条还要一页）
+    实际结果：1（最后一页不见了，列表底部那几条点不到）
+
+    受影响仓库：git.local/demo/stats
+    相关文件：paginate.py
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  # The fix is one expression in one file. A run that rewrites the module or its
+  # tests is doing something other than what the ticket asked for.
+  max_changed_paths: 2
+  max_tool_calls: 40
+  # Two attempts, each a turn of its own, plus room for one the model spends
+  # reading before it writes anything.
+  max_turns: 6
+
+understanding:
+  category: bug
+  symptom: page_count returns one page too few for a partial last page
+  expected: page_count(11, 10) is 2
+  actual: 1
+  confidence: 0.95
+
+# --- offline: the two attempts, in order -----------------------------------
+#
+# Not a claim about any model. It is what makes this task verifiable without a
+# network, **and** what makes the arm comparison falsifiable offline:
+#
+#   evals/run.py --scripted --task two-attempts                 -> pass
+#   evals/run.py --scripted --task two-attempts --arm no-repair -> FAIL
+#
+# If the second one ever passes, the arm is not switching anything off.
+script:
+  # Attempt 1 — the fix the ticket's example invites. The check rejects it, and
+  # the repair prompt hands the model the failure.
+  - write: {path: paginate.py, from: solution/paginate_obvious.py}
+  - say: "把最后一页补上了：除以每页条数之后加一"
+  # Attempt 2 — what the suite actually requires.
+  - write: {path: paginate.py, from: solution/paginate.py}
+  - say: "看了测试输出：加一那版让整页和空列表都多出一页，改成向上取整了"

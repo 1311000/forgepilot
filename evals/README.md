@@ -96,30 +96,88 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | `feature` | the thing being asked for **does not exist yet, and the new test is the specification** |
 | `incomplete` | the first architectural invariant — a ticket with no reproduction steps is rejected by *rules*, before classification, with zero model calls |
 | `out-of-scope` | the permission boundary — the ticket names a file the project does not permit writing, and there is a legitimate fix next to it |
+| `find-the-bug` | **localisation** — the failing assertion names a value, not a place, and the module that owns the rule is three calls down and not the file the ticket names |
+| `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
 **a task whose own correct answer does not score is a broken task** — and finding
-that out from a live run costs money and tells you less. `feature` additionally
-has a `variant: cheating`: it writes the test and not the implementation, and it
-must fail.
+that out from a live run costs money and tells you less.
+
+Two of them additionally carry a variant, and they point in **opposite**
+directions, which is worth knowing before reading a variant's result:
+
+- `feature/cheating` writes the test and not the implementation. It must **fail**,
+  and its *passing* would be the alarm.
+- `bug-fix/weakens-the-test` relaxes the assertions that disagree with the buggy
+  module and touches no production code. Its expectation is what a **held** oracle
+  produces (`failed`), so running it under `no-pinning` makes it **fail** — and that
+  failure is how you see the arm switch something off.
 
 ## The arms
 
-| arm | switched off |
-|---|---|
-| `full` | nothing — the baseline |
-| `no-search` | `code_search`; the agent must already know which file to read |
-| `no-pinning` | the oracle is not held fixed, so an edited test decides the check |
-| `no-repair` | one attempt; a failing check ends the task |
-| `tight-window` | a model window small enough that compaction has to work for anything to finish |
+| arm | switched off | the task that makes it discriminate |
+|---|---|---|
+| `full` | nothing — the baseline | |
+| `no-search` | `code_search`; the agent must already know which file to read | `find-the-bug` — for **cost**, not pass/fail; see below |
+| `no-pinning` | the oracle is not held fixed, so an edited test decides the check | `bug-fix/weakens-the-test` |
+| `no-repair` | one attempt; a failing check ends the task | `two-attempts` |
+| `tight-window` | a model window small enough that compaction has to work for anything to finish | any task long enough to cross the trigger |
 
 An arm is a project override and at most one patch row. If an arm needs more than
 that, the mechanism is probably not switchable — which is worth knowing too.
+
+⚠️ **An arm is only meaningful if some task flips when it is switched off**, and
+three of these did not have one until the tasks above were built. Checked offline,
+in both directions:
+
+```
+evals/run.py --scripted --task two-attempts                        -> pass
+evals/run.py --scripted --task two-attempts --arm no-repair        -> FAIL
+evals/run.py --scripted --task bug-fix --variant weakens-the-test  -> pass
+evals/run.py --scripted --task bug-fix --variant weakens-the-test --arm no-pinning -> FAIL
+```
+
+⚠️ **`no-search` is different in kind and should not be read like the other two.**
+It removes a *tool*, not the ability to search: `run` is still there, and on this
+host `findstr /s` does the same job. So both arms can pass `find-the-bug`, and the
+arm's signal is **tool calls and wall-clock**. A call-count difference of zero is a
+result too — it would say the tool is not earning its place on work this size.
 
 ## What it has already found
 
 None of these were found by the unit tests, and two of them were in *shipped*
 code rather than in the eval harness.
+
+**0. Three of the five arms never switched anything off — and the first ablation
+was read as a result anyway.**
+
+`Arm.project` was read by **nothing**. `write_project(task, …)` was called without
+it, so `no-search`, `no-pinning` and `no-repair` — every one of which is *entirely*
+a project override — ran the baseline configuration under a different name. Only
+`Arm.patches` was applied, and `tight-window` is the only arm that uses one.
+
+So this output:
+
+```
+full 92%   no-search 100%   no-pinning 100%   no-repair 100%   tight-window 75%
+```
+
+is **three repeats of `full` plus one real arm**, and the 92-vs-100 spread is
+run-to-run variance. The reading given at the time — *"the tasks are too easy for
+these mechanisms to matter"* — was not merely wrong, it was about mechanisms that
+had never been turned off. `tight-window` behaved differently because it is the arm
+whose switch worked.
+
+⚠️ **The reason this is the most important entry on the list** is the shape, not
+the size. A mechanism that matters and a mechanism that was never disabled produce
+**identical** tables. Nothing in the output distinguishes "no effect" from "not
+applied", and the only thing that does is reading the call that builds the run's
+configuration. `tests/evals/test_arms_are_applied.py` is that reading, made
+executable; `test_the_configuration_written_for_a_run_carries_the_arm` fails if the
+arm is dropped again.
+
+It was found by building `two-attempts` and watching it pass under `no-repair` —
+a task designed to fail there, passing, is a louder signal than any rate.
 
 **1. The oracle pinning made a feature unverifiable.** Pinning restores every
 changed path under `test_paths` to the base revision, so a test the agent wrote
