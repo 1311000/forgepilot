@@ -50,6 +50,28 @@ pull req  : https://github.com/1311000/test/pull/N
 | `ensure_mirror` | the local checkout *is* the mirror | clones and fetches from GitHub |
 | opening a PR | `NoRepoHost`, refused | a real `POST /repos/…/pulls` |
 
+## Rehearsing it without a token
+
+Every step of `seed_github.py` except the URL is ordinary git, so it can be run
+against a local bare repository — no token, no network, and the same `init` →
+`commit` → `remote add` → `push` sequence a real run performs:
+
+```bash
+git init --bare -b main /tmp/rehearsal/remotes/1311000/test.git
+FORGEPILOT_GITHUB_TOKEN=unused .venv/Scripts/python.exe \
+  examples/stat-fix/github/seed_github.py \
+  --slug github.com/1311000/test \
+  --remote-base file:///tmp/rehearsal/remotes \
+  --into /tmp/rehearsal/seed
+
+git --git-dir=/tmp/rehearsal/remotes/1311000/test.git log --oneline main
+```
+
+This is how the seed script itself was verified. What it does **not** verify is
+GitHub: the API's error shapes, the `draft` flag and the permission model are
+facts about the host, and `tests/providers/test_github_vcs_live.py` is the only
+thing here that asks them.
+
 ## Three things worth knowing
 
 **The credential never enters a URL.** The obvious design puts the token in the

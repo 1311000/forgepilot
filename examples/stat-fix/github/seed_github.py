@@ -77,13 +77,17 @@ def _force_remove(path: Path) -> None:
     shutil.rmtree(path, onexc=onexc)
 
 
-def seed(token: str, slug: str, into: Path, *, force: bool) -> None:
+def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "") -> None:
     from forgepilot.providers.vcs.github import authenticated_env, remote_url
     from forgepilot.seams.refs import RepoRef
 
     host, namespace, name = slug.split("/")
     repo = RepoRef(host=host, namespace=namespace, name=name)
-    base = f"https://{host}"
+    # `remote_base` is how you rehearse this without a token or a network: point
+    # it at a local bare repository and every step below runs for real — init,
+    # commit, remote, push — with only the URL differing. Verifying the sequence
+    # is worth more than verifying the URL, and the URL is one string.
+    base = remote_base or f"https://{host}"
     url = remote_url(base, repo)
     env = authenticated_env(token, base)
 
@@ -148,6 +152,15 @@ def main(argv: list[str] | None = None) -> int:
         help="where to build the seed checkout (default: under FORGEPILOT_HOME)",
     )
     parser.add_argument("--force", action="store_true", help="recreate the seed checkout")
+    parser.add_argument(
+        "--remote-base",
+        default="",
+        help=(
+            "override the https base the clone URL is built from. Point it at a "
+            "local bare repository to rehearse the whole flow without a token or a "
+            "network — only the URL differs."
+        ),
+    )
     parser.add_argument("--export", action="store_true", help="print only `export` lines")
     args = parser.parse_args(argv)
 
@@ -179,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.export:
         print(f"seeding {args.slug} from {FIXTURE}")
-    seed(token, args.slug, into, force=args.force)
+    seed(token, args.slug, into, force=args.force, remote_base=args.remote_base)
 
     exports = {
         "FORGEPILOT_EXAMPLE_MIRRORS": str(example / "mirrors"),
