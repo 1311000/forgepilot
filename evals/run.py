@@ -139,6 +139,16 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         # nothing to do with what it measures.
         from forgepilot.config.project import project_from_mapping as _from_mapping
 
+        # Everything the agent *said*, for the expectation that is about whether
+        # it told you something. Over the whole conversation, not the last
+        # message: the last turn of a run is often a tool call with no prose at
+        # all, and reading only that reports "it never said" about a run that said
+        # so twice.
+        row["agent_text"] = "\n".join(
+            str(e.data.get("text", ""))
+            for e in runtime.session.committed_events
+            if e.kind == "assistant/message" and e.data.get("text")
+        )
         row["changed_tests"] = list(
             _from_mapping(H.project_mapping(task), name=task.name).tests_in(outcome.changed_paths)
         )
