@@ -179,6 +179,38 @@ arm is dropped again.
 It was found by building `two-attempts` and watching it pass under `no-repair` —
 a task designed to fail there, passing, is a louder signal than any rate.
 
+**0b. And then the arms leaked their own names to the model.**
+
+With the arms wired, the first real ablation gave `no-repair` 78% — and `0/3` on
+`find-the-bug`, where every other arm was 3/3. Twelve runs wrote the fix and three
+did not, on a first turn that is byte-identical between them (`max_attempts` reaches
+nothing the model sees; that was checked by grep before believing anything else).
+
+The three that did not, said so:
+
+> *"the task scope — find-the-bug, **no repair** — I have not modified any source"*
+> *"Per the task's **"no repair" scope**, I have made **no code changes"*
+
+**The scratch directory was `find-the-bug-no-repair-1`, and the agent's working
+directory is the `repo/` inside it.** Anything that lists the directory — `dir /s
+/b`, `%CD%`, a shell prompt, a traceback — hands the model the arm's name. Both of
+those runs diagnosed the bug correctly and then declined to fix it, quoting the
+treatment back as if it were the ticket.
+
+⚠️ **Every arm's number in that run is therefore suspect**, and `no-search` is the
+worst of them: a model that reads "no search" in its own path has been told not to
+search. The comparison was not "with the mechanism" against "without it" — it was
+"with the mechanism" against "with the mechanism, *plus a sign saying not to*".
+
+The fix is that the directory is opaque (`run-<hash>`) and the mapping from it back
+to task/arm/rep moved into the results row, where a person reads it and the model
+does not. `test_the_agent_cannot_read_the_arm_off_its_own_path` checks every arm.
+
+⚠️ **The general shape is the one this file keeps recording**: the instrument was
+measuring itself. An ablation is only an ablation if the subject cannot tell which
+arm it is in — and nothing in the output would ever have shown it. What showed it
+was one run quoting its own directory name in prose.
+
 **1. The oracle pinning made a feature unverifiable.** Pinning restores every
 changed path under `test_paths` to the base revision, so a test the agent wrote
 for something that does not exist yet is deleted for the deciding run — and the

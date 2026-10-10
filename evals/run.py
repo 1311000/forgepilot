@@ -62,6 +62,11 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         "rep": rep,
         "mode": "scripted" if scripted else "live",
         "started": datetime.now(timezone.utc).isoformat(),
+        # The mapping from an opaque directory back to what it was. It lives here
+        # rather than in the path because the path is inside the agent's own
+        # context, and a directory called `...-no-repair-1` is a hint the model can
+        # read — and did.
+        "scratch": str(scratch),
     }
 
     try:

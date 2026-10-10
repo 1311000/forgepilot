@@ -82,6 +82,38 @@ def test_the_no_repair_arm_ends_after_one_attempt(task) -> None:
 # ---------------------------------------------------------------------------
 # And it does not leak into the expectation
 # ---------------------------------------------------------------------------
+def test_the_agent_cannot_read_the_arm_off_its_own_path(task) -> None:
+    """⚠️ **The experiment must not be visible to its subject.**
+
+    The agent works in `scratch/repo/`, so a scratch directory named after the arm
+    hands it the treatment. It did: two runs in the first real ablation wrote *"the
+    task scope — find-the-bug, no repair — I have not modified any source"* and
+    changed nothing, having read their own path.
+
+    Every arm is checked, not just `no-repair` — `no-search` is the worst of them,
+    because a model that reads "no search" has been told not to search.
+    """
+    for name in arm_module.ARMS:
+        directory = H.scratch_dir(task, name, 1)
+        assert name not in str(directory), f"the arm name {name!r} is in {directory}"
+        for word in name.split("-"):
+            assert word not in directory.name, (
+                f"{directory.name} contains {word!r}, which is part of the arm name "
+                f"{name!r}"
+            )
+
+
+def test_each_attempt_still_gets_its_own_directory(task) -> None:
+    """Opaque is not the same as shared: two arms must not overwrite each other's
+    checkout, or a run measures the previous one."""
+    seen = {
+        H.scratch_dir(task, arm, rep)
+        for arm in arm_module.ARMS
+        for rep in (1, 2, 3)
+    }
+    assert len(seen) == len(arm_module.ARMS) * 3
+
+
 def test_the_expectation_does_not_see_the_arm(task) -> None:
     """⚠️ **The distinction the old docstring drew correctly and then applied to
     both.** What counts as a test path is the *task's* declaration: letting

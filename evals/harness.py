@@ -21,6 +21,7 @@ gates its network call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -154,9 +155,34 @@ def scratch_root() -> Path:
 
 
 def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
-    """One attempt's directory. Named by task, arm and repetition so a leftover
-    directory says which run made it."""
-    return scratch_root() / f"{task.name}-{arm}-{rep}"
+    """One attempt's directory — **named so the agent cannot read the arm off it.**
+
+    ⚠️ **This was `f"{task.name}-{arm}-{rep}"`, and that leaked the experiment to
+    its own subject.** The agent's working directory is the `repo/` inside this
+    path, so anything that lists it — `dir /s /b`, `%CD%`, a shell prompt, a
+    traceback — hands the model the arm's name.
+
+    It did not stay theoretical. Two runs in the first real ablation said so out
+    loud, unprompted:
+
+        "the task scope — find-the-bug, **no repair** — I have not modified any source"
+        "Per the task's **\"no repair\" scope**, I have made **no code changes**"
+
+    Both had `changed=[]`. They diagnosed the bug correctly and declined to fix it,
+    having read `find-the-bug-no-repair-1` in their own path. That is why
+    `no-repair` scored 0/3 on this task and 3/3 everywhere else, and it means
+    **every arm's number is suspect** — `no-search` in particular, where a model
+    that reads "no search" has been told not to search.
+
+    Opaque rather than descriptive, and the mapping moves to the row: `run_one`
+    records `scratch` alongside task/arm/rep, so a leftover directory is still
+    traceable by anyone reading the results rather than by the model reading its
+    own `pwd`.
+    """
+    digest = hashlib.blake2s(
+        f"{task.name}|{arm}|{rep}".encode("utf-8"), digest_size=6
+    ).hexdigest()
+    return scratch_root() / f"run-{digest}"
 
 
 def _git(*args: str, cwd: Path) -> None:
