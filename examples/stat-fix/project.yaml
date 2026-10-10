@@ -77,6 +77,12 @@ tool_sets:
 category_tool_sets:
   bug: bugfix
   question: default
+  # ⚠️ The classifier's categories are ("bug", "question", "feature") and until an
+  # eval task used one, `feature` had no entry here — so a feature ticket fell
+  # back to `default`, which is read-only, and the agent could not write anything.
+  # The fallback is right (never "everything"), but a category the classifier can
+  # actually emit needs a set that can do the work.
+  feature: bugfix
 
 budget:
   max_tool_calls: 60

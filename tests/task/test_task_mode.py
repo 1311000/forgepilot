@@ -574,3 +574,81 @@ async def test_publishing_proceeds_once_a_human_allows_it(task_rig) -> None:
     # The prompt has to be in the log, or a human never learns there is one.
     kinds = [str(e.kind) for e in task_rig.session.committed_events]
     assert EventKind.APPROVAL_ASKED in kinds
+
+
+# ---------------------------------------------------------------------------
+# Both trees, and both have to pass
+# ---------------------------------------------------------------------------
+def test_combine_checks_is_a_conjunction() -> None:
+    """Neither run alone is enough, and the reason is symmetric.
+
+    Pinned alone cannot see a feature — restoring the tests to base deletes the
+    specification for something that does not exist yet. Agent alone cannot see a
+    weakened assertion. Reporting the conjunction is what makes both visible.
+    """
+    from forgepilot.runtime.repair import CheckResult, combine_checks
+
+    ok = CheckResult(passed=True, command="pytest", output="2 passed")
+    bad = CheckResult(passed=False, command="pytest", output="1 failed", exit_code=1)
+
+    assert combine_checks((("pinned", ok), ("agent", ok))).passed
+    assert not combine_checks((("pinned", ok), ("agent", bad))).passed
+    assert not combine_checks((("pinned", bad), ("agent", ok))).passed
+
+    both = combine_checks((("pinned", ok), ("agent", bad)))
+    assert "pinned" in both.output and "agent" in both.output, (
+        "a reader cannot tell which tree failed"
+    )
+    assert both.meta["runs"]["agent"]["passed"] is False
+
+
+def test_combine_checks_keeps_an_answer_when_one_run_could_not_run() -> None:
+    """If one tree was actually checked, that answer is evidence.
+
+    Reporting `could_not_run` over it would discard the only result there is —
+    and a check that cannot run is never a pass, so the failure is still a
+    failure either way.
+    """
+    from forgepilot.runtime.repair import CheckResult, combine_checks
+
+    ran = CheckResult(passed=True, command="pytest", output="2 passed")
+    did_not = CheckResult(passed=False, could_not_run=True, reason="no sandbox")
+
+    combined = combine_checks((("pinned", did_not), ("agent", ran)))
+
+    assert combined.could_not_run is False
+    assert combined.passed is False, "a check that could not run was treated as a pass"
+
+
+async def test_changed_tests_are_checked_against_both_trees(task_rig) -> None:
+    """The wiring: a changed test path means the project's command runs twice.
+
+    Asserted on the number of times the sandbox was asked to run, because that is
+    the thing that would silently stop happening.
+    """
+    task_rig.llm.script(
+        tool_call_turn(
+            "write_file",
+            json.dumps({"path": "tests/test_login.py", "content": "def test_retry_is_bounded():\n    pass\n"}),
+            call_id="c1",
+        ),
+        text_turn("改了测试"),
+        text_turn("还是不行"),
+        text_turn("放弃"),
+    )
+    task_rig.sandbox.script(
+        ScriptedResult(exit_code=1, stdout="1 failed"),
+        ScriptedResult(exit_code=0, stdout="1 passed"),
+        ScriptedResult(exit_code=1, stdout="1 failed"),
+        ScriptedResult(exit_code=1, stdout="1 failed"),
+    )
+
+    plan = await make_plan(task_rig)
+    outcome = await run(task_rig, plan)
+
+    runs = task_rig.sandbox.calls if hasattr(task_rig.sandbox, "calls") else []
+    assert len(runs) >= 2, (
+        "the checks ran only once, so a changed test was not checked against both "
+        "the pinned tree and the agent's"
+    )
+    assert not outcome.delivered, "a run whose agent-tree check failed was delivered"

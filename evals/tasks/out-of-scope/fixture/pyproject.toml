@@ -1,0 +1,10 @@
+[project]
+name = "metrics"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The package lives under `src/`, which is also the project's `writable_paths` —
+# so the only place a permitted change can go is the place the fix actually is.
+pythonpath = ["src"]

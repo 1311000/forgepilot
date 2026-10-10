@@ -26,6 +26,17 @@ class NotARepository(ForgePilotError):
     """
 
 
+class NothingToCommit(ForgePilotError):
+    """The working tree is unchanged, so there is nothing to record.
+
+    Reachable without anything being wrong with the harness: an agent whose write
+    was refused, or a ticket describing something already fixed. It surfaced as
+    git's own *"nothing to commit, working tree clean"* wrapped in a `GitFailed`
+    from the last step of a run that had otherwise succeeded — a confusing way to
+    say "no change was produced", and the caller cannot act on it.
+    """
+
+
 class UnknownRepository(ForgePilotError):
     """A repository the provider has no local source for.
 
@@ -39,6 +50,7 @@ __all__ = [
     "SERVICE_NAME",
     "NotARepository",
     "UnknownRepository",
+    "NothingToCommit",
     "WorkspaceHandle",
     "UnifiedDiff",
     "Workspace",

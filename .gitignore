@@ -17,3 +17,8 @@ dist/
 # Generated knowledge-graph output (the /graphify skill). Build artefact: large,
 # derived, and regenerated on demand — it has no business in the history.
 graphify-out/
+
+# Eval results and scratch repos. Output, not source: a run is reproduced by
+# running it, and a committed result file is a claim nobody can check.
+evals/results/
+evals/scratch/

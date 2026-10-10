@@ -248,3 +248,64 @@ async def _record(
         turn=turn,
         step=step,
     )
+
+
+def combine_checks(named: Sequence[tuple[str, "CheckResult"]]) -> "CheckResult":
+    """One verdict from the same checks run over two different trees.
+
+    **Why two runs.** Pinning the project's tests to the base revision is what
+    stops an agent satisfying a check by relaxing it — but it makes a *feature*
+    unverifiable, and that is not a corner case: when the thing being asked for
+    does not exist yet, the new test **is** the specification, and restoring the
+    test file to base deletes it. The pinned run then passes on tests that have
+    never heard of the feature, and the task reports success with the feature
+    absent. Measured, not theorised: `evals/tasks/feature/task.yaml`'s `cheating`
+    variant writes the test and not the implementation, and it scored a pass.
+
+    So both trees are checked, and **both have to pass**:
+
+    - **pinned** — the tests as they were. Proves nothing was weakened.
+    - **agent** — the tests as the agent left them. Proves the feature its own
+      tests describe actually exists.
+
+    Neither alone is enough. Pinned alone cannot see a feature; agent alone cannot
+    see a weakened assertion. The conjunction sees both, and the cost is one extra
+    run of the project's own command.
+    """
+    passed = all(check.passed for _, check in named)
+    ran = [check for _, check in named if not check.could_not_run]
+    # `could_not_run` only when *nothing* ran: if one tree was checked, its answer
+    # is evidence, and reporting "could not run" over it would discard the answer
+    # that exists.
+    could_not_run = not ran
+    reason = ""
+    if could_not_run:
+        reason = next((c.reason for _, c in named if c.reason), "checks could not run")
+    elif not passed:
+        failing = [label for label, check in named if not check.passed]
+        reason = "the checks failed against: " + ", ".join(failing)
+
+    sections: list[str] = []
+    for label, check in named:
+        verdict = "did-not-run" if check.could_not_run else ("passed" if check.passed else "FAILED")
+        sections.append(f"### checks against the {label} tree — {verdict}\n{check.output}".strip())
+
+    first = named[0][1]
+    return CheckResult(
+        passed=passed,
+        commands=first.commands,
+        command=first.command,
+        output="\n\n".join(sections),
+        exit_code=0 if passed else next(
+            (c.exit_code for _, c in named if not c.passed and c.exit_code), 1
+        ),
+        could_not_run=could_not_run,
+        reason=reason,
+        meta={
+            "runs": {
+                label: {"passed": c.passed, "couldNotRun": c.could_not_run, "exitCode": c.exit_code}
+                for label, c in named
+            },
+            "pinned": [p for _, c in named for p in c.meta.get("pinned", [])],
+        },
+    )

@@ -1,0 +1,32 @@
+# The ticket a person should have written more of.
+#
+# This is the task that measures the *first* architectural invariant: **not every
+# request goes through the model.** A report with no reproduction steps is
+# rejected by rules, before classification, so the correct outcome is
+# `awaiting_info` with **zero model calls** — not a guess, and not a
+# confident-looking plan built on a ticket nobody can act on.
+#
+# It is the cheapest task in the set by a wide margin (no model call at all) and
+# the one most likely to regress silently: a change that made the classifier run
+# first would produce a *plausible* answer instead of an honest stop, and nothing
+# would look wrong.
+name: incomplete
+fixture: ../../../examples/stat-fix/fixture
+
+ticket:
+  id: BUG-2
+  title: 报表数据不对
+  # No reproduction steps, no expected result, no actual result. Deliberately the
+  # shape of a real bad ticket rather than a truncated one.
+  description: |
+    我们这边的报表数字看起来不太对，麻烦看一下。
+    受影响仓库：git.local/demo/stats
+
+expect:
+  states: [awaiting_info]
+  # Nothing should have run at all: no branch, no diff, no check.
+  max_changed_paths: 0
+  max_tool_calls: 0
+  max_turns: 0
+  # The rules decide, so there is nothing for a model to be unsure about.
+  max_classifier_calls: 0

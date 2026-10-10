@@ -35,6 +35,7 @@ from forgepilot.seams.refs import CommitAuthor, CommitRef, RepoRef, SessionId
 from forgepilot.seams.security import ExecutionConstraints, Operation
 from forgepilot.seams.workspace import (
     SERVICE_NAME,
+    NothingToCommit,
     UnifiedDiff,
     UnknownRepository,
     WorkspaceHandle,
@@ -261,6 +262,16 @@ class GitWorktreeWorkspacePlugin(PluginService):
             )
 
         self._git("add", "-A", cwd=handle.root)
+        # Nothing staged means nothing changed. Asking git to commit anyway gives
+        # *"nothing to commit, working tree clean"* wrapped in a `GitFailed`, from
+        # the last step of a run that otherwise succeeded — which reads as a git
+        # problem when the outcome is "no change was produced".
+        if not self._git("diff", "--cached", "--name-only", cwd=handle.root).strip():
+            raise NothingToCommit(
+                f"there is nothing to commit on {handle.repo.slug!r}: the working tree "
+                f"is identical to {handle.base_ref!r}. A task that reached here passed "
+                f"its checks without changing anything."
+            )
         self._git(
             "-c",
             f"user.name={author.name}",

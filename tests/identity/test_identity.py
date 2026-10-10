@@ -530,3 +530,75 @@ async def test_no_token_environment_variable_is_not_an_error() -> None:
         assert root.principal.reload_from_env() == 0
     finally:
         await dispose_fiber(fiber)
+
+
+# ---------------------------------------------------------------------------
+# Narrowing writable paths is an intersection, not a filter
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("grant", "policy", "want"),
+    [
+        # Both of these returned an EMPTY set, from opposite sides. The old rule
+        # kept a grant path only when it already fell inside a policy path, so a
+        # grant wider than the policy matched nothing and a grant narrower than a
+        # permissive policy matched nothing either.
+        ((".",), ("src",), ("src",)),
+        (("src",), (".",), ("src",)),
+        # The one case a filter and an intersection agree on, and the only shape
+        # any existing test used — which is why nobody noticed.
+        (("src",), ("src",), ("src",)),
+        (("src", "tests"), ("src",), ("src",)),
+        (("src",), ("tests",), ()),
+        ((".",), (".",), (".",)),
+        (("src/a",), ("src",), ("src/a",)),
+        (("src",), ("src/a",), ("src/a",)),
+    ],
+)
+def test_writable_paths_narrow_by_intersection(grant, policy, want) -> None:
+    """A project restricted to `src/` behind a principal granted everything.
+
+    The refusal this produced said *"nothing is writable"* — a true statement
+    about the intersection the code computed and a false one about the authority
+    the caller held. Found by an eval task, not by a test, because every test
+    happened to use the same set on both sides.
+    """
+    from forgepilot.identity.constraints import _narrowed_paths
+
+    assert _narrowed_paths(grant, policy) == want
+
+
+def test_a_permissive_grant_on_a_restricted_project_can_still_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The property, asserted through the thing that enforces it.
+
+    `_narrowed_paths` returning the right tuple is only useful if
+    `allows_write_to` then agrees — and it is the *guard* that refused, so the
+    end-to-end statement is the one worth pinning.
+    """
+    from forgepilot.seams.security import ExecutionConstraints, Operation
+
+    # `derive` signs what it returns, and an unsigned set is refused rather
+    # than treated as "unverified but probably fine".
+    monkeypatch.setenv("FORGEPILOT_SIGNING_KEY", "test-key")
+
+    principal = Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme"))
+    constraints = derive(
+        principal,
+        Grant(
+            repos=frozenset({REPO_A}),
+            operations=frozenset(Operation),
+            # The grant says "the whole checkout"...
+            writable_paths=(".",),
+        ),
+        # ...and the project says "only src".
+        ProjectPolicy(repos=frozenset({REPO_A}), writable_paths=("src",)),
+        key=None,
+    )
+
+    assert constraints.allows_write_to("src/metrics.py"), (
+        "a grant of the whole tree was narrowed to nothing by a restricted project"
+    )
+    assert not constraints.allows_write_to("settings.py"), (
+        "the project's restriction was not applied"
+    )

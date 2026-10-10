@@ -153,19 +153,63 @@ def _narrowed_prefixes(
     return frozenset(g for g in grant if any(_prefix_covers(p, g) for p in policy))
 
 
+def _path_rule(value: str) -> tuple[str, str]:
+    """``("all", "")`` for a rule that names everything, else ``("subtree", path)``.
+
+    ``"."`` and ``""`` are how a grant says *the whole checkout* — the shipped
+    example uses ``"."`` on both sides — and :meth:`allows_write_to` reads a rule
+    as "this path, or anything under it".
+    """
+    cleaned = value.replace("\\", "/").strip().strip("/")
+    if cleaned in ("", "."):
+        return ("all", "")
+    return ("subtree", cleaned)
+
+
+def _intersect_paths(grant: str, policy: str) -> str | None:
+    """The narrower of two writable-path rules, or ``None`` when they are disjoint.
+
+    **Narrowing paths is an intersection, not a filter**, and writing it as a
+    filter is a mistake with two symmetric symptoms:
+
+        grant "."   policy "src"  ->  nothing writable   (should be "src")
+        grant "src" policy "."    ->  nothing writable   (should be "src")
+
+    The old rule kept a grant path only when it already fell inside a policy path,
+    so a grant *wider* than the policy matched nothing — and a grant *narrower*
+    than a permissive policy matched nothing either. It happened to work in every
+    existing test because every one of them used the **same** set on both sides,
+    which is the one case a filter and an intersection agree on.
+
+    Found by an eval task whose point was the opposite: a project restricted to
+    `src/` behind a principal granted everything, and the guard's refusal read
+    *"nothing is writable"* — a true statement about the intersection the code
+    computed and a false one about the authority the caller held.
+    """
+    grant_kind, grant_value = _path_rule(grant)
+    policy_kind, policy_value = _path_rule(policy)
+
+    if grant_kind == "all":
+        return policy
+    if policy_kind == "all":
+        return grant
+    if grant_value == policy_value:
+        return grant
+    if grant_value.startswith(policy_value + "/"):
+        return grant  # the grant is the narrower one
+    if policy_value.startswith(grant_value + "/"):
+        return policy  # the policy is
+    return None
+
+
 def _narrowed_paths(grant: tuple[str, ...], policy: tuple[str, ...]) -> tuple[str, ...]:
-    """Keep grant paths the policy permits. Paths are directory prefixes here,
-    matching how :meth:`ExecutionConstraints.allows_write_to` reads them."""
+    """The intersection of two writable-path rule sets."""
     if not policy:
         return ()
-    kept = []
+    kept: list[str] = []
     for path in grant:
-        normalised = path.strip("/")
         for allowed in policy:
-            allowed_normalised = allowed.strip("/")
-            if normalised == allowed_normalised or normalised.startswith(
-                allowed_normalised + "/"
-            ):
-                kept.append(path)
-                break
-    return tuple(kept)
+            winner = _intersect_paths(path, allowed)
+            if winner is not None:
+                kept.append(winner)
+    return tuple(dict.fromkeys(kept))

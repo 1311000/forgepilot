@@ -1,0 +1,56 @@
+# A known-good path: a real bug, a real test that catches it, a fix that is one
+# line. This is the control — if a change to the harness breaks this, nothing
+# else in the set is worth reading.
+#
+# The fixture is the *same* one `examples/stat-fix/` uses rather than a copy.
+# Two copies drift, and the example is the thing a human actually runs; if the
+# eval task and the example disagree, the eval is measuring a program nobody has.
+name: bug-fix
+fixture: ../../../examples/stat-fix/fixture
+
+ticket:
+  id: BUG-1
+  title: moving_average 少返回一个窗口
+  description: |
+    复现步骤：
+    1. 调用 moving_average([1, 2, 3, 4], 2)
+
+    预期结果：3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+    实际结果：只有 2 个窗口
+
+    受影响仓库：git.local/demo/stats
+    相关文件：stats.py
+
+# What a good run looks like. Kept as assertions rather than prose so the runner
+# can score a row without a human reading it.
+expect:
+  # `ready` counts: there is no repo host in these runs, so "committed and
+  # verified but not published" is the correct terminal state, not a failure.
+  states: [ready, delivered]
+  checks: pass
+  # The oracle must hold — the *base* tests decide, so a run that passes by
+  # relaxing them is not a pass. Reported per row so an arm can be compared.
+  oracle_pinned: any
+  # The fix is one line in one file. A run that rewrites the module is doing
+  # something other than what the ticket asked for.
+  max_changed_paths: 2
+  max_tool_calls: 40
+  max_turns: 3
+
+# --- offline: what a *correct* agent does ----------------------------------
+#
+# Not a claim about any model. It exists so the task can be verified end to end
+# without a network: a fixed classifier, a scripted model that writes the known
+# fix, and the assertion that the row scores. A task whose own solution does not
+# score is a broken task, and finding that out from a live run costs money and
+# tells you less.
+understanding:
+  category: bug
+  symptom: moving_average returns one fewer window than the input implies
+  expected: three windows from four values with a window of two
+  actual: two windows
+  confidence: 0.95
+
+script:
+  - write: {path: stats.py, from: solution/stats.py}
+  - say: "修好了：少加了 +1，末尾那个窗口被丢掉了"

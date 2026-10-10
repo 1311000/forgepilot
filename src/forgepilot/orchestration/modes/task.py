@@ -283,11 +283,12 @@ async def run_task(
     from forgepilot.runtime.authority import authorise
     from forgepilot.runtime.loop.turn import run_turn
     from forgepilot.runtime.pinning import pinned_to_base
-    from forgepilot.runtime.repair import run_checks
+    from forgepilot.runtime.repair import combine_checks, run_checks
     from forgepilot.seams.agent_loop import UserInput
     from forgepilot.seams.security import Operation
-    from forgepilot.seams.session import EventKind
+    from forgepilot.seams.session import EventKind, SurfaceOp
     from forgepilot.seams.vcs import PullRequestDraft
+    from forgepilot.seams.workspace import NothingToCommit
 
     machine = TaskStateMachine()
 
@@ -358,12 +359,53 @@ async def run_task(
         # rather than once, because each turn may edit the tests again. See
         # `runtime/pinning.py` for why this is a mechanism rather than a warning.
         pins = project.tests_in(tuple(await workspace.changed_paths(handle)))
-        async with pinned_to_base(workspace, handle, pins) as applied:
-            # The union across attempts, not the last one: the report is "what
-            # was kept out of the deciding run", and a path pinned on the first
-            # attempt and reverted by the agent on the second was still kept out
-            # of a run whose verdict is in this outcome.
-            pinned = tuple(dict.fromkeys((*pinned, *applied)))
+        if pins:
+            # **Two trees, both must pass.** Pinned alone cannot see a feature —
+            # restoring the tests to base deletes the specification for something
+            # that does not exist yet. Agent alone cannot see a weakened
+            # assertion. See `repair.combine_checks`.
+            async with pinned_to_base(workspace, handle, pins) as applied:
+                # The union across attempts, not the last one: the report is "what
+                # was kept out of the deciding run", and a path pinned on the first
+                # attempt and reverted by the agent on the second was still kept out
+                # of a run whose verdict is in this outcome.
+                pinned = tuple(dict.fromkeys((*pinned, *applied)))
+                strict = await run_checks(
+                    commands=project.test,
+                    sandbox=sandbox,
+                    session=session,
+                    constraints=constraints,
+                    workspace_root=handle.root,
+                    session_id=session_id,
+                    pinned=applied,
+                )
+            extended = await run_checks(
+                commands=project.test,
+                sandbox=sandbox,
+                session=session,
+                constraints=constraints,
+                workspace_root=handle.root,
+                session_id=session_id,
+            )
+            check = combine_checks((("pinned", strict), ("agent", extended)))
+            # The extension is already in the log from its own run, so recording
+            # the conjunction would double every check event. Re-record the one
+            # that decides, so a reader sees the verdict the task acted on.
+            await session.append(
+                EventKind.TASK_CHECK,
+                {
+                    "passed": check.passed,
+                    "command": check.command,
+                    "commands": list(check.commands),
+                    "exitCode": check.exit_code,
+                    "output": check.output,
+                    "couldNotRun": check.could_not_run,
+                    "reason": check.reason,
+                    "meta": dict(check.meta),
+                },
+                surface=SurfaceOp.APPEND,
+            )
+        else:
             check = await run_checks(
                 commands=project.test,
                 sandbox=sandbox,
@@ -371,7 +413,6 @@ async def run_task(
                 constraints=constraints,
                 workspace_root=handle.root,
                 session_id=session_id,
-                pinned=applied,
             )
         checks.append(check)
 
@@ -414,12 +455,36 @@ async def run_task(
     # The commit belongs to the working tree, so the workspace makes it — the
     # tree is what is being committed, and `vcs` names a repository without ever
     # having been told which checkout it meant.
-    await workspace.commit(
-        handle,
-        f"fix: {plan.ticket.title}",
-        author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
-        constraints,
-    )
+    try:
+        await workspace.commit(
+            handle,
+            f"fix: {plan.ticket.title}",
+            author or CommitAuthor(name="ForgePilot", email="forgepilot@localhost"),
+            constraints,
+        )
+    except NothingToCommit as exc:
+        # The checks passed and the tree never changed. Reachable whenever the
+        # ticket describes something already fixed, or a write was refused — and
+        # a crash with git's own wording at the last step of a run that appeared
+        # to succeed is the wrong way to say "no change was produced".
+        reason = f"the checks passed but nothing was changed, so there is nothing to deliver: {exc}"
+        machine.to(TaskState.FAILED, reason)
+        await session.append(
+            EventKind.TASK_STATE, {"state": str(TaskState.FAILED), "reason": reason}
+        )
+        await session.flush()
+        return TaskOutcome(
+            state=TaskState.FAILED,
+            reason=reason,
+            attempts=attempts,
+            turns=turns,
+            checks=tuple(checks),
+            diff=diff,
+            changed_paths=tuple(changed),
+            pinned_tests=pinned,
+            branch=branch,
+            transitions=tuple(machine.history),
+        )
     draft = PullRequestDraft(
         repo=repo,
         source_branch=branch,

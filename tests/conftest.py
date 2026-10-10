@@ -334,7 +334,11 @@ PROJECT = ProjectConfig(
     default_branch="main",
     test=("pytest -q",),
     allowed_operations=frozenset(Operation),
-    writable_paths=("src",),
+    # `tests` is writable so a test can express the thing the pinning exists to
+    # rule out: an agent that edits the test instead of the code. With only
+    # `src` writable the guard refuses the write, the tree never changes, and a
+    # test of the pinning proves nothing while looking like it does.
+    writable_paths=("src", "tests"),
     tool_sets={
         "default": ("read_file", "code_search"),
         "bugfix": ("read_file", "code_search", "write_file", "run"),

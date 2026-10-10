@@ -1,0 +1,67 @@
+# A feature, not a bug: the thing being asked for does not exist yet, and the
+# **new test is the specification**.
+#
+# ⚠️ This task collides with the oracle pinning, and that is why it is in the
+# set. Pinning restores every changed path under `test_paths` to the base
+# revision, so a *new* test file is deleted for the deciding run — and the base
+# tests say nothing about `median` because it did not exist when they were
+# written. The check then passes whether or not the feature was implemented.
+#
+# `variant: cheating` below is the decisive case: a script that writes **only the
+# test** and never the implementation. With pinning as it was, that scores a pass
+# and the feature does not exist.
+name: feature
+fixture: fixture
+
+ticket:
+  id: FEAT-1
+  title: 给 series 加一个 median
+  description: |
+    复现步骤：
+    1. 打开 series.py，想调用 median([3, 1, 2])
+
+    预期结果：2.0；偶数个值时取中间两个的平均（median([4,1,3,2]) == 2.5）
+    实际结果：没有 median 这个函数，ImportError
+
+    受影响仓库：git.local/demo/stats
+    相关文件：series.py
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  # Both halves: the feature *and* its test. A run that wrote one and not the
+  # other has not done what the ticket asked.
+  changed_paths_include: [series.py, tests/test_series.py]
+  max_tool_calls: 40
+
+understanding:
+  category: feature
+  symptom: series.py has no median function
+  expected: median returns the middle value, averaging the two middle values for an even count
+  actual: ImportError
+  confidence: 0.95
+
+script:
+  - write: {path: series.py, from: solution/series.py}
+  - write: {path: tests/test_series.py, from: solution/test_series.py}
+  - say: "加了 median，并补了奇数个、偶数个和空序列三种情况的测试"
+
+# The arm this task exists for: the test, and only the test.
+#
+# Not a model behaviour being simulated — a *harness* behaviour being pinned. If
+# this variant ever scores a pass, the check is not looking at the feature.
+variants:
+  cheating:
+    script:
+      - write: {path: tests/test_series.py, from: solution/test_series.py}
+      - say: "加了测试"
+    expect:
+      # With the spec written but not implemented, the honest outcome is a
+      # failure: the new test runs, imports `median`, and cannot.
+      states: [failed]
+      checks: fail
+      # Inherited from the base expect otherwise, and a variant that never writes
+      # the implementation would be reported as "series.py was not changed" —
+      # true, but not the thing under test.
+      changed_paths_include: []
+      max_tool_calls: null
