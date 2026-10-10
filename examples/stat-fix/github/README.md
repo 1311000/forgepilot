@@ -83,11 +83,17 @@ token travels through `url.<base>.insteadOf` in the environment. The token is
 also scrubbed from every message git produces, because git quotes URLs back in
 its failures.
 
-**A pull request is an outward-facing act and the policy knows it.** `open_pr` is
-in the base bundle's `ask_operations`, so this run stops and asks a human before
-it opens anything. That is not something this example adds; it is the shipped
-default, and it is the reason `--task` needs an answerer configured before it can
-finish.
+**A pull request is an outward-facing act, and nothing stops to ask you.**
+`run_task` decides when it happens — after the checks pass — and the model has no
+`open_pr` tool, so a pull request is not something the agent can do on its own.
+What gates it is `ExecutionConstraints`: a caller without `open_pr` is refused.
+
+⚠️ **The base bundle's `ask_operations: [open_pr]` does not apply here.** It is
+read by `PolicyService.decide()`, and nothing in `src/` calls `decide()` — the
+policy service is loaded, tested and consulted by nobody. So this run **will open
+a pull request on the target repository without asking**, and the flag that looks
+like it should prevent that has no effect. This was written down wrongly here
+once, and corrected after checking. See the defect table in `CLAUDE.md`.
 
 **The three paths must agree.** The mirror lives at
 `<mirror_root>/<host>/<namespace>/<name>` — derived by the `vcs` provider — and
