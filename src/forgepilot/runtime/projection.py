@@ -62,9 +62,30 @@ def derive_messages(events: Sequence[SessionEvent]) -> tuple[ChatMessage, ...]:
     """Fold the log into the message list the model should see.
 
     Applies ``surface``: ``LOG_ONLY`` events are skipped, ``APPEND`` events join
-    the end, and ``REPLACE`` events supersede the range named in their
-    ``supersedes`` field (``[from, to]``, inclusive) so a compaction summary can
-    stand in for the history it collapsed.
+    the end, and a ``REPLACE`` event supersedes the range named in its
+    ``supersedes`` field (``[from, to]``, inclusive) — **taking that range's
+    place**, so a mask or a summary stands where the history it collapsed stood.
+
+    ⚠️ **In place, not appended, and the difference is not cosmetic.** The first
+    version removed the superseded events and appended the replacement to the end
+    of the visible list. For a whole-span summary that is nearly harmless, which
+    is why it survived: the span is usually near the end. For masking a single
+    tool result it is fatal. Measured on a two-pair conversation, masking only the
+    first result:
+
+        assistant calls=['c1']      <- its result is not next
+        assistant calls=['c2']
+        tool    result_for='c2'
+        tool    result_for='c1'     <- three positions late
+
+    An assistant message whose ``tool_calls`` is not answered immediately after it
+    is rejected outright by the endpoint — **one turn later**, with a traceback
+    pointing at the request rather than at whatever arranged the messages.
+
+    The block replaced runs from the first matching event to the last, inclusive.
+    Anything sitting *between* them belongs to the superseded range too: an
+    element's position in this list follows its own original's position, so a
+    replacement nested inside the range is inside the range.
     """
     visible: list[SessionEvent] = []
 
@@ -73,10 +94,18 @@ def derive_messages(events: Sequence[SessionEvent]) -> tuple[ChatMessage, ...]:
             continue
         if event.surface is SurfaceOp.REPLACE:
             window = event.data.get("supersedes") or []
+            placed = False
             if isinstance(window, (list, tuple)) and len(window) == 2:
                 low, high = int(window[0]), int(window[1])
-                visible = [e for e in visible if not (low <= e.seq <= high)]
-            visible.append(event)
+                hits = [i for i, e in enumerate(visible) if low <= e.seq <= high]
+                if hits:
+                    visible = visible[: hits[0]] + [event] + visible[hits[-1] + 1 :]
+                    placed = True
+            if not placed:
+                # Nothing matched: the replacement stands alone, at the end. That
+                # is the honest place for a supersede range this projector cannot
+                # find — the alternative would be to drop the message silently.
+                visible.append(event)
             continue
         visible.append(event)
 

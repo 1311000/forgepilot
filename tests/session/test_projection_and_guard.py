@@ -217,3 +217,146 @@ async def test_a_surface_event_with_no_renderer_is_refused(created) -> None:
         await build_request(
             session, model="m", system_sections=(), turn=TurnId(1), step=1
         )
+
+
+# ---------------------------------------------------------------------------
+# Where a REPLACE lands — the fold's ordering, which compaction depends on
+# ---------------------------------------------------------------------------
+def assert_no_orphan_tool_calls(messages) -> None:
+    """Every assistant ``tool_calls`` block is answered immediately after it.
+
+    The failure this catches surfaces **one turn later**, as a 400 from the
+    endpoint, with a traceback pointing at the request builder rather than at
+    whatever arranged the messages. Asserting on the finished message list is the
+    only place the two are connected.
+    """
+    for index, message in enumerate(messages):
+        if message.role is not Role.ASSISTANT or not message.tool_calls:
+            continue
+        wanted = [call.call_id for call in message.tool_calls]
+        following = messages[index + 1 : index + 1 + len(wanted)]
+        answered = [m.tool_call_id for m in following if m.role is Role.TOOL]
+        assert answered == wanted, (
+            f"assistant message {index} asked for {wanted} but is followed by "
+            f"{[str(m.role) for m in following]} answering {answered}. "
+            f"An unanswered tool call is rejected outright by every endpoint."
+        )
+
+
+async def two_tool_turns(store, sid) -> Session:
+    """Two complete call/result pairs, so masking one can break adjacency."""
+    session = await Session.open(store, sid)
+    for turn, call in ((TurnId(1), "c1"), (TurnId(2), "c2")):
+        await session.turn_start(turn)
+        await session.assistant_message(
+            turn, 1, f"looking {call}", tool_calls=[{"callId": call, "name": "read_file", "arguments": "{}"}]
+        )
+        await session.tool_call(turn, 1, call_id=call, name="read_file", arguments_json="{}")
+        await session.tool_result(turn, 1, call_id=call, content=f"{call}: a very large file body")
+        await session.turn_end(turn, "completed")
+    await session.flush()
+    return session
+
+
+async def test_masking_one_tool_result_keeps_it_next_to_its_call(created) -> None:
+    """**The defect this section exists for, and it was measured.**
+
+    A compaction masks an old tool result by appending a new event that supersedes
+    it. The fold used to *remove* the superseded event and **append** the
+    replacement at the end of the visible list — which moves the result away from
+    the call it answers. Observed, on a two-pair conversation, masking only the
+    first result:
+
+        assistant calls=['c1']      <- its result is not next
+        assistant calls=['c2']
+        tool    result_for='c2'
+        tool    result_for='c1'     <- three positions late
+
+    `assistant(tool_calls=['c1'])` followed by another assistant message is an
+    orphan tool call, and endpoints reject the whole request for it.
+    """
+    session = await two_tool_turns(*created)
+    result_seq = next(
+        e.seq for e in session.committed_events
+        if e.kind == EventKind.TOOL_RESULT and e.data.get("callId") == "c1"
+    )
+    await session.append(
+        EventKind.TOOL_RESULT,
+        {"callId": "c1", "content": "[tool output elided]", "supersedes": [result_seq, result_seq]},
+        surface=SurfaceOp.REPLACE,
+    )
+    await session.flush()
+
+    messages = derive_messages(session.events)
+
+    assert_no_orphan_tool_calls(messages)
+    # And the masked content is the masked content, in the call's own place.
+    tools = [m for m in messages if m.role is Role.TOOL]
+    assert [m.content for m in tools] == ["[tool output elided]", "c2: a very large file body"]
+
+
+async def test_a_summary_lands_where_the_span_was_not_at_the_end(created) -> None:
+    """A replaced range is *replaced*, not moved.
+
+    Appending the replacement means a summary of the first two turns appears
+    **after** turn three — which reads as a history that happened in the wrong
+    order. It also silently reorders anything the model is asked to reason about.
+    """
+    session = await two_tool_turns(*created)
+    await session.append(
+        EventKind.USER_MESSAGE,
+        {"text": "[summary of turns 1-2]", "supersedes": [1, 8]},
+        surface=SurfaceOp.REPLACE,
+    )
+    await session.flush()
+
+    messages = derive_messages(session.events)
+
+    assert messages[0].content == "[summary of turns 1-2]", (
+        "the summary of the opening turns was appended rather than put in their place"
+    )
+    assert_no_orphan_tool_calls(messages)
+
+
+async def test_a_summary_over_a_masked_region_absorbs_the_placeholders(created) -> None:
+    """Two compaction passes, nested — the case the block rule is about.
+
+    The first pass masks a tool result, so a placeholder sits at the *position* of
+    an event whose **seq** is old while its own seq is new. A second pass that
+    summarises a span covering that original must absorb the placeholder: its
+    content belongs to the span being summarised.
+
+    This is why the replacement takes the whole block from the first match to the
+    last rather than only the events whose seqs match — the placeholder's seq is
+    outside the range while its position is inside it, and leaving it behind would
+    strand a message from a range that no longer exists.
+    """
+    session = await two_tool_turns(*created)
+    first_result = next(
+        e.seq for e in session.committed_events
+        if e.kind == EventKind.TOOL_RESULT and e.data.get("callId") == "c1"
+    )
+    await session.append(
+        EventKind.TOOL_RESULT,
+        {"callId": "c1", "content": "[tool output elided]", "supersedes": [first_result, first_result]},
+        surface=SurfaceOp.REPLACE,
+    )
+    await session.flush()
+
+    # Second pass: summarise everything, which covers the original that
+    # placeholder stands for.
+    highest = max(e.seq for e in session.committed_events)
+    await session.append(
+        EventKind.USER_MESSAGE,
+        {"text": "[summary]", "supersedes": [1, highest]},
+        surface=SurfaceOp.REPLACE,
+    )
+    await session.flush()
+
+    messages = derive_messages(session.events)
+
+    assert [m.content for m in messages] == ["[summary]"], (
+        "a placeholder from an earlier pass was stranded outside the summary that "
+        "covers it — the model would see a fragment of a range that is gone"
+    )
+    assert_no_orphan_tool_calls(messages)
