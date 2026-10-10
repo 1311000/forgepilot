@@ -87,6 +87,42 @@ def test_a_clean_run_does_not_invent_a_failure_section(capsys) -> None:
     assert "No run failed" in out
 
 
+def test_an_arm_that_changed_nothing_says_so(capsys) -> None:
+    """⚠️ **The line that would have caught the first ablation.**
+
+    Three of the five arms were the baseline under another name, and the table they
+    produced was indistinguishable from three arms that worked. `(nothing)` is not a
+    description of an arm — it is the absence of one.
+    """
+    report._print_arm_changes(
+        [
+            row("t", "full", 1, passed=True) | {"arm_changes": {}},
+            row("t", "no-repair", 1, passed=True)
+            | {"arm_changes": {"retry": ["{'max_attempts': 2}", "{'max_attempts': 0}"]}},
+            row("t", "decoy", 1, passed=True) | {"arm_changes": {}},
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "(nothing — the baseline configuration)" in out
+    assert "retry:" in out and "max_attempts" in out
+    assert "decoy" in out and out.count("(nothing") == 2, (
+        "a decorative arm must be as visible as the baseline"
+    )
+
+
+def test_rows_written_before_this_was_recorded_do_not_claim_to_be_the_baseline(capsys) -> None:
+    """An old results file has no `arm_changes`. Printing `(nothing)` for it would
+    be a claim the file does not support."""
+    report._print_arm_changes(
+        [row("t", "full", 1, passed=True), row("t", "arm", 1, passed=True)]
+    )
+
+    out = capsys.readouterr().out
+    assert "(not recorded in this file)" in out
+    assert "(nothing" not in out
+
+
 def test_a_reason_with_no_task_and_arm_is_not_lost(capsys) -> None:
     report._print_failures([row("t", "arm", 1, passed=False, failures=())])
 

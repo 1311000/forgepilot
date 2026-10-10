@@ -296,6 +296,15 @@ async def main_async(args: argparse.Namespace) -> int:
             for rep in range(1, args.reps + 1):
                 row = await run_one(task, arm, rep, scripted=args.scripted)
                 row["run"] = run_id
+                # ⚠️ **What this row's arm actually changed**, recorded per row so a
+                # results file carries its own evidence. An arm that switched nothing
+                # off produces a row saying `[]`, which is distinguishable from an arm
+                # that switched something off and made no difference — and for most of
+                # this harness's life those two were the same table.
+                row["arm_changes"] = {
+                    key: [str(before), str(after)]
+                    for key, (before, after) in H.arm_changes(task, arm).items()
+                }
                 # ⚠️ **Recorded, or a variant failing is unrepeatable.**
                 # `--retry-failed` reads this back to know which *cell* to re-run,
                 # and without it a failing `bug-fix/weakens-the-test` would come

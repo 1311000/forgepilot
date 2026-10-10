@@ -92,6 +92,39 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _print_arm_changes(rows: list[dict[str, Any]]) -> None:
+    """What each arm actually changed — from the rows, not from the arm's own prose.
+
+    ⚠️ **This is the line that would have caught the first ablation being three
+    repeats of the baseline.** An arm whose rows say `(nothing)` is not an arm, and
+    no rate distinguishes it from one that works.
+
+    Read off the rows rather than from `arms.py` on purpose: the row is what the run
+    was actually configured with, and a description in the source is what was
+    *intended*. They disagreed for the whole life of three arms.
+    """
+    arms: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        arms[str(row.get("arm"))].append(row)
+    if len(arms) < 2:
+        return
+
+    print("\nWhat each arm actually changed")
+    print("-" * 88)
+    for arm, group in sorted(arms.items(), key=lambda kv: (kv[0] != "full", kv[0])):
+        recorded = group[0].get("arm_changes") if group else None
+        if recorded is None:
+            # Rows written before this was recorded. Saying so beats printing
+            # "(nothing)", which would be a claim the file does not support.
+            print(f"  {arm:<16} (not recorded in this file)")
+            continue
+        if not recorded:
+            print(f"  {arm:<16} (nothing — the baseline configuration)")
+            continue
+        for key, (before, after) in sorted(recorded.items()):
+            print(f"  {arm:<16} {key}: {before} -> {after}")
+
+
 def _print_matrix(rows: list[dict[str, Any]]) -> None:
     """Which **cell** moved. A rate per arm hides the one that flipped.
 
@@ -367,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     _print_grouped(rows)
     _print_matrix(rows)
     _print_arms(rows)
+    # ⚠️ **Outside `_print_arms`, which returns early on scripted rows.** The whole
+    # value of this block is that it is evidence rather than prose, and evidence is
+    # exactly what a scripted run — the one that costs nothing and gets run first —
+    # can check before any money is spent.
+    _print_arm_changes(rows)
     _print_failures(rows)
     if args.compare:
         older = load(Path(args.compare).name)

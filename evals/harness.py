@@ -266,6 +266,31 @@ def project_mapping(task: EvalTask, *, arm: Any = None) -> dict[str, Any]:
     return merged
 
 
+def arm_changes(task: EvalTask, arm: Any) -> dict[str, tuple[Any, Any]]:
+    """What this arm's run is configured *differently* from the baseline, with both values.
+
+    ⚠️ **Evidence, not description.** `Arm.description` is prose, and it stayed
+    accurate while `Arm.project` was read by nothing — three arms described a switch
+    they never threw, and the table they produced looked exactly like three arms that
+    threw it and it made no difference. A reader cannot tell those apart from a rate,
+    and *can* tell them apart from a diff.
+
+    Project keys and patch rows both count, because `tight-window` changes nothing in
+    the project and everything in a patch — an arm's switch can live in either, and a
+    function that only looked at one would report the other as a no-op.
+    """
+    base = project_mapping(task)
+    ablated = project_mapping(task, arm=arm)
+    changes: dict[str, tuple[Any, Any]] = {
+        key: (base.get(key), ablated.get(key))
+        for key in ablated
+        if base.get(key) != ablated.get(key)
+    }
+    for row in getattr(arm, "patches", ()) or ():
+        changes[f"patch:{row.get('id', '?')}"] = (None, row.get("config"))
+    return changes
+
+
 def write_project(task: EvalTask, into: Path, *, arm: Any = None):
     """The example's project plus the task's and the arm's overrides, written and loaded.
 

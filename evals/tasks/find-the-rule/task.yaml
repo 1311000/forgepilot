@@ -1,0 +1,68 @@
+# **The task `no-search` never had.** Not a harder bug — a wider haystack.
+#
+# `find-the-bug` has four modules under `billing/`, so `dir /s /b` shows the whole
+# thing at once and any arm that removes a search tool is measuring nothing. Here
+# there are eight rule modules behind an engine that returns *sentences*, so the
+# failing assertion reads
+#
+#     assert ['must not repeat a character 3 times'] == []
+#
+# — one string, no frame inside `policy/rules/`, and eight modules it could have
+# come from.
+#
+# ⚠️ **What this task is for, and what it is not.** It is a *cost* measurement. Both
+# arms are expected to pass it; the difference the arm makes is in **tool calls and
+# wall-clock**, which the report prints per row and `--compare` prints side by side.
+# Reading a 100% here as "search earns nothing" would be reading the wrong column.
+#
+# ⚠️ **And the honest limit of it.** `no-search` removes `code_search`, not the
+# ability to search: `run` is still there and `findstr /s` does the same job for
+# about the same number of calls. So even a large delta here measures *the dedicated
+# tool against the shell*, and a delta of zero says the shell is enough on a local
+# checkout — which is what the target deployment's design already implies, since
+# there the code is behind a remote index and no shell can reach it.
+name: find-the-rule
+fixture: fixture
+
+ticket:
+  id: BUG-6
+  title: 密码被拒，说字符重复了三次
+  description: |
+    复现步骤：
+    1. 注册时填密码 a1b2c3a1b2c3
+
+    预期结果：通过——每个字符都只出现了两次
+    实际结果：被拒，提示「must not repeat a character 3 times」
+
+    受影响仓库：git.local/demo/stats
+    相关文件：policy/
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  # One predicate in the module that owns it.
+  max_changed_paths: 2
+  max_tool_calls: 40
+  max_turns: 4
+  # ⚠️ **The column that matters for this task.** `no-search` cannot be read off
+  # the pass rate — it is expected to pass. It is read off the calls.
+  oracle_pinned: any
+
+understanding:
+  category: bug
+  symptom: a credential with no three-in-a-row is refused for repeating a character
+  expected: a1b2c3a1b2c3 is accepted, because no character appears three times running
+  actual: it is refused by the rule that counts occurrences instead of runs
+  confidence: 0.95
+
+# --- offline: what a correct agent does -------------------------------------
+#
+# Straight, because a scripted model knows which module it is. This run proves the
+# task is solvable and that its own solution scores; it says nothing about
+# localisation and does not try to, which is exactly why `no-search`'s signal has to
+# come from a live run.
+script:
+  - write: {path: policy/rules/runs.py, from: solution/runs.py}
+  - say: |
+      runs.py 里的谓词数的是「这个字符在整串里出现了几次」，不是「连续出现几次」，
+      所以 a1b2c3a1b2c3 因为 a 出现了两次被拒。改成逐对比较、数连续长度。

@@ -144,6 +144,7 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | `incomplete` | the first architectural invariant — a ticket with no reproduction steps is rejected by *rules*, before classification, with zero model calls |
 | `out-of-scope` | the permission boundary — the ticket names a file the project does not permit writing, and there is a legitimate fix next to it |
 | `find-the-bug` | **localisation** — the failing assertion names a value, not a place, and the module that owns the rule is three calls down and not the file the ticket names |
+| `find-the-rule` | **localisation at scale** — eight rule modules behind an engine that returns *sentences*, so the failing assertion is one string with no frame inside `policy/rules/` |
 | `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
@@ -165,7 +166,7 @@ directions, which is worth knowing before reading a variant's result:
 | arm | switched off | the task that makes it discriminate |
 |---|---|---|
 | `full` | nothing — the baseline | |
-| `no-search` | `code_search`; the agent must already know which file to read | `find-the-bug` — for **cost**, not pass/fail; see below |
+| `no-search` | `code_search`; the agent must already know which file to read | `find-the-rule` — eight modules, so enumeration costs something; the signal is **calls**, not pass/fail |
 | `no-pinning` | the oracle is not held fixed, so an edited test decides the check | `bug-fix/weakens-the-test` |
 | `no-repair` | one attempt; a failing check ends the task | `two-attempts` |
 | `tight-window` | a model window small enough that compaction has to work for anything to finish | any task long enough to cross the trigger |
@@ -388,7 +389,25 @@ Three views, and the rate is the least useful of them:
 |---|---|
 | the grouped table | one line per (task, arm) — counts, medians, terminal states |
 | **the matrix** | task × arm passes, with `*` on a cell that did less well than `full` |
+| **what each arm actually changed** | the configuration diff, read off the rows |
 | **why the runs that did not pass, did not pass** | every distinct failure reason, with how many rows produced it |
+
+⚠️ **"What each arm actually changed" is not a description — it is a diff**, and it
+is recorded into every row (`arm_changes`) so a results file carries its own
+evidence:
+
+```
+full             (nothing — the baseline configuration)
+no-repair        retry: {'max_attempts': 2, ...} -> {'max_attempts': 0, ...}
+no-search        tool_sets: {...} -> {'default': ['read_file'], 'bugfix': ['read_file', 'write_file', 'run']}
+tight-window     patch:llm: None -> {..., 'max_context_tokens': 6000}
+```
+
+This is the line that would have caught the first ablation being three repeats of
+the baseline. **An arm that switched nothing off and an arm that switched something
+off to no effect produce the same table, and no rate tells them apart** — a diff
+does. It also makes `no-search`'s own limit visible at a glance: `run` is still in
+the set, so what the arm removes is a tool and not the ability to search.
 
 ⚠️ **The matrix is where an ablation is read.** An arm's overall rate is an average
 over tasks that can disagree completely: `no-repair` at 100% on five tasks and 0% on

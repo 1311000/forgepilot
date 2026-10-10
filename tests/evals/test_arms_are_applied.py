@@ -82,6 +82,34 @@ def test_the_no_repair_arm_ends_after_one_attempt(task) -> None:
 # ---------------------------------------------------------------------------
 # And it does not leak into the expectation
 # ---------------------------------------------------------------------------
+def test_each_arm_reports_what_it_changed(task) -> None:
+    """⚠️ **The evidence, and the thing that was missing for three arms.**
+
+    An arm that switched nothing off and an arm that switched something off to no
+    effect produced the same table. What separates them is a diff of the two
+    configurations — recorded per row, so a results file carries its own proof.
+
+    Checked per arm rather than in aggregate: a single non-empty result would pass
+    for the wrong reason while another arm was decorative.
+    """
+    for name, arm in arm_module.ARMS.items():
+        changes = H.arm_changes(task, arm)
+        if name == "full":
+            assert changes == {}, "the baseline must change nothing"
+            continue
+        assert changes, f"arm {name!r} reports no change, so it is not an arm"
+
+
+def test_a_switch_that_lives_in_a_patch_is_reported_too(task) -> None:
+    """`tight-window` changes nothing in the project and everything in a patch. A
+    function that only diffed the project would report it as a no-op — which is the
+    mistake, made twice already, in a new place."""
+    changes = H.arm_changes(task, arm_module.arm("tight-window"))
+
+    assert any(key.startswith("patch:") for key in changes), changes
+    assert "max_context_tokens" in str(changes["patch:llm"][1])
+
+
 def test_the_agent_cannot_read_the_arm_off_its_own_path(task) -> None:
     """⚠️ **The experiment must not be visible to its subject.**
 
