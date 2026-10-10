@@ -72,24 +72,6 @@ def assignment(name: str, value: str, shell: str) -> str:
     return f"export {name}='{quoted}'"
 
 
-def _force_remove(path: Path) -> None:
-    """``rmtree`` that survives Windows read-only files.
-
-    Git marks its object files read-only, and on Windows ``shutil.rmtree`` raises
-    ``PermissionError`` on them rather than clearing the attribute. Removing a
-    checkout therefore means clearing the bit and retrying, which is the entire
-    reason this is not a one-liner.
-    """
-
-    def onexc(func, target, exc):  # type: ignore[no-untyped-def]
-        if not isinstance(exc, PermissionError):
-            raise exc
-        os.chmod(target, stat.S_IWRITE)
-        func(target)
-
-    shutil.rmtree(path, onexc=onexc)
-
-
 def prepare(repo: Path, *, recreate: bool, force: bool) -> str:
     """Materialise the fixture checkout. Returns ``created`` or ``reused``.
 
@@ -99,6 +81,8 @@ def prepare(repo: Path, *, recreate: bool, force: bool) -> str:
     discard a run in progress, and it would look like it had merely printed two
     variables.
     """
+    from forgepilot.fs import remove_tree
+
     if repo.exists():
         if not (repo / MARKER).is_file() and not force:
             raise SystemExit(
@@ -108,7 +92,7 @@ def prepare(repo: Path, *, recreate: bool, force: bool) -> str:
             )
         if not recreate:
             return "reused"
-        _force_remove(repo)
+        remove_tree(repo)
 
     repo.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(FIXTURE, repo, ignore=_IGNORE)

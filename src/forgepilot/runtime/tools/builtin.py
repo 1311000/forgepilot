@@ -239,6 +239,13 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
         # One extra, so a capped result can be *reported* as capped rather than
         # looking like the whole answer.
         max_hits=cap + 1,
+        # **The tree this session is working in**, which is not the same as the
+        # path the repository was configured at. An agent edits a checkout; the
+        # configured path is where the repository lives. Searching the latter
+        # returns pre-edit content and looks exactly like an answer — and on a
+        # repo host whose mirror is bare, it returns nothing at all while saying
+        # "no match", which reads as "that symbol does not exist".
+        root=str(ctx.workspace_root) if ctx.workspace_root else None,
     )
 
     hits = tuple(await retriever.search(query, ctx.constraints))

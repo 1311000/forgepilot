@@ -175,3 +175,53 @@ async def test_a_repository_outside_the_grant_is_refused(rig, checkout) -> None:
     # configured" would answer a question the caller is not entitled to ask.
     assert "checkout" not in outcome.content
     assert "configured" not in outcome.content
+
+
+async def test_it_searches_the_working_tree_not_the_configured_checkout(
+    rig, checkout, tmp_path: Path
+) -> None:
+    """The rig keeps the two apart on purpose, so this can be asserted at all.
+
+    `checkout` is the *working tree* — where the session edits. The retriever's
+    configured root is a different directory, standing in for where the
+    repository lives. Both contain `src/login.py`, with different content; only
+    the working tree's may be found.
+
+    This is the shape of a real failure. `code_search` searched the configured
+    path while the agent edited a worktree, and on a repo host whose mirror was
+    bare that meant searching nothing at all — reported as "no match", which
+    reads as "that symbol does not exist". The model then spent eleven shell
+    calls improvising, and wandered out of the workspace.
+    """
+    elsewhere = tmp_path / "checkout" / "src"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    (elsewhere / "login.py").write_text(
+        "def retry_login():\n    return 'THE OTHER COPY'\n", encoding="utf-8"
+    )
+
+    stale = await search(rig, pattern="THE OTHER COPY", output_mode="content")
+    # Asserted on `hits`, not on the absence of the string: a "no match" message
+    # *echoes the pattern*, so `"THE OTHER COPY" not in content` is false whether
+    # or not anything was found. The first version of this test did exactly that
+    # and failed against its own error text.
+    assert stale.meta["hits"] == 0, "the configured checkout was searched, not the working tree"
+
+    live = await search(rig, pattern="MAX_ATTEMPTS", output_mode="content")
+    assert "src/login.py" in live.content, "the working tree was not searched"
+
+
+async def test_a_working_tree_that_is_not_there_is_refused(rig, checkout) -> None:
+    """Refused, not silently ignored. `read_file` is bounded to the workspace,
+    and search has to be too — it is a read primitive by another name.
+
+    The pipeline turns the provider's refusal into an error *result* rather than
+    an exception, which is what the model sees; asserting on the outcome is
+    asserting on the thing that actually happens.
+    """
+    rig.pipeline.workspace_root = Path("C:/definitely-not-here")
+
+    outcome = await search(rig, pattern="retry_login")
+
+    assert outcome.is_error
+    assert "UnknownCheckout" in outcome.content
+    assert "not a directory" in outcome.content

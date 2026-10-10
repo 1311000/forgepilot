@@ -181,9 +181,16 @@ async def rig(tmp_path: Path):
     # `code_search` is its own plugin because it needs a different service, so
     # the dedicated tool suite loads it explicitly. A rig that does not care about
     # search is not made to carry it.
+    # ⚠️ **Deliberately not the workspace.** The configured root is where a
+    # repository *lives*; the session works in a checkout cut from it, and the two
+    # diverge the moment anything is edited. This rig used to point both at
+    # `tmp_path / "ws"`, which made "search the configured path" and "search the
+    # working tree" the same instruction — so no test in the suite could tell
+    # them apart, and a real run found out the hard way (a bare mirror, `no
+    # match`, and a model that went looking with a shell instead).
     await load(
         "forgepilot.providers.retrieve.grep:GrepRetrieverPlugin",
-        {"roots": {REPO.slug: str(tmp_path / "ws")}},
+        {"roots": {REPO.slug: str(tmp_path / "checkout")}},
     )
     await load("forgepilot.runtime.tools.builtin:CodeSearchToolPlugin")
 

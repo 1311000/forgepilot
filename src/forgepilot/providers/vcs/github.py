@@ -40,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from forgepilot.fs import remove_tree
 from forgepilot.kernel import PluginService
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.refs import RepoRef
@@ -298,6 +299,19 @@ class GitHubVcsPlugin(PluginService):
             raise GitFailed(f"git {' '.join(args)} failed: {detail.strip()}")
         return redact(completed.stdout or "", secrets)
 
+    def _has_mirror(self, path: Path) -> bool:
+        """Whether :meth:`ensure_mirror` has already produced a clone here.
+
+        ⚠️ **Every caller asks this rather than testing for a path itself.** It
+        started as ``(path / "HEAD").is_file()`` written out in two places — a
+        *bare*-repository check — and when the mirror became a checkout, one of
+        them was updated and the other was not. `push` went on answering "no
+        mirror", and refused with *"`ensure_mirror` must run first"* while the
+        mirror sat right there. The tests caught it within a minute; the point is
+        that it needed catching at all.
+        """
+        return (path / ".git").is_dir()
+
     def _mirror_path(self, repo: RepoRef) -> Path:
         # Derived from the slug rather than configured per repository: two
         # sessions on one repository must share a mirror, and a configurable path
@@ -325,12 +339,25 @@ class GitHubVcsPlugin(PluginService):
         return RepoRef(host=parts[0], namespace=parts[1], name=parts[2])
 
     async def ensure_mirror(self, repo: RepoRef, constraints: ExecutionConstraints) -> Path:
-        """Clone or update a bare mirror, and return its path.
+        """Clone or update the mirror, and return its path.
 
-        A bare clone rather than `--mirror`: `--mirror` sets
-        ``remote.origin.mirror=true`` and a ``+refs/*:refs/*`` refspec, which
-        makes ``git push origin <branch>`` publish **every** ref — tags, other
-        people's branches, deletions. `push(repo, branch)` means one branch.
+        **A checkout, not a bare repository.** Bare is the conventional choice
+        for a mirror and it was the wrong one here, because the mirror's path is
+        also what a retriever gets pointed at — and a bare repository has no
+        files. `ripgrep` over one returns nothing, `code_search` reports *"no
+        match"*, and that is **indistinguishable from "the symbol does not
+        exist"**. A real run showed the cost: the model lost its main discovery
+        tool, fell back to shelling out, and wandered out of the workspace into
+        an unrelated checkout of the same project before finding the file.
+
+        Bare was not chosen for a reason that survives — a working copy of the
+        default branch is a few megabytes — and `push` and `worktree add` behave
+        the same either way.
+
+        Not `--mirror` either: that sets ``remote.origin.mirror=true`` and a
+        ``+refs/*:refs/*`` refspec, so ``git push origin <branch>`` publishes
+        **every** ref — tags, other people's branches, deletions. `push(repo,
+        branch)` means one branch, which is why `push` names its refspec.
 
         The stored remote is the plain URL. See the module docstring: a
         token-URL would be a credential at rest in this directory.
@@ -340,7 +367,7 @@ class GitHubVcsPlugin(PluginService):
         path = self._mirror_path(repo)
         url = remote_url(self._remote_base, repo)
 
-        if (path / "HEAD").is_file():
+        if self._has_mirror(path):
             # Already here. `fetch` rather than a fresh clone — the point of a
             # mirror is that the second session does not pay for the whole
             # history again, which under the target environment's 300GB figure is
@@ -348,8 +375,17 @@ class GitHubVcsPlugin(PluginService):
             self._run_git("fetch", "--prune", "origin", cwd=path, token=token)
             return path
 
+        if (path / "HEAD").is_file():
+            # A bare mirror from before the layout changed. **Replaced, not
+            # reused**, and quietly reusing it is the tempting mistake: it is
+            # still a valid git repository, `fetch` would succeed, and every
+            # search against it would go on returning nothing while looking
+            # healthy. It is derived data and reproducible from the remote, so
+            # deleting it costs a clone and no thought.
+            remove_tree(path)
+
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._run_git("clone", "--bare", url, str(path), token=token)
+        self._run_git("clone", url, str(path), token=token)
         return path
 
     async def push(self, repo: RepoRef, branch: str, constraints: ExecutionConstraints) -> None:
@@ -363,7 +399,7 @@ class GitHubVcsPlugin(PluginService):
         self._authorise(repo, constraints, Operation.WRITE_CODE)
         token = self._token()
         path = self._mirror_path(repo)
-        if not (path / "HEAD").is_file():
+        if not self._has_mirror(path):
             raise GitFailed(
                 f"cannot push {branch!r}: {repo.slug!r} has no mirror at {path}. "
                 f"`ensure_mirror` must run first — a push needs a local repository to "

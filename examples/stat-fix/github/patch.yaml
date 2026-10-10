@@ -24,10 +24,10 @@
     root: examples/stat-fix/github/tickets
   tier: trusted
 
-# ⚠️ **Three rows must agree on one path.** The mirror is derived by the `vcs`
-# provider from the slug — `<mirror_root>/<host>/<namespace>/<name>` — and the
-# workspace has to cut its worktree from exactly that directory, so the path is
-# spelled out here as well. Nothing checks that the three agree.
+# ⚠️ **The mirror path is derived, and two rows must agree on it.** `vcs` builds
+# it from the slug — `<mirror_root>/<host>/<namespace>/<name>` — and `workspace`
+# has to cut its worktree from exactly that directory, so it is spelled out here
+# too. Nothing checks that the two agree.
 #
 # It could not be otherwise without changing a seam: `Workspace.prepare(repo,
 # base_ref, session_id)` names a repository, not a directory, and `workspace` and
@@ -44,6 +44,15 @@
     branch_prefix: forgepilot
   tier: trusted
 
+# `code_search` does **not** search this path, and that is the fix rather than an
+# oversight: the tool passes the session's working tree, because a repository's
+# location and the checkout a session is editing are different questions. This
+# entry is here to name the slug — `Retriever.repositories()` enumerates them, and
+# `code_search` intersects that with the caller's grant before searching anything.
+#
+# It was originally pointed at the mirror *and searched there*, which on a bare
+# mirror meant searching nothing and reporting "no match" — indistinguishable
+# from "that symbol does not exist". A real run lost eleven shell calls to it.
 - id: retriever
   plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
   config:

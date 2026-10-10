@@ -59,6 +59,15 @@ class SearchQuery:
     a search that does not say which revision it means cannot have its results
     trusted, and a default of ``"HEAD"`` would quietly mean "trunk" to a
     developer who is working on a branch.
+
+    ``root`` is **where the caller is working**, when it knows. It is not a
+    substitute for ``repos``: that still says which repositories are in scope and
+    a provider re-checks the grant against it. It says *which copy* to look at,
+    and the two are different questions. A repository lives at a path; a session
+    works in a checkout cut from it, and the two diverge the moment the session
+    edits anything. A provider that greps a tree should prefer this; a provider
+    that queries a shared index has no use for it and ignoring it is not an
+    error.
     """
 
     pattern: str
@@ -67,6 +76,7 @@ class SearchQuery:
     globs: tuple[str, ...] = ()
     max_hits: int = 200
     literal: bool = False
+    root: str | None = None
 
 
 class SymbolKind(StrEnum):

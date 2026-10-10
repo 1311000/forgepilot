@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from forgepilot.seams.refs import PrincipalId, RepoRef, TenantId
-from forgepilot.seams.retriever import SearchQuery
+from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 
 REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
@@ -283,3 +283,84 @@ async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(retriever
     assert hits[0].location.ref == WORKTREE, (
         "a plain directory was reported as being at the requested revision"
     )
+
+
+# ---------------------------------------------------------------------------
+# The working tree wins over the configured path
+# ---------------------------------------------------------------------------
+async def test_a_search_can_be_pointed_at_the_callers_working_tree(
+    retriever, roots, tmp_path: Path
+) -> None:
+    """**The two are different questions.** A repository lives at a path; a
+    session works in a checkout cut from it. After the first edit they are
+    different content, and answering the second with the first returns pre-edit
+    code that looks exactly like an answer.
+
+    Found the hard way: an agent edited a worktree while `code_search` searched
+    the repository it was cut from. On a repo host that difference was total —
+    the mirror was bare, so it searched nothing, and "no match" read as "that
+    symbol does not exist".
+    """
+    worktree = tmp_path / "worktree"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "src" / "login.py").write_text(
+        "def retry_login():\n    return 'edited in this session'\n", encoding="utf-8"
+    )
+
+    hits = await retriever.search(
+        SearchQuery(
+            pattern="edited in this session",
+            repos=(REPO,),
+            ref=WORKING_TREE,
+            root=str(worktree),
+        ),
+        constraints_for(REPO),
+    )
+
+    assert hits, "the working tree was not searched"
+    assert hits[0].location.path == "src/login.py"
+    # And the ref is the *worktree's*, not the configured checkout's.
+    assert hits[0].location.repo == REPO
+
+
+async def test_the_working_tree_does_not_widen_the_grant(
+    retriever, roots, tmp_path: Path
+) -> None:
+    """An override changes which copy is read, never which repositories may be.
+
+    Otherwise pointing `root` at a directory would be a way past the permission
+    check — and the check is here, in the provider, precisely because a caller
+    eventually forgets.
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "secret.py").write_text("the other repository's code\n", encoding="utf-8")
+
+    with pytest.raises(PermissionError):
+        await retriever.search(
+            SearchQuery(pattern="secret", repos=(OTHER,), ref=WORKING_TREE, root=str(worktree)),
+            constraints_for(REPO),  # may read REPO, not OTHER
+        )
+    assert retriever.denied_calls > 0, "the refusal was not counted"
+
+
+async def test_a_working_tree_that_is_not_there_is_refused_not_silently_ignored(
+    retriever, roots, tmp_path: Path
+) -> None:
+    """Falling back to the configured checkout would answer a question about the
+    working tree with content from somewhere else, which is the whole bug."""
+    from forgepilot.providers.retrieve.grep import UnknownCheckout
+
+    with pytest.raises(UnknownCheckout) as caught:
+        await retriever.search(
+            SearchQuery(
+                pattern="retry_login",
+                repos=(REPO,),
+                ref=WORKING_TREE,
+                root=str(tmp_path / "does-not-exist"),
+            ),
+            constraints_for(REPO),
+        )
+
+    assert "not a directory" in str(caught.value)
+    assert "falling back" in str(caught.value)

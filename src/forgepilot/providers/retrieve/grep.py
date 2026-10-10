@@ -137,10 +137,37 @@ class GrepRetrieverPlugin(PluginService):
         )
 
     # -- helpers -----------------------------------------------------------
-    def _root(self, repo: RepoRef, constraints: ExecutionConstraints) -> Path:
+    def _root(
+        self, repo: RepoRef, constraints: ExecutionConstraints, override: str | None = None
+    ) -> Path:
+        """Where to search. The caller's working tree wins over the configured path.
+
+        **The two are different questions and answering one with the other is
+        how a search silently returns the wrong code.** The configured root says
+        where a repository *lives*; a session works in a checkout cut from it,
+        and after the first edit those are different content. That is not
+        hypothetical: an agent editing a worktree searched the repository it was
+        cut from and got pre-edit results, which looked like an answer.
+
+        The grant is still checked against ``repo`` first, and still here rather
+        than left to the caller. An override changes which copy is read, never
+        which repositories may be read.
+        """
         if not constraints.allows_repo(repo):
             self.denied_calls += 1
             raise PermissionError(f"repo {repo.slug!r} is not permitted")
+
+        if override:
+            path = Path(override).resolve()
+            if not path.is_dir():
+                self.denied_calls += 1
+                raise UnknownCheckout(
+                    f"the caller's working tree for {repo.slug!r} is {path}, which is "
+                    f"not a directory. Refusing rather than falling back to the "
+                    f"configured checkout — a quiet fallback would answer a question "
+                    f"about the working tree with content from somewhere else."
+                )
+            return path
 
         root = self._roots.get(repo.slug)
         if root is None:
@@ -200,7 +227,7 @@ class GrepRetrieverPlugin(PluginService):
     ) -> Sequence[CodeHit]:
         hits: list[CodeHit] = []
         for repo in query.repos:
-            root = self._root(repo, constraints)
+            root = self._root(repo, constraints, query.root)
             ref = self._ref(root, query.ref)
             for record in self._run(root, query):
                 hits.append(self._hit(record, repo, root, ref))

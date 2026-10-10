@@ -74,23 +74,6 @@ def assignment(name: str, value: str, shell: str) -> str:
     return f"export {name}='{quoted}'"
 
 
-def _force_remove(path: Path) -> None:
-    """`rmtree` that survives the read-only object files git leaves behind.
-
-    The same defect `prepare_repo.py` hit: git marks its objects read-only, and
-    Windows raises `PermissionError` rather than clearing the attribute.
-    """
-    import stat
-
-    def onexc(func, target, exc):  # type: ignore[no-untyped-def]
-        if not isinstance(exc, PermissionError):
-            raise exc
-        os.chmod(target, stat.S_IWRITE)
-        func(target)
-
-    shutil.rmtree(path, onexc=onexc)
-
-
 def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "") -> None:
     from forgepilot.providers.vcs.github import authenticated_env, remote_url
     from forgepilot.seams.refs import RepoRef
@@ -105,6 +88,8 @@ def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "
     url = remote_url(base, repo)
     env = authenticated_env(token, base)
 
+    from forgepilot.fs import remove_tree
+
     if into.exists():
         if not (into / MARKER).is_file() and not force:
             raise SystemExit(
@@ -112,7 +97,7 @@ def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "
                 f"checkout this script made. Pass --into elsewhere, or --force."
             )
         if force:
-            _force_remove(into)
+            remove_tree(into)
 
     if not into.exists():
         into.parent.mkdir(parents=True, exist_ok=True)

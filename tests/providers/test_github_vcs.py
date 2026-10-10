@@ -288,8 +288,43 @@ async def test_ensure_mirror_clones_the_repository_for_real(vcs, remote: Path) -
     path = await vcs.ensure_mirror(REPO, constraints_for())
 
     assert path.exists()
-    assert git("rev-parse", "--is-bare-repository", cwd=path).strip() == "true"
     assert git("rev-parse", "main", cwd=path).strip(), "the base branch did not come across"
+
+
+async def test_the_mirror_is_a_working_tree_and_not_a_bare_repository(vcs) -> None:
+    """**The defect this changed for.** A bare repository has no files.
+
+    The mirror's path is also what a retriever gets pointed at, and ripgrep over
+    a bare repository returns nothing — which `code_search` renders as *"no
+    match"*, indistinguishable from "the symbol does not exist". A real run
+    showed the cost: the model lost its main discovery tool, fell back to
+    shelling out, and wandered out of the workspace into an unrelated checkout of
+    the same project before it found the file.
+    """
+    path = await vcs.ensure_mirror(REPO, constraints_for())
+
+    assert git("rev-parse", "--is-bare-repository", cwd=path).strip() == "false"
+    assert (path / "app.py").is_file(), "the checked-out tree has no files in it"
+    assert "return 1" in (path / "app.py").read_text(encoding="utf-8")
+
+
+async def test_a_bare_mirror_from_the_old_layout_is_replaced(vcs, tmp_path: Path) -> None:
+    """Silently reusing one is the tempting mistake, and it fails quietly forever.
+
+    A bare mirror is still a valid git repository: `fetch` against it succeeds,
+    every command reports success, and every search against it goes on returning
+    nothing while looking healthy. It is derived data and reproducible from the
+    remote, so replacing it costs a clone and no thought.
+    """
+    path = (tmp_path / "mirrors" / REPO.host / REPO.namespace / REPO.name).resolve()
+    path.mkdir(parents=True)
+    git("init", "--bare", "-b", "main", cwd=path)
+    assert git("rev-parse", "--is-bare-repository", cwd=path).strip() == "true"
+
+    await vcs.ensure_mirror(REPO, constraints_for())
+
+    assert git("rev-parse", "--is-bare-repository", cwd=path).strip() == "false"
+    assert (path / "app.py").is_file()
 
 
 async def test_ensure_mirror_is_idempotent(vcs) -> None:
