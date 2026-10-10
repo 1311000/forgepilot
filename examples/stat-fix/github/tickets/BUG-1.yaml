@@ -1,0 +1,22 @@
+# The same bug as `../../tickets/BUG-1.yaml`, naming the GitHub repository.
+#
+# ⚠️ The repository line is load-bearing. `preprocess` scans the ticket against
+# the project's *known* repositories and nothing else, so a ticket that names a
+# repository nobody configured finds no target and stops at AWAITING_INFO with
+# "no repository could be determined" — before the classifier is ever consulted.
+id: BUG-1
+title: moving_average 少返回一个窗口
+status: new
+priority: high
+
+description: |
+  复现步骤：
+  1. 调用 moving_average([1, 2, 3, 4], 2)
+
+  预期结果：3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+  实际结果：只有 2 个窗口
+
+  受影响仓库：github.com/1311000/test
+  相关文件：stats.py
+
+  看板上的移动平均线比预期短一格，末尾那个窗口丢掉了。序列越长越明显。

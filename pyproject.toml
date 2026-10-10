@@ -16,6 +16,13 @@ dependencies = [
     "cordis-port==0.1.5",
     # Profile / bundle / patch layers are YAML.
     "PyYAML>=6.0",
+    # HTTP, and it is *core* despite living behind an extra until now.
+    # `providers/llm/openai_compat.py` imports it on the first model call, and
+    # `providers/vcs/github.py` on the first pull request — so a clean install
+    # without it could not talk to a model at all. Nobody noticed because this
+    # machine had httpx installed for unrelated reasons, which is the shape of
+    # every undeclared dependency: it works until the one machine that matters.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

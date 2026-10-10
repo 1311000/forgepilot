@@ -1,0 +1,89 @@
+# The GitHub deployment: the fixture, but the work lands on a real repo host.
+#
+# Self-contained rather than composed with `../patch.yaml`, on purpose: a demo
+# that must be read as three layers is a demo people get wrong. The cost is that
+# the rows both patches share — the classifier, the sandbox, the credential — are
+# written twice, and a change to one will not reach the other. That is worth it
+# here and would not be worth it in a deployment's own profile.
+#
+# The difference from the local example is one row that matters: `vcs` is a real
+# repo host, so the task ends at `DELIVERED` instead of `READY`.
+#
+# `seed_github.py` prints the exports this file needs.
+
+- id: classifier
+  plugin: forgepilot.providers.classify.llm:LLMClassifierPlugin
+  config:
+    model: ${FORGEPILOT_LLM_MODEL:-deepseek-flash}
+    max_tokens: 2048
+  tier: trusted
+
+- id: tickets
+  plugin: forgepilot.providers.tickets.file:FileTicketSourcePlugin
+  config:
+    root: examples/stat-fix/github/tickets
+  tier: trusted
+
+# ⚠️ **Three rows must agree on one path.** The mirror is derived by the `vcs`
+# provider from the slug — `<mirror_root>/<host>/<namespace>/<name>` — and the
+# workspace has to cut its worktree from exactly that directory, so the path is
+# spelled out here as well. Nothing checks that the three agree.
+#
+# It could not be otherwise without changing a seam: `Workspace.prepare(repo,
+# base_ref, session_id)` names a repository, not a directory, and `workspace` and
+# `vcs` may not reach each other (a provider importing a provider is the one
+# thing the import-graph test forbids). So the composition happens in
+# configuration, which is where this project puts composition — and where a
+# mistake is a pathspec error rather than a silent wrong answer.
+- id: workspace
+  plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+  config:
+    repos:
+      github.com/1311000/test: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test
+    worktree_root: ${FORGEPILOT_EXAMPLE_WORKTREES}
+    branch_prefix: forgepilot
+  tier: trusted
+
+- id: retriever
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
+  config:
+    roots:
+      github.com/1311000/test: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test
+  tier: trusted
+
+# The row this whole example exists for. `remote_base` and `api_base` default to
+# github.com and api.github.com; an enterprise host is two lines here and nothing
+# else anywhere.
+- id: vcs
+  plugin: forgepilot.providers.vcs.github:GitHubVcsPlugin
+  config:
+    mirror_root: ${FORGEPILOT_EXAMPLE_MIRRORS}
+    # token_env defaults to FORGEPILOT_GITHUB_TOKEN. Named, never valued — a
+    # token written here would land in git and in `--dump-config`.
+  tier: trusted
+
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin
+  config:
+    max_output_bytes: 64000
+  tier: trusted
+
+- id: principal
+  plugin: forgepilot.identity.principal:PrincipalServicePlugin
+  config:
+    tokens:
+      - token: demo-token
+        principal_id: demo
+        tenant_id: local
+        teams: []
+        operations:
+          - read_code
+          - write_code
+          - run_tests
+          - read_ticket
+          - open_pr
+        repo_prefixes:
+          - github.com/1311000/*
+        writable_paths:
+          - "."
+  tier: trusted

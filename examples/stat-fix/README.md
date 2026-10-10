@@ -57,9 +57,12 @@ Fixes BUG-1.
 **`ready`, not `delivered`.** That is the honest terminal state here: the checks
 passed and the work is committed on a local branch, but this deployment has no
 *repo host* — nothing that owns repositories and pull requests — so nothing was
-pushed and no pull request exists. `TaskState.READY` says exactly that. A
-provider that could reach GitHub or GitLab would declare `pull_requests` in its
-`capabilities()` and the same run would end `DELIVERED`.
+pushed and no pull request exists. `TaskState.READY` says exactly that.
+
+**For the same run ending in a real pull request, see `github/`.** That variant
+swaps one row (`vcs`) for `GitHubVcsPlugin` and the task ends `DELIVERED`: the
+branch is pushed and a draft PR is opened. It is the same fixture, the same
+ticket and the same model — which is the point.
 
 ## The files
 

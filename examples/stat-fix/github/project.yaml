@@ -1,0 +1,63 @@
+# Same project as `../project.yaml`, pointed at GitHub.
+#
+# The repository slug is the one thing that has to change: ticket text is scanned
+# against this list and nothing else, so a ticket naming `github.com/...` against
+# a project that only knows `git.local/...` would find no repository and stop
+# before the classifier.
+
+name: stat-fix-github
+
+repos:
+  - github.com/1311000/test
+
+repo_prefixes:
+  - github.com/1311000/*
+
+default_branch: main
+
+test:
+  - ${FORGEPILOT_PYTHON} -m pytest -q
+
+allowed_operations:
+  - read_code
+  - write_code
+  - run_tests
+  - read_ticket
+  - open_pr
+
+writable_paths:
+  - "."
+
+network: deny
+
+retry:
+  max_attempts: 2
+  on_failure: stop
+
+# The check's own oracle — restored to the base revision while the checks run, so
+# a relaxed assertion cannot be what makes them pass. See
+# `runtime/pinning.py`. The value below is the default; it is written out because
+# on this example it is not hypothetical: the repository the agent works in is a
+# real one somebody can go and read.
+test_paths:
+  - tests/
+  - "test_*.py"
+  - conftest.py
+
+tool_sets:
+  default:
+    - read_file
+    - code_search
+  bugfix:
+    - read_file
+    - code_search
+    - write_file
+    - run
+
+category_tool_sets:
+  bug: bugfix
+  question: default
+
+budget:
+  max_tool_calls: 60
+  max_tokens: 200000

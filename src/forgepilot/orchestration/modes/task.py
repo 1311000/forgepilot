@@ -294,6 +294,18 @@ async def run_task(
 
     repo = plan.repos[0]
     session_id = session.header.session_id
+
+    # **The mirror comes first, and it is called unconditionally.** A worktree
+    # cannot be cut from a repository that is not on this machine yet, and `vcs`
+    # is the only thing that knows how to reach a repo host.
+    #
+    # Not gated on a capability. `ensure_mirror` is a *mandatory* Protocol method,
+    # not an optional extra — the shipped providers implement it as a no-op
+    # because their mirror is the local checkout, which is also why nobody
+    # noticed it had no caller at all until a provider existed whose mirror has
+    # to be fetched.
+    await vcs.ensure_mirror(repo, constraints)
+
     # `prepare` already made a branch: a worktree is checked out *onto* one. The
     # old `vcs.create_branch(repo, handle.branch, …)` was creating a second name
     # for a branch the workspace had already made, which is the sort of thing that
