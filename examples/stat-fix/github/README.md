@@ -11,7 +11,12 @@ From the repository root:
 
 ```bash
 # 1. a token with `repo` scope, in the gitignored .env.local — never in a file
-#    that gets committed, and never pasted anywhere with an audience
+#    that gets committed, and never pasted anywhere with an audience.
+#
+#    ⚠️ Git Bash. In PowerShell, `>>` writes UTF-16 and the loader reads UTF-8,
+#    which used to produce `ValueError: embedded null character` naming neither
+#    the file nor the cause. There:
+#      Add-Content -Path .env.local -Value 'FORGEPILOT_GITHUB_TOKEN=...' -Encoding utf8
 echo 'FORGEPILOT_GITHUB_TOKEN=...' >> .env.local
 
 # 2. put the fixture on GitHub, and print what to export
