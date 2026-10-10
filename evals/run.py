@@ -66,6 +66,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
 
     try:
         repo = H.prepare_repo(task, scratch / "repo")
+        shipped = H.base_paths(repo)
         H.export_environment(repo, scratch / "worktrees")
         root, _ = await H.boot(task, list(arm.patches), scripted=scripted)
         if scripted and task.script:
@@ -129,6 +130,18 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         )
 
         final = outcome.checks[-1] if outcome.checks else None
+        added = tuple(p for p in outcome.changed_paths if p not in shipped)
+        row["added_paths"] = list(added)
+        row["added_tests"] = list(project.tests_in(added))
+        # What counts as a test comes from the **task's** project, not the arm's:
+        # the `no-pinning` arm empties `test_paths` on purpose, and letting that
+        # redefine the expectation would make the task fail for a reason that has
+        # nothing to do with what it measures.
+        from forgepilot.config.project import project_from_mapping as _from_mapping
+
+        row["changed_tests"] = list(
+            _from_mapping(H.project_mapping(task), name=task.name).tests_in(outcome.changed_paths)
+        )
         row.update(
             state=str(outcome.state),
             delivered=outcome.state.value in {"delivered", "ready"},

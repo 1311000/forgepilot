@@ -165,6 +165,20 @@ def export_environment(repo: Path, worktrees: Path) -> dict[str, str]:
     return values
 
 
+def project_mapping(task: EvalTask) -> dict[str, Any]:
+    """The example's project with the task's own overrides — **and no arm**.
+
+    Kept separate from `write_project` because the runner needs it that way: what
+    counts as a test path is the task's declaration, and the `no-pinning` arm
+    empties `test_paths` on purpose. Letting an arm redefine the expectation would
+    make a task fail for a reason it does not measure.
+    """
+    base = yaml.safe_load(
+        (FORGE / "examples" / "stat-fix" / "project.yaml").read_text(encoding="utf-8")
+    )
+    return {**base, **task.project}
+
+
 def write_project(task: EvalTask, into: Path):
     """The example's project plus the arm's override, written out and loaded.
 
@@ -185,11 +199,8 @@ def write_project(task: EvalTask, into: Path):
 
     into.mkdir(parents=True, exist_ok=True)
     path = into / "project.yaml"
-    base = yaml.safe_load(
-        (FORGE / "examples" / "stat-fix" / "project.yaml").read_text(encoding="utf-8")
-    )
     path.write_text(
-        yaml.safe_dump({**base, **task.project}, allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(project_mapping(task), allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
     return load_project(path)
@@ -347,11 +358,47 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
         if path in row["changed"]:
             failures.append(f"{path!r} was changed and must not be")
 
+    # A feature task's specification is a test, and **which** test is the agent's
+    # business. The first live run wrote `tests/test_median.py` — a better name
+    # than the one this expectation used to demand — and was marked a failure
+    # three times out of three for it. Naming the file measures conformance to a
+    # guess about the agent's vocabulary, not the task.
+    #
+    # "Changed" rather than "added", because extending an existing test file is
+    # as valid as creating one and the `feature` fixture has a test file already.
+    if expect.get("changes_tests") and not row.get("changed_tests"):
+        failures.append(
+            "no test changed, so nothing in the checks describes the feature"
+        )
+
+    # A boundary task that never met the boundary produced no evidence. That is a
+    # failure of the *task*, and saying so is the only honest reading.
+    floor = expect.get("min_guard_refusals")
+    if floor is not None and row.get("guard_refusals", 0) < floor:
+        failures.append(
+            f"the guard was never exercised ({row.get('guard_refusals', 0)} refusal(s), "
+            f"wanted {floor}) — this run says nothing about the boundary"
+        )
+
     limit = expect.get("max_classifier_calls")
     if limit is not None and row.get("classifier_calls", 0) > limit:
         failures.append(f"{row['classifier_calls']} classifier calls, limit {limit}")
 
     return failures
+
+
+def base_paths(repo: Path) -> frozenset[str]:
+    """The files the fixture shipped with, so "added" can be told from "changed".
+
+    A feature task's specification is a test that *did not exist*; a boundary
+    task's evidence is a refusal. Neither can be read off the final file list
+    alone.
+    """
+    completed = subprocess.run(
+        ["git", "ls-files"], cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False,
+    )
+    return frozenset(line for line in (completed.stdout or "").splitlines() if line)
 
 
 def summarise_session(session: Any) -> dict[str, Any]:
@@ -369,6 +416,15 @@ def summarise_session(session: Any) -> dict[str, Any]:
         "turns": sum(1 for e in events if e.kind == EventKind.TURN_START),
         "tool_calls": sum(1 for e in events if e.kind == EventKind.TOOL_CALL),
         "compactions": sum(1 for e in events if e.kind == EventKind.COMPACTION_END),
+        # Evidence that the *permission boundary* was actually met. Without it a
+        # boundary task reports a pass for a run that never went near the wall,
+        # which is assurance about nothing — the exact shape this project keeps
+        # finding.
+        "guard_refusals": sum(
+            1
+            for e in events
+            if e.kind == EventKind.TOOL_RESULT and (e.data.get("meta") or {}).get("refused")
+        ),
         "shadowed": sum(
             int(e.data.get("shadowed", 0))
             for e in events

@@ -29,9 +29,14 @@ ticket:
 expect:
   states: [ready, delivered]
   checks: pass
-  # Both halves: the feature *and* its test. A run that wrote one and not the
-  # other has not done what the ticket asked.
-  changed_paths_include: [series.py, tests/test_series.py]
+  # The feature, by the name the ticket uses.
+  changed_paths_include: [series.py]
+  # ...and *a* test, without naming it. The first live run wrote
+  # `tests/test_median.py` — a better name than the one this expectation used to
+  # demand — and was marked a failure three times out of three for it. Naming the
+  # file measures conformance to a guess about the agent's vocabulary, not the
+  # task.
+  changes_tests: true
   max_tool_calls: 40
 
 understanding:
@@ -64,4 +69,5 @@ variants:
       # the implementation would be reported as "series.py was not changed" —
       # true, but not the thing under test.
       changed_paths_include: []
+      changes_tests: true
       max_tool_calls: null
