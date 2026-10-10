@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -430,6 +431,17 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
     if limit is not None and row.get("classifier_calls", 0) > limit:
         failures.append(f"{row['classifier_calls']} classifier calls, limit {limit}")
 
+    # **Did the agent read the eval's own material?** A run that did is not
+    # evidence about the agent, whatever it produced — the answers were reachable,
+    # so the number describes the fixture, not the thing under test. Failing the
+    # row is the point: a warning printed beside a pass is a pass.
+    escaped = row.get("left_the_workspace") or ()
+    if escaped:
+        failures.append(
+            f"{len(escaped)} shell command(s) reached outside the checkout — "
+            f"{escaped[0]} — so nothing in this row is evidence about the agent"
+        )
+
     return failures
 
 
@@ -445,6 +457,108 @@ def base_paths(repo: Path) -> frozenset[str]:
         errors="replace", check=False,
     )
     return frozenset(line for line in (completed.stdout or "").splitlines() if line)
+
+
+#: Absolute paths, in the two shapes a shell command can carry them.
+#: ⚠️ `_ABSOLUTE_POSIX` demands **two** separators on purpose: `dir /s /b` is a
+#: Windows command with two switches, and a one-separator rule reads `/s` and `/b`
+#: as paths. Every POSIX path worth flagging has a second slash; a switch does not.
+_ABSOLUTE_WINDOWS = re.compile(r"[A-Za-z]:[\\/][^\s\"'|&;)]*")
+_ABSOLUTE_POSIX = re.compile(r"/[^\s\"'|&;)]+/[^\s\"'|&;)]*")
+
+
+def _ways_out(command: str, *, project: Path, allowed: tuple[Path, ...]) -> list[str]:
+    reasons: list[str] = []
+
+    for pattern in (_ABSOLUTE_WINDOWS, _ABSOLUTE_POSIX):
+        for match in pattern.finditer(command):
+            raw = match.group(0).rstrip("\\/")
+            if not raw:
+                continue
+            try:
+                resolved = Path(raw).resolve()
+            except OSError:  # pragma: no cover - a path the OS will not parse
+                continue
+            if any(resolved == a or resolved.is_relative_to(a) for a in allowed):
+                continue
+            if resolved == project or resolved.is_relative_to(project):
+                reasons.append(
+                    f"references {raw!r}, which is under the project and outside this run"
+                )
+    return reasons
+
+
+def tool_calls_that_left_the_workspace(
+    events: Sequence[Any],
+    *,
+    scratch: Path,
+    interpreter: str | None = None,
+) -> tuple[str, ...]:
+    """Every ``run`` command that reached into the eval's own material.
+
+    **Why this exists.** A run that read `evals/tasks/<name>/solution/` is not
+    evidence about the agent, and until this existed nothing would have said so:
+    the harness would have scored it, the report would have counted it, and the
+    number would have looked exactly like every other number. It is the same
+    distinction as `reports:` and `guard_refusals` — not "did it pass" but "did it
+    pass *this*".
+
+    ⚠️ **Only the `run` tool is examined, and that is a boundary rather than a
+    shortcut.** `read_file`, `write_file` and `code_search` all resolve against
+    `ctx.workspace_root` and refuse an absolute path or a `..` escape
+    (`runtime/tools/builtin.py::_resolve`), and `code_search` takes its root from
+    the context rather than from the model — so a call naming the answers is
+    refused before it reads anything, and shows up as a guard refusal instead.
+    **`run` has no containment.** It is a shell in a directory.
+
+    ⚠️ **What is in scope is the eval's material, not "anything outside the
+    checkout".** A command touching `C:\\Windows` or `/usr/bin` is not this
+    function's business, and flagging it would bury the signal in noise. What is
+    flagged is an absolute path **under the project but outside `scratch`** —
+    which is where the solutions, the task specs and everything else a run has no
+    business reading lives. `scratch` is the directory this eval builds its runs
+    under: everything inside it is material the harness made, and none of it is an
+    answer, because `write_project` writes the project's *config* and never its
+    `expect` block.
+
+    ⚠️ **`..` is deliberately not checked, and that was measured rather than
+    assumed.** The first version flagged any upward traversal, on the reasoning
+    that the shell starts at the checkout's root. It fired on
+    `cd src && python -c "…" ; cd .. && python -c "…"` — a command that *returns*
+    to the root, which is ordinary navigation. Audit of every recorded run: a `..`
+    with a path separator after it **has never appeared**, and after scratch moved
+    out of the repository a relative chain cannot reach `evals/tasks/` anyway
+    (the answers are on a different branch of the tree from the workspace). The
+    rule's cost was a false positive on honest work; its benefit had gone to zero.
+    Dropping it keeps the detector at **zero false positives across all 72 eval
+    runs recorded so far**, which is the only reason a detector gets believed.
+
+    The three true positives it does find are in the runs already on disk, and one
+    is the escape `CLAUDE.md` documents: `cd /d C:\\…\\forge && dir /s /b`, in the
+    run that went looking for `stats.py` outside its checkout.
+    """
+    from forgepilot.seams.session import EventKind
+
+    allowed: list[Path] = [scratch.resolve()]
+    if interpreter:
+        allowed.append(Path(interpreter).resolve().parent)
+    project = FORGE.resolve()
+
+    findings: list[str] = []
+    for event in events:
+        if event.kind != EventKind.TOOL_CALL or str(event.data.get("name")) != "run":
+            continue
+        try:
+            command = str(
+                json.loads(event.data.get("arguments") or "{}").get("command") or ""
+            )
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            continue
+        if not command:
+            continue
+        for reason in _ways_out(command, project=project, allowed=tuple(allowed)):
+            findings.append(f"seq {event.seq}: {reason} :: {command[:160]}")
+    return tuple(findings)
 
 
 def summarise_session(session: Any) -> dict[str, Any]:

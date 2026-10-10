@@ -169,6 +169,28 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         row["traceback"] = traceback.format_exc()[-1500:]
     finally:
         if runtime is not None:
+            # **Here rather than on the success path.** A run that died mid-turn is
+            # the one most likely to have wandered, and reading `committed_events`
+            # would miss exactly the buffer a crash leaves behind. `session.events`
+            # is the whole in-memory log.
+            try:
+                row["left_the_workspace"] = list(
+                    H.tool_calls_that_left_the_workspace(
+                        runtime.session.events,
+                        # The scratch *root*, not this attempt's directory. Sibling
+                        # attempts hold other tasks' fixtures and no answers, so
+                        # allowing them costs nothing and removes a whole class of
+                        # false positive — a command that navigates within the
+                        # scratch area is not what this is looking for.
+                        scratch=H.scratch_root(),
+                        interpreter=sys.executable,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Recorded as a finding, not swallowed. A detector that broke and
+                # reported nothing would be indistinguishable from a clean run —
+                # which is the failure this whole mechanism exists to stop.
+                row["left_the_workspace"] = [f"detector failed: {type(exc).__name__}: {exc}"]
             try:
                 await runtime.close()
             except Exception:  # noqa: BLE001
@@ -176,6 +198,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
 
     row.setdefault("changed", [])
     row.setdefault("pinned", [])
+    row.setdefault("left_the_workspace", [])
     for key in ("steps", "turns", "tool_calls", "compactions", "shadowed"):
         row.setdefault(key, 0)
     row["wall_s"] = round(time.monotonic() - started, 2)

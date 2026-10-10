@@ -57,8 +57,33 @@ wrongly registered as VCS roots"* — sixty of them after a full sweep.
 would be the mistake: `run` still has no containment, and the project path reaches
 the model anyway through the check command's interpreter. What moved out of reach
 is the accidental case — a relative walk, a sibling task's fixture, an over-eager
-`dir /s /b`. None of the observed runs strayed; their commands are all relative
-(`dir /s /b`, `type src/metrics.py`) plus the host venv interpreter.
+`dir /s /b`.
+
+**So the harness checks.** `harness.tool_calls_that_left_the_workspace` reads every
+`run` command in the finished session and reports one that names an absolute path
+under the project but outside the eval's scratch area — and a hit **fails the row**,
+because a warning printed beside a pass is a pass. This is the same distinction as
+`reports:` and `guard_refusals`: not "did it pass" but "did it pass *this*".
+
+- **Only `run` is examined**, which is a boundary rather than a shortcut.
+  `read_file`, `write_file` and `code_search` resolve against `ctx.workspace_root`
+  and refuse an absolute path or a `..` escape, and `code_search` takes its root
+  from the context rather than from the model — so a call naming the answers is
+  refused before it reads anything, and shows up as a guard refusal instead.
+  `run` has no containment at all.
+- **`..` is deliberately not checked**, and that was measured rather than assumed.
+  The first version flagged any upward traversal, reasoning that the shell starts at
+  the checkout's root. It fired on
+  `cd src && python -c "…" ; cd .. && python -c "…"` — a command that *returns* to
+  the root, which is ordinary navigation. An audit of every recorded run found that
+  a `..` with a path separator after it has **never appeared**, and after scratch
+  moved out of the repository a relative chain cannot reach `evals/tasks/` anyway.
+  The rule's cost was a false positive on honest work and its benefit had gone to
+  zero.
+- **Measured before it shipped:** zero false positives across all 72 eval runs on
+  disk, and three true positives — one of them `cd /d C:\…\forge && dir /s /b`, the
+  escape that had already been written down in `CLAUDE.md`. A detector that cries
+  wolf gets switched off, and then it protects nothing.
 
 ## The tasks
 
