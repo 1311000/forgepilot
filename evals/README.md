@@ -57,6 +57,30 @@ failed would bias the sample toward the outcome being investigated.
 question, and it would return green and look like the failure had evaporated. That
 is why `variant` is written into every row.
 
+And a retry is read **against the run it came from**, because on its own it holds a
+handful of cells and has nothing to compare against:
+
+```bash
+python evals/report.py --latest --compare evals/results/20260801T101500-live.jsonl
+```
+
+```
+cell                                     before    after           calls
+find-the-bug / no-repair                    0/3      3/3        14 -> 17  <- the rate moved
+out-of-scope / no-repair                    2/3      3/3        21 -> 23  <- the rate moved
+out-of-scope / tight-window                 2/3      2/3        23 -> 19
+
+What changed, cell by cell
+  out-of-scope / tight-window
+    before: 1x 44 tool calls, limit 40
+    after:  1x the agent never mentioned 'settings.py', ...
+```
+
+⚠️ **The second block is the one that earns its place.** A cell can hold its rate and
+change its *behaviour* — that `2/3` did not move and is not the same cell twice. Only
+the comparable cells are tabled; the rest are counted in a line, because a retry
+holds three cells and the sweep it came from holds thirty.
+
 ⚠️ **`--scripted` measures the harness, not the agent.** A replay model performs
 a fix because it was told to, so the rate it produces says nothing about an
 agent's ability. It exists to prove the machine works before spending anything —

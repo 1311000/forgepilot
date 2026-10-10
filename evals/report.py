@@ -142,6 +142,31 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
         print("\n* = fewer passes than `full` on that task — the cell to read")
 
 
+def _reasons_of(group: list[dict[str, Any]]) -> dict[str, int]:
+    """Distinct failure reasons in a group of rows, with how many produced each."""
+    reasons: dict[str, int] = defaultdict(int)
+    for row in group:
+        if row.get("passed"):
+            continue
+        for reason in row.get("failures") or ("(no reason recorded)",):
+            reasons[_shorten(str(reason))] += 1
+    return reasons
+
+
+def _cell_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    """Task, arm and variant — the three things that define a condition."""
+    return (
+        str(row.get("task")),
+        str(row.get("arm")),
+        str(row.get("variant") or ""),
+    )
+
+
+def _cell_label(key: tuple[str, str, str]) -> str:
+    task, arm, variant = key
+    return f"{task} / {arm}" + (f" / {variant}" if variant else "")
+
+
 def _print_failures(rows: list[dict[str, Any]]) -> None:
     """**Why** the runs that did not pass, did not pass.
 
@@ -156,10 +181,10 @@ def _print_failures(rows: list[dict[str, Any]]) -> None:
     saying why" — which is how the two defects in this harness were actually found.
     Both times, the reason was read rather than the number.
     """
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         if not row.get("passed"):
-            groups[(row["task"], row["arm"])].append(row)
+            groups[_cell_key(row)].append(row)
 
     if not groups:
         print("\nNo run failed, so nothing here says what a failure looks like.")
@@ -167,19 +192,107 @@ def _print_failures(rows: list[dict[str, Any]]) -> None:
 
     print("\nWhy the runs that did not pass, did not pass")
     print("-" * 88)
-    for (task, arm), group in sorted(groups.items()):
-        reasons: dict[str, int] = defaultdict(int)
-        for row in group:
-            for reason in row.get("failures") or ("(no reason recorded)",):
-                reasons[_shorten(str(reason))] += 1
-        print(f"{task} / {arm}  — {len(group)} of the rows above")
-        for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])):
+    for key, group in sorted(groups.items()):
+        print(f"{_cell_label(key)}  — {len(group)} of the rows above")
+        for reason, count in sorted(_reasons_of(group).items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"    {count}x  {reason}")
         print()
 
     print(
         "A reason repeated on every row of a cell is the cell's behaviour; one that "
         "appears once is one run's."
+    )
+
+
+def _print_comparison(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]],
+                      before_name: str, after_name: str) -> None:
+    """The same cells, before and after — which is what a re-run is *for*.
+
+    ⚠️ **A retry cannot be read on its own.** `--retry-failed` produces a file
+    holding only the cells that failed, so the matrix over it has no `full` column,
+    nothing to compare against, and therefore no `*`. The question a retry asks is
+    not "how did this cell do" but *"did it change"*, and that is a question about
+    two files.
+
+    Printed even when nothing moved, because **"it did not change" is the answer to
+    the question that prompted the retry.** A comparison that stayed silent on an
+    unchanged cell would leave the reader unsure it had been looked at.
+
+    ⚠️ And the reason column is why this is not just two rate columns side by side:
+    a cell can hold its rate and change its *behaviour* — same 2/3, a different
+    sentence every time — and that is a different finding from a stable one.
+    """
+    def index(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+        out: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            out[_cell_key(row)].append(row)
+        return out
+
+    before, after = index(before_rows), index(after_rows)
+    keys = sorted(set(before) | set(after))
+    if not keys:
+        return
+
+    # ⚠️ **Only the cells in both files.** A retry run holds three cells and the
+    # sweep it came from holds thirty; listing the other twenty-seven as
+    # "(not retried)" buries the three this command exists to show. The count of
+    # what was skipped is worth a line, not a table.
+    comparable = [key for key in keys if before.get(key) and after.get(key)]
+    comparable.sort(key=lambda k: _cell_label(k))
+
+    print(f"\nBefore and after: {before_name}  ->  {after_name}")
+    print("-" * 88)
+    if not comparable:
+        print("No cell appears in both files, so there is nothing to compare.")
+        return
+    print(f"{'cell':<38}{'before':>9}{'after':>9}{'calls':>16}")
+    for key in comparable:
+        old, new = before[key], after[key]
+        old_pass = sum(1 for r in old if r.get("passed"))
+        new_pass = sum(1 for r in new if r.get("passed"))
+        calls = (
+            f"{_median([r.get('tool_calls', 0) for r in old])} -> "
+            f"{_median([r.get('tool_calls', 0) for r in new])}"
+        )
+        flag = "  <- the rate moved" if old_pass != new_pass else ""
+        print(
+            f"{_cell_label(key):<38}{f'{old_pass}/{len(old)}':>9}"
+            f"{f'{new_pass}/{len(new)}':>9}{calls:>16}{flag}"
+        )
+
+    skipped = [key for key in keys if key not in comparable]
+    if skipped:
+        print(
+            f"\n{len(skipped)} further cell(s) appear in only one of the two files "
+            f"and so have no comparison."
+        )
+
+    # The reasons, for every cell where either side failed — a cell that kept its
+    # rate but changed what went wrong is the case this section exists for.
+    moved = [
+        key
+        for key in comparable
+        if _reasons_of(before[key]) != _reasons_of(after[key])
+    ]
+    if moved:
+        print("\nWhat changed, cell by cell")
+        for key in moved:
+            print(f"  {_cell_label(key)}")
+            print("    before: " + _reasons_line(before.get(key, [])))
+            print("    after:  " + _reasons_line(after.get(key, [])))
+        print(
+            "\nA rate that did not move with a reason that did is not the same cell "
+            "twice — it is two different failures at the same rate."
+        )
+
+
+def _reasons_line(group: list[dict[str, Any]]) -> str:
+    reasons = _reasons_of(group)
+    if not reasons:
+        return "(none)"
+    return " | ".join(
+        f"{count}x {reason}"
+        for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))
     )
 
 
@@ -222,6 +335,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also print what the agent said in the runs that did not pass",
     )
+    parser.add_argument(
+        "--compare",
+        default=None,
+        metavar="OLDER.jsonl",
+        help=(
+            "the same cells before and after, against this older file. What a "
+            "`--retry-failed` run is read with: it holds only the cells that failed, "
+            "so on its own it has nothing to compare against."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.file:
@@ -245,6 +368,14 @@ def main(argv: list[str] | None = None) -> int:
     _print_matrix(rows)
     _print_arms(rows)
     _print_failures(rows)
+    if args.compare:
+        older = load(Path(args.compare).name)
+        if not older:
+            print(f"\n{args.compare}: nothing to compare against.", file=sys.stderr)
+        else:
+            _print_comparison(
+                older, rows, Path(args.compare).stem, "this run"
+            )
     if args.agent_text:
         _print_agent_text(rows)
 
