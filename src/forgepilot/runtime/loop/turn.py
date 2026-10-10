@@ -44,6 +44,7 @@ async def run_turn(
     temperature: float = 0.0,
     tracker: Any = None,
     is_cancelled: Callable[[], bool] | None = None,
+    compactor: Any = None,
 ) -> TurnResult:
     """Run one turn to completion, always closing it in the log."""
     turn = session.next_turn()
@@ -91,6 +92,7 @@ async def run_turn(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 tool_schemas=tuple(tool_schemas),
+                compactor=compactor,
             )
 
             if result.text:

@@ -27,11 +27,16 @@ __all__ = [
     "SurfaceOp",
     "TURN_END_REASONS",
     "PendingToolCall",
+    "TurnSpan",
     "open_turn",
     "pending_tool_calls",
     "is_balanced",
     "model_visible_events",
     "last_turn_numbers",
+    "turn_spans",
+    "tool_result_seqs",
+    "first_user_message_seq",
+    "last_seq_of_kind",
 ]
 
 
@@ -117,3 +122,88 @@ def last_turn_numbers(events: Sequence[SessionEvent]) -> tuple[TurnId, ...]:
             if turn is not None:
                 seen.append(TurnId(int(turn)))
     return tuple(seen)
+
+
+# ---------------------------------------------------------------------------
+# Region selection — what compaction needs to know about the log's shape
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TurnSpan:
+    """One turn's extent in the log, from its ``turn/start`` to its ``turn/end``."""
+
+    turn: TurnId
+    start_seq: int
+    end_seq: int
+    #: False when the turn never closed — a crash, or the turn in progress. A
+    #: compaction must not cover an incomplete turn: it has no end to snap to.
+    complete: bool
+
+
+def turn_spans(events: Sequence[SessionEvent]) -> tuple[TurnSpan, ...]:
+    """Every turn the log opens, in order.
+
+    Compaction works in **whole turns**, because that is the smallest unit whose
+    boundaries are already meaningful. A span that starts mid-turn can cut a
+    ``tool/call`` away from its ``tool/result``, and an unanswered tool call is
+    rejected outright by the endpoint — one turn later, with a traceback that
+    points at the request rather than at the cut.
+    """
+    spans: list[TurnSpan] = []
+    opened: dict[int, int] = {}
+    for event in events:
+        turn = event.data.get("turn")
+        if event.kind == EventKind.TURN_START and turn is not None:
+            opened[int(turn)] = event.seq
+        elif event.kind == EventKind.TURN_END and turn is not None:
+            start = opened.pop(int(turn), None)
+            if start is not None:
+                spans.append(
+                    TurnSpan(
+                        turn=TurnId(int(turn)),
+                        start_seq=start,
+                        end_seq=event.seq,
+                        complete=True,
+                    )
+                )
+    for turn, start in opened.items():
+        spans.append(
+            TurnSpan(turn=TurnId(turn), start_seq=start, end_seq=start, complete=False)
+        )
+    spans.sort(key=lambda span: span.start_seq)
+    return tuple(spans)
+
+
+def tool_result_seqs(events: Sequence[SessionEvent]) -> tuple[int, ...]:
+    """Seqs of ``tool/result`` events, oldest first.
+
+    Masking targets these and only these. It never touches an
+    ``assistant/message``, which is what makes it structurally impossible for a
+    mask to separate a tool call from its answer.
+    """
+    return tuple(event.seq for event in events if event.kind == EventKind.TOOL_RESULT)
+
+
+def first_user_message_seq(events: Sequence[SessionEvent]) -> int | None:
+    """The task brief, or ``None`` in a session that has none yet."""
+    for event in events:
+        if event.kind == EventKind.USER_MESSAGE and event.is_model_visible:
+            return event.seq
+    return None
+
+
+def last_seq_of_kind(events: Sequence[SessionEvent], kind: str) -> int | None:
+    """The most recent seq of ``kind``, or ``None``.
+
+    Used for the two things a compaction must never cover: the latest
+    ``task/check`` — the repair loop's retry prompt tells the model to read the
+    check output "above" — and the latest ``compaction/summary``, which is the
+    barrier that stops a summary being summarised again. Errors compound across
+    passes, and no amount of budget makes that acceptable.
+    """
+    found: int | None = None
+    for event in events:
+        if event.kind == kind:
+            found = event.seq
+    return found

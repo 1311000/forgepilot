@@ -268,6 +268,9 @@ async def run_task(
     policy: Any = None,
     approval: Any = None,
     principal: Any = None,
+    #: Optional compaction. `None` keeps the loud overflow failure as the only
+    #: thing that happens at the window, which is what task mode did before.
+    compactor: Any = None,
 ) -> TaskOutcome:
     """Execute a plan: branch, work, check, repair, deliver.
 
@@ -345,6 +348,7 @@ async def run_task(
             workspace_root=handle.root,
             tool_schemas=plan.tool_schemas(tools),
             tracker=tracker,
+            compactor=compactor,
         )
         turns += 1
 

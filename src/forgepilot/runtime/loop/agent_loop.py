@@ -87,6 +87,10 @@ class ForgePilotAgent:
     max_tokens: int = 4096
     temperature: float = 0.0
     tracker: UsageTracker = field(default_factory=UsageTracker)
+    #: Optional compaction service. `None` means the loud overflow failure is
+    #: the only thing that happens when the window is reached, which is what
+    #: every caller got before this existed.
+    compactor: Any = None
     _state: AgentState = AgentState.IDLE
     _cancel_reason: str | None = None
 
@@ -133,6 +137,7 @@ class ForgePilotAgent:
                 max_steps=self.max_steps,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
+                compactor=self.compactor,
                 tracker=self.tracker,
                 is_cancelled=self._is_cancelled,
             )
@@ -173,6 +178,11 @@ class ForgePilotAgentLoop:
             max_steps=self.max_steps,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
+            # `getattr` rather than an injection: a profile without a `compaction`
+            # row is a valid deployment, and compaction is an optimisation, not
+            # authority. Contrast `policy`, which a session cannot be opened
+            # without — that one fails closed.
+            compactor=getattr(ctx, "compaction", None),
         )
 
 

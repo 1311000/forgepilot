@@ -135,6 +135,27 @@ class EventKind:
     TASK_CHECK = "task/check"
     MEMORY_WRITE = "memory/write"
 
+    # --- compaction -------------------------------------------------------
+    # `COMPACTION_SUMMARY` is the **only** one of these that is model-visible,
+    # and it is a `SurfaceOp.REPLACE`: it takes the place of the span it covers.
+    # The rest are log-only, which is how a compaction stays auditable — what was
+    # covered, what the model was told, and what it cost are all in the log, none
+    # of it in the conversation.
+    #
+    # Opened before anything else and **flushed on its own**, so a crash leaves an
+    # unmatched `start` that the next pass can see. That is DSH's log-recorded
+    # lock, and it is what stops two compactions running over one session.
+    COMPACTION_START = "compaction/start"
+    #: One batch of masking: which results were replaced and how much they cost.
+    COMPACTION_MASK = "compaction/mask"
+    #: The instruction the summariser was given, plus the span and the model — so
+    #: the one model call compaction makes is reconstructable from the log, the
+    #: same way `request/header` makes the agent's calls reconstructable.
+    COMPACTION_REQUEST = "compaction/request"
+    COMPACTION_SUMMARY = "compaction/summary"
+    COMPACTION_FAILED = "compaction/failed"
+    COMPACTION_END = "compaction/end"
+
 
 #: Closed set. ``interrupted`` is appended by the recovery sweep for any log that
 #: ends inside an open turn, so the projection always sees balanced turns.

@@ -609,6 +609,7 @@ def _task(args: argparse.Namespace) -> int:
                 policy=root.policy,
                 approval=root.approval,
                 principal=record.principal,
+                compactor=getattr(root, "compaction", None),
             )
             _print_outcome(outcome)
         finally:

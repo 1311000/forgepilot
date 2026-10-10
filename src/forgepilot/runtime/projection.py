@@ -26,7 +26,12 @@ from forgepilot.seams.llm import (
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.session import EventKind, SessionEvent, SurfaceOp
 
-__all__ = ["derive_messages", "build_request", "unsupported_event_kinds"]
+__all__ = [
+    "derive_messages",
+    "build_request",
+    "build_compaction_request",
+    "unsupported_event_kinds",
+]
 
 #: Event kinds that become a message. Anything absent is log-only by construction
 #: — a plugin can add events without accidentally feeding the model.
@@ -36,6 +41,10 @@ _SURFACE_KINDS = frozenset(
         EventKind.ASSISTANT_MESSAGE,
         EventKind.TOOL_RESULT,
         EventKind.TASK_CHECK,
+        # Carried on a `SurfaceOp.REPLACE`, so it appears in place of the span it
+        # covers. A surface kind with no renderer raises rather than being
+        # skipped, which is why the branch below is not optional.
+        EventKind.COMPACTION_SUMMARY,
     }
 )
 
@@ -171,6 +180,26 @@ def _render(event: SessionEvent) -> ChatMessage | None:
             source_event_seq=event.seq,
         )
 
+    if event.kind == EventKind.COMPACTION_SUMMARY:
+        # A *user* message, like the check above and for a related reason: this is
+        # the harness telling the model what it needs to know about history it can
+        # no longer see, not something the model said. Dressing it as an assistant
+        # turn would attribute the summary to the model and invite it to continue
+        # from words it never wrote.
+        body = str(data.get("text", "")).strip()
+        covered = data.get("supersedes")
+        span = ""
+        if isinstance(covered, (list, tuple)) and len(covered) == 2:
+            # Named, so the model knows *that* it is looking at a compression and
+            # roughly where — and so an auditor reading the conversation can find
+            # the events it stands in for.
+            span = f" (covering events {covered[0]}-{covered[1]})"
+        return ChatMessage(
+            role=Role.USER,
+            content=f"[compacted conversation{span}]\n{body}",
+            source_event_seq=event.seq,
+        )
+
     return None
 
 
@@ -220,4 +249,57 @@ async def build_request(
         max_tokens=max_tokens,
         temperature=temperature,
         metadata=dict(metadata or {}),
+    )
+
+
+async def build_compaction_request(
+    session: Any,
+    *,
+    region_events: Sequence[SessionEvent],
+    model: str,
+    instruction: str,
+    turn: TurnId,
+    step: int,
+    max_tokens: int,
+) -> ChatRequest:
+    """The request that asks a model to summarise a span of history.
+
+    It lives **here** rather than in the compaction provider so that the claim
+    "`projection.py` is the only module that constructs a `ChatRequest`" stays
+    true for this path. That claim is already false in two places — the
+    classifier and the review narrative each build their own, and neither is
+    logged — and compaction is not going to become a third.
+
+    The consequence is that this call is **guarded like any other**: it goes
+    through `guarded_complete`, so it flushes first and every message it sends
+    must carry a `source_event_seq` the log already contains. It does, because
+    the messages are `derive_messages(region_events)` and every one of those
+    events is already in the log. Nothing new is being shown to a model, and
+    nothing new needs an exemption.
+
+    `compaction/request` is written first and log-only, exactly as
+    `request/header` is — that is what makes the one model call compaction makes
+    reconstructable from the log afterwards.
+    """
+    await session.append(
+        EventKind.COMPACTION_REQUEST,
+        {
+            "model": model,
+            "instruction": instruction,
+            "turn": int(turn),
+            "step": step,
+            "region": [region_events[0].seq, region_events[-1].seq] if region_events else [],
+            "maxTokens": max_tokens,
+        },
+        surface=SurfaceOp.LOG_ONLY,
+        turn=turn,
+        step=step,
+    )
+
+    return ChatRequest(
+        model=model,
+        system=(instruction,),
+        messages=derive_messages(region_events),
+        max_tokens=max_tokens,
+        temperature=0.0,
     )

@@ -17,6 +17,28 @@
     model: replay-1
   tier: trusted
 
+# --- context compaction ----------------------------------------------------
+# The conversation lives in the log and grows every step, so a long run reaches
+# the model's window and — before this row existed — simply failed there.
+# `providers/compaction/tiered.py` masks old tool-result bodies first (no model
+# call, and roughly 84% of what grows), then summarises whole turns if that was
+# not enough. Nothing here is required: a profile without this row keeps the
+# loud `ContextWindowExceeded` failure and nothing else changes.
+#
+# The defaults below are written out rather than left implicit, because the two
+# thresholds are the ones a deployment will actually want to tune:
+#   trigger_fraction  compress at 80% of the window
+#   reserve_tokens    ...or as soon as 8k is all that is left, whichever is first
+- id: compaction
+  plugin: forgepilot.providers.compaction.tiered:TieredCompactionPlugin
+  config:
+    trigger_fraction: 0.8
+    reserve_tokens: 8192
+    keep_recent_turns: 2
+    keep_recent_tool_results: 4
+    failure_limit: 3
+  tier: trusted
+
 # --- code retrieval --------------------------------------------------------
 # Real search over real checkouts: ripgrep, the same thing Claude Code does. It
 # replaced a mock that returned canned hits, which meant nothing in the system

@@ -17,6 +17,7 @@ from forgepilot.runtime.log_guard import guarded_stream
 from forgepilot.runtime.projection import build_request
 from forgepilot.seams.llm import ChatMessage, StreamChunk, ToolCallRequest, ToolSchema, Usage
 from forgepilot.seams.refs import TurnId
+from forgepilot.runtime.context_size import estimate_tokens, measure
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.session import EventKind
 from forgepilot.seams.tools import ToolCall
@@ -92,22 +93,6 @@ def accumulate(chunks: list[StreamChunk]) -> StepResult:
     )
 
 
-def estimate_tokens(messages: tuple[ChatMessage, ...], system: tuple[str, ...]) -> int:
-    """A deliberately crude size estimate — roughly four characters per token.
-
-    Crude on purpose: a real tokenizer is a dependency and a per-model decision,
-    and this exists only to refuse a request that would obviously blow the window
-    rather than to bill anyone. When it is wrong it is wrong in the direction of
-    refusing early, which is the safe direction.
-    """
-    total = sum(len(part) for part in system)
-    for message in messages:
-        total += len(message.content or "")
-        for call in message.tool_calls:
-            total += len(call.arguments_json) + len(call.name)
-    return total // 4
-
-
 async def run_step(
     *,
     session: Any,
@@ -122,9 +107,42 @@ async def run_step(
     max_tokens: int = 4096,
     temperature: float = 0.0,
     tool_schemas: tuple[ToolSchema, ...] = (),
+    #: Optional. `None` is exactly today's behaviour — the loud failure when the
+    #: window is exceeded — so every existing caller and test is unaffected.
+    compactor: Any = None,
 ) -> StepResult:
     """Run one step, recording everything the model saw and did."""
     await session.step_start(turn, step)
+
+    capabilities = llm.capabilities()
+
+    # --- compaction, and it has to be here --------------------------------
+    #
+    # **Before `build_request`, not after.** Two reasons, and the second is the
+    # one that makes it mandatory rather than tidy:
+    #
+    # 1. `build_request` writes a log-only `request/header` *first*. Compacting
+    #    afterwards would leave a header describing a request that was never
+    #    sent — a record that is simply false.
+    # 2. `guarded_stream` flushes and then `assert_logged` requires every
+    #    message's `source_event_seq` to be durable and the buffer to be empty.
+    #    A compaction event appended after the request was derived would either
+    #    not appear in it, or trip that check as `ModelVisibleNotLogged`.
+    #
+    # So the pass appends and flushes, and the request is derived *afterwards* —
+    # which is why the estimate below is computed twice: once to decide, once to
+    # verify. The second is the loud backstop and it is unchanged.
+    if compactor is not None:
+        await compactor.compact(
+            session=session,
+            llm=llm,
+            model=model,
+            system_sections=system_sections,
+            turn=turn,
+            step=step,
+            estimated_tokens=measure(session.events, system_sections),
+            window_tokens=capabilities.max_context_tokens,
+        )
 
     request = await build_request(
         session,
@@ -137,15 +155,15 @@ async def run_step(
         temperature=temperature,
     )
 
-    capabilities = llm.capabilities()
     estimated = estimate_tokens(request.messages, request.system)
     if estimated > capabilities.max_context_tokens:
+        compressed = "" if compactor is None else " Compaction ran and did not free enough."
         raise ContextWindowExceeded(
             f"this request is roughly {estimated} tokens against a window of "
             f"{capabilities.max_context_tokens}. Refusing rather than truncating: "
             f"dropping history would change what the model sees, and doing that "
-            f"silently is the failure the session log exists to prevent. Compaction "
-            f"is not implemented yet."
+            f"silently is the failure the session log exists to prevent."
+            f"{compressed}"
         )
 
     chunks: list[StreamChunk] = []
