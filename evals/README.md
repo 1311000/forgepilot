@@ -1,6 +1,6 @@
 # Evaluations
 
-Four tasks, five arms, one JSONL per run.
+One file per run, one row per attempt — a task shape per mechanism.
 
 ## What this is for
 
@@ -23,7 +23,7 @@ see "What it has already found".
 ## Running it
 
 ```bash
-# The smoke test. No network, no credential, ~4 seconds for all four tasks.
+# The smoke test. No network, no credential, ~4 seconds for every task.
 python evals/run.py --scripted
 
 # The real thing: the shipped profile's own model, which is what a person runs.
@@ -410,9 +410,9 @@ does. It also makes `no-search`'s own limit visible at a glance: `run` is still 
 the set, so what the arm removes is a tool and not the ability to search.
 
 ⚠️ **The matrix is where an ablation is read.** An arm's overall rate is an average
-over tasks that can disagree completely: `no-repair` at 100% on five tasks and 0% on
-the sixth is 83% overall, and that number is true and useless. `*` marks the cells
-that moved, which is the only thing the comparison was for.
+over tasks that can disagree completely: `no-repair` at 100% everywhere except one
+task, where it is 0%, is 83% overall — and that number is true and useless. `*` marks
+the cells that moved, which is the only thing the comparison was for.
 
 ⚠️ **And the failure section is where the two defects in this harness were found.**
 Both times by reading a reason rather than a number. `--agent-text` goes one step
