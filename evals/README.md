@@ -332,3 +332,27 @@ checks passed, how many paths changed, how many tool calls it took. A row record
 
 `report.py` prints an arm table only when there are **live** rows — an arm
 comparison over scripted runs compares the harness with itself.
+
+### Reading it
+
+Three views, and the rate is the least useful of them:
+
+| | |
+|---|---|
+| the grouped table | one line per (task, arm) — counts, medians, terminal states |
+| **the matrix** | task × arm passes, with `*` on a cell that did less well than `full` |
+| **why the runs that did not pass, did not pass** | every distinct failure reason, with how many rows produced it |
+
+⚠️ **The matrix is where an ablation is read.** An arm's overall rate is an average
+over tasks that can disagree completely: `no-repair` at 100% on five tasks and 0% on
+the sixth is 83% overall, and that number is true and useless. `*` marks the cells
+that moved, which is the only thing the comparison was for.
+
+⚠️ **And the failure section is where the two defects in this harness were found.**
+Both times by reading a reason rather than a number. `--agent-text` goes one step
+further and prints what the agent *said* in the failing runs — that is what exposed
+the arm-name leak, which appeared in neither the rate nor the failure reason:
+
+```
+--agent-text   →  "the task scope — find-the-bug, no repair — I have not modified any source"
+```

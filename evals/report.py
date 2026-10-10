@@ -92,10 +92,136 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _print_matrix(rows: list[dict[str, Any]]) -> None:
+    """Which **cell** moved. A rate per arm hides the one that flipped.
+
+    An arm's overall rate is an average over tasks that may disagree completely:
+    `no-repair` at 100% on four of them and 0% on the fifth and 100% overall is not
+    a contradiction, it is two different statements. The matrix is what makes the
+    second one visible, and it is where an ablation is actually read.
+    """
+    tasks = sorted({r["task"] for r in rows})
+    arms = sorted({r["arm"] for r in rows}, key=lambda a: (a != "full", a))
+    # Two arms is the requirement — one arm has nothing to compare against and the
+    # grouped table above already says it. One *task* is fine: re-running a single
+    # cell under two arms is how a suspicion gets checked, and that is exactly when
+    # the marking matters.
+    if len(arms) < 2:
+        return
+
+    counts: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        counts[(row["task"], row["arm"])].append(row)
+
+    width = max(len(a) for a in arms) + 2
+    print(f"\n{'task':<16}" + "".join(f"{a:>{width}}" for a in arms))
+    print("-" * (16 + width * len(arms)))
+    for task in tasks:
+        baseline = counts.get((task, "full"), [])
+        base_pass = sum(1 for r in baseline if r.get("passed"))
+        cells = []
+        for arm in arms:
+            group = counts.get((task, arm), [])
+            if not group:
+                cells.append(f"{'-':>{width}}")
+                continue
+            passed = sum(1 for r in group if r.get("passed"))
+            mark = ""
+            if arm != "full" and baseline and passed < base_pass:
+                # ⚠️ The cell the ablation exists to find. `*` rather than a colour
+                # because this has to survive being pasted into a message.
+                mark = "*"
+            cells.append(f"{f'{passed}/{len(group)}{mark}':>{width}}")
+        print(f"{task:<16}" + "".join(cells))
+
+    if any(
+        arm != "full" and len(counts.get((task, arm), []))
+        for task in tasks
+        for arm in arms
+    ):
+        print("\n* = fewer passes than `full` on that task — the cell to read")
+
+
+def _print_failures(rows: list[dict[str, Any]]) -> None:
+    """**Why** the runs that did not pass, did not pass.
+
+    The rate is the least interesting number in this file. `score()` returns
+    reasons precisely so this question is answerable — *"how often, without in what
+    way, is not actionable"* — and until this existed the report printed the rate
+    and dropped every reason on the floor, while `run.py` printed them inline and
+    they scrolled away.
+
+    It matters most for an ablation, where the interesting output is almost never
+    "the arm scored lower" but "the arm scored lower, and here is the sentence
+    saying why" — which is how the two defects in this harness were actually found.
+    Both times, the reason was read rather than the number.
+    """
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if not row.get("passed"):
+            groups[(row["task"], row["arm"])].append(row)
+
+    if not groups:
+        print("\nNo run failed, so nothing here says what a failure looks like.")
+        return
+
+    print("\nWhy the runs that did not pass, did not pass")
+    print("-" * 88)
+    for (task, arm), group in sorted(groups.items()):
+        reasons: dict[str, int] = defaultdict(int)
+        for row in group:
+            for reason in row.get("failures") or ("(no reason recorded)",):
+                reasons[_shorten(str(reason))] += 1
+        print(f"{task} / {arm}  — {len(group)} of the rows above")
+        for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {count}x  {reason}")
+        print()
+
+    print(
+        "A reason repeated on every row of a cell is the cell's behaviour; one that "
+        "appears once is one run's."
+    )
+
+
+def _print_agent_text(rows: list[dict[str, Any]], limit: int = 400) -> None:
+    """What the agent *said* in the runs that did not pass. Opt-in.
+
+    ⚠️ **This is the section that has actually found things.** Twice now the reason
+    a run failed was not in `failures` at all: once it was an agent that had
+    diagnosed the bug correctly and declined to fix it, and once it was the same
+    agent quoting `find-the-bug-no-repair-1` — its own working directory — as if the
+    treatment were part of the ticket. Neither is visible in a rate, and the second
+    one is not visible in a failure *reason* either.
+
+    Collapsed to one bounded excerpt per row, because the whole point is to read it.
+    """
+    failed = [r for r in rows if not r.get("passed") and r.get("agent_text")]
+    if not failed:
+        return
+
+    print("\nWhat the agent said in those runs  (`--agent-text`)")
+    print("-" * 88)
+    for row in failed:
+        print(f"{row['task']} / {row['arm']} / rep{row.get('rep')}  ({row.get('state')})")
+        print(f"    …{_shorten(str(row['agent_text'])[-limit:], limit)}")
+        print()
+
+
+def _shorten(text: str, limit: int = 150) -> str:
+    """One line, bounded — a traceback in the middle of a table helps nobody."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--latest", action="store_true", help="only the newest result file")
     parser.add_argument("--file", default=None, help="one result file by name")
+    parser.add_argument(
+        "--agent-text",
+        action="store_true",
+        help="also print what the agent said in the runs that did not pass",
+    )
     args = parser.parse_args(argv)
 
     if args.file:
@@ -116,7 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     modes = ",".join(sorted({str(r.get("mode")) for r in rows}))
     print(f"{len(rows)} row(s) from {len({r.get('run') for r in rows})} run(s) [{modes}]\n")
     _print_grouped(rows)
+    _print_matrix(rows)
     _print_arms(rows)
+    _print_failures(rows)
+    if args.agent_text:
+        _print_agent_text(rows)
 
     print(
         "\nA rate over a handful of runs is a hint, not a measurement: the same task "
