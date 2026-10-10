@@ -215,13 +215,40 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
     return row
 
 
-async def main_async(args: argparse.Namespace) -> int:
-    tasks = [
-        H.with_variant(H.load_task(n), args.variant)
-        for n in (args.task or H.available_tasks())
-    ]
-    chosen = [arm_module.arm(n) for n in (args.arm or ["full"])]
+def failed_cells(path: Path) -> list[tuple[str, str, str | None]]:
+    """The (task, arm, variant) cells in ``path`` that produced a row which did not pass.
 
+    **A cell, not a row.** Three runs of one arm on one task are three samples of
+    one condition; re-running two of them because those two failed would answer a
+    different question from the one being asked. The question after a sweep is
+    *"was that cell real?"*, and that is a question about the cell.
+
+    Order is preserved and de-duplicated, so the retry runs in the order the
+    failures were found.
+    """
+    import json as _json
+
+    seen: list[tuple[str, str, str | None]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = _json.loads(line)
+        if row.get("passed"):
+            continue
+        key = (str(row.get("task")), str(row.get("arm")), row.get("variant"))
+        if key not in seen:
+            seen.append(key)
+    return seen
+
+
+def latest_results() -> Path:
+    files = sorted(RESULTS.glob("*.jsonl"))
+    if not files:
+        raise FileNotFoundError(f"no results in {RESULTS}. Nothing to retry.")
+    return files[-1]
+
+
+async def main_async(args: argparse.Namespace) -> int:
     if not args.scripted and not args.live:
         print(
             "error: pick a mode. `--live` runs the shipped profile's real model "
@@ -231,28 +258,59 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if args.retry_failed:
+        source = Path(args.retry_failed) if args.retry_failed != "-" else latest_results()
+        if not source.is_file():
+            source = RESULTS / source.name
+        cells = failed_cells(source)
+        if not cells:
+            print(
+                f"{source.name}: every row passed, so there is nothing to retry. "
+                f"Run a sweep with `--arm` to produce some failures, or drop "
+                f"`--retry-failed`.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"{source.name}: retrying {len(cells)} cell(s) that did not pass")
+    else:
+        cells = [
+            (name, arm, args.variant)
+            for name in (args.task or H.available_tasks())
+            for arm in (args.arm or ["full"])
+        ]
+
+    # Loaded once per distinct name rather than once per cell: two arms over the
+    # same task are the same task.
+    tasks_by_name = {name: H.load_task(name) for name, _, _ in cells}
+
     RESULTS.mkdir(parents=True, exist_ok=True)
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{'scripted' if args.scripted else 'live'}"
     out = RESULTS / f"{run_id}.jsonl"
 
-    total = len(tasks) * len(chosen) * args.reps
+    total = len(cells) * args.reps
     done = 0
     with out.open("w", encoding="utf-8") as handle:
-        for task in tasks:
-            for arm in chosen:
-                for rep in range(1, args.reps + 1):
-                    row = await run_one(task, arm, rep, scripted=args.scripted)
-                    row["run"] = run_id
-                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    handle.flush()
-                    done += 1
-                    verdict = "pass" if row.get("passed") else "FAIL"
-                    print(
-                        f"[{done}/{total}] {task.name:<12} {arm.name:<12} rep {rep}  "
-                        f"{verdict:<4} {row.get('state', '-'):<10} "
-                        f"{row.get('tool_calls', 0):>3} calls  {row.get('wall_s', 0):>6.1f}s"
-                        + (f"  {row['failures']}" if row.get("failures") else "")
-                    )
+        for name, arm_name, variant in cells:
+            task = H.with_variant(tasks_by_name[name], variant)
+            arm = arm_module.arm(arm_name)
+            for rep in range(1, args.reps + 1):
+                row = await run_one(task, arm, rep, scripted=args.scripted)
+                row["run"] = run_id
+                # ⚠️ **Recorded, or a variant failing is unrepeatable.**
+                # `--retry-failed` reads this back to know which *cell* to re-run,
+                # and without it a failing `bug-fix/weakens-the-test` would come
+                # back as plain `bug-fix` — a different question, silently.
+                row["variant"] = variant
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.flush()
+                done += 1
+                verdict = "pass" if row.get("passed") else "FAIL"
+                print(
+                    f"[{done}/{total}] {task.name:<12} {arm.name:<12} rep {rep}  "
+                    f"{verdict:<4} {row.get('state', '-'):<10} "
+                    f"{row.get('tool_calls', 0):>3} calls  {row.get('wall_s', 0):>6.1f}s"
+                    + (f"  {row['failures']}" if row.get("failures") else "")
+                )
 
     print(f"\nwrote {out}")
     return 0
@@ -266,6 +324,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variant", default=None, help="a named override from the task spec")
     parser.add_argument("--live", action="store_true", help="the real model")
     parser.add_argument("--scripted", action="store_true", help="the replay model; a smoke test")
+    parser.add_argument(
+        "--retry-failed",
+        nargs="?",
+        const="-",
+        default=None,
+        metavar="RESULTS.jsonl",
+        help=(
+            "re-run only the (task, arm, variant) cells that produced a row which "
+            "did not pass. Defaults to the newest results file. Overrides --task, "
+            "--arm and --variant, which exist to describe a sweep and not a retry."
+        ),
+    )
     args = parser.parse_args(argv)
 
     from forgepilot.env import load_local_env

@@ -34,6 +34,29 @@ python evals/run.py --live --arm no-search --reps 3
 python evals/report.py --latest
 ```
 
+### Re-checking one cell instead of the whole sweep
+
+A sweep is the wrong instrument for a follow-up question. Ninety live runs cost ten
+minutes and real money, and *"was that cell real?"* is a question about two or three
+of them.
+
+```bash
+# only the (task, arm, variant) cells that produced a row which did not pass —
+# newest results file by default, or name one
+python evals/run.py --live --retry-failed --reps 3
+python evals/run.py --live --retry-failed evals/results/20260801T101500-live.jsonl --reps 3
+```
+
+Reported before it starts (`retrying 3 cell(s) that did not pass`), and it **re-runs
+the whole cell, not only the rows that failed**: three runs of one arm on one task
+are three samples of one condition, and retrying two of them because those two
+failed would bias the sample toward the outcome being investigated.
+
+⚠️ **The variant is part of the cell.** Without it a failing
+`bug-fix / weakens-the-test` would come back as plain `bug-fix` — a different
+question, and it would return green and look like the failure had evaporated. That
+is why `variant` is written into every row.
+
 ⚠️ **`--scripted` measures the harness, not the agent.** A replay model performs
 a fix because it was told to, so the rate it produces says nothing about an
 agent's ability. It exists to prove the machine works before spending anything —
