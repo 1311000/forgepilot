@@ -22,7 +22,10 @@ echo 'FORGEPILOT_GITHUB_TOKEN=...' >> .env.local
 # 2. put the fixture on GitHub, and print what to export
 .venv/Scripts/python.exe examples/stat-fix/github/seed_github.py
 
-# 3. point the patch at this machine
+# 3. point the patch at this machine.
+#    `--export` only prints — no token, no network. It is inside `eval`, and a
+#    command whose output is shell assignments must not also be pushing, or a
+#    flaky link leaves you with no variables and an error about the wrong thing.
 eval "$(.venv/Scripts/python.exe examples/stat-fix/github/seed_github.py --export)"
 
 # 4. run the ticket

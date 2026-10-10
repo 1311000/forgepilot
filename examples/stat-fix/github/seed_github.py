@@ -164,6 +164,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export", action="store_true", help="print only `export` lines")
     args = parser.parse_args(argv)
 
+    home = os.environ.get("FORGEPILOT_HOME")
+    base = Path(home) if home else Path.home() / ".forgepilot"
+    example = base / "examples" / "stat-fix"
+    into = (args.into or example / "github-seed").resolve()
+
+    exports = {
+        "FORGEPILOT_EXAMPLE_MIRRORS": str(example / "mirrors"),
+        "FORGEPILOT_EXAMPLE_WORKTREES": str(example / "github-worktrees"),
+        "FORGEPILOT_PYTHON": sys.executable,
+    }
+
+    if args.export:
+        # **`--export` prints paths and does nothing else.** It is the thing that
+        # goes inside `eval "$(...)"`, and a command whose output is shell
+        # assignments must not also be doing network work. This is not
+        # hypothetical: `git push` against github.com failed once and succeeded
+        # the next time on the same machine. A push on this path means that when
+        # the link is down the substitution yields *nothing*, `eval ""` leaves the
+        # caller with no variables at all, and the next command reports
+        # `FORGEPILOT_EXAMPLE_MIRRORS is not set` — an error about the wrong thing
+        # entirely, pointing at a file that is fine.
+        #
+        # So this is deliberately not `prepare_repo.py`'s rule ("`--export` must
+        # not destroy") but a stronger one: the env-var producer must not depend
+        # on the network. Seeding is what the plain run is for, and it prints the
+        # line below for you to copy.
+        for key, value in exports.items():
+            print(f"export {key}='{value}'")
+        return 0
+
     # Load the gitignored .env.local the same way the CLI does, so the token does
     # not have to be exported in every shell. The real environment still wins.
     from forgepilot.env import load_local_env
@@ -185,24 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --slug must be 'host/namespace/name', got {args.slug!r}", file=sys.stderr)
         return 2
 
-    home = os.environ.get("FORGEPILOT_HOME")
-    base = Path(home) if home else Path.home() / ".forgepilot"
-    example = base / "examples" / "stat-fix"
-    into = (args.into or example / "github-seed").resolve()
-
-    if not args.export:
-        print(f"seeding {args.slug} from {FIXTURE}")
+    print(f"seeding {args.slug} from {FIXTURE}")
     seed(token, args.slug, into, force=args.force, remote_base=args.remote_base)
-
-    exports = {
-        "FORGEPILOT_EXAMPLE_MIRRORS": str(example / "mirrors"),
-        "FORGEPILOT_EXAMPLE_WORKTREES": str(example / "github-worktrees"),
-        "FORGEPILOT_PYTHON": sys.executable,
-    }
-    if args.export:
-        for key, value in exports.items():
-            print(f"export {key}='{value}'")
-        return 0
 
     print(f"pushed main to {args.slug}")
     print()
