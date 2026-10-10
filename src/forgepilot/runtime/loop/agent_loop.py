@@ -19,7 +19,7 @@ from typing import Any
 
 from forgepilot.kernel import PluginService
 from forgepilot.kernel.errors import PluginContractViolation
-from forgepilot.runtime.guards import UsageTracker
+from forgepilot.runtime.guards import USAGE_SERVICE, UsageTracker
 from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS, run_turn
 from forgepilot.seams.agent_loop import (
     AGENTS_SERVICE_NAME,
@@ -178,12 +178,36 @@ class ForgePilotAgentLoop:
             max_steps=self.max_steps,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
+            # ⚠️ **The scope's tracker, not a private one.** `ForgePilotAgent`
+            # defaults `tracker` to a fresh `UsageTracker`, and this method used to
+            # leave it at that — so the loop counted into an object the agent owned
+            # alone while the budget guard, built by `open_request_scope`, watched
+            # the scope's. The guard therefore refused nothing, on the two paths
+            # that go through here: `--chat` and the HTTP API.
+            #
+            # `getattr` with a default rather than an injection, matching the reads
+            # above: a context without a request scope has no guards either, so an
+            # unshared tracker there has nothing watching it to disagree with.
+            tracker=_usage_tracker(ctx),
             # `getattr` rather than an injection: a profile without a `compaction`
             # row is a valid deployment, and compaction is an optimisation, not
             # authority. Contrast `policy`, which a session cannot be opened
             # without — that one fails closed.
             compactor=getattr(ctx, "compaction", None),
         )
+
+
+def _usage_tracker(ctx: Any) -> UsageTracker:
+    """The tracker the scope's guards were built around, or a fresh one.
+
+    A fresh one is the correct fallback *only* because a context with no request
+    scope has no guards either — there is nothing to disagree with. Anywhere a
+    scope exists, it provides this name, and `test_the_budget_is_counted.py`
+    asserts the identity rather than the equality, because two empty trackers
+    compare equal and behave worlds apart.
+    """
+    tracker = getattr(ctx, USAGE_SERVICE, None)
+    return tracker if tracker is not None else UsageTracker()
 
 
 def _session_for(ctx: Any, spec: AgentSpec) -> Any:
@@ -233,8 +257,13 @@ class ForgePilotAgentLoopPlugin(PluginService):
         super().__init__(ctx)
         cfg = dict(config or {})
         self.engine_key: str = str(cfg.get("engine", "forgepilot"))
+        # Public because task mode has to read it. `run_task` drives `run_turn`
+        # directly rather than going through an agent, so it never saw the
+        # configured ceiling and every task ran on the default — a profile setting
+        # that only chat honoured. Plain data across the proxy, like `engine_key`.
+        self.max_steps: int = int(cfg.get("max_steps", DEFAULT_MAX_STEPS))
         self._factory = ForgePilotAgentFactory(
-            max_steps=int(cfg.get("max_steps", DEFAULT_MAX_STEPS)),
+            max_steps=self.max_steps,
             max_tokens=int(cfg.get("max_tokens", 4096)),
             temperature=float(cfg.get("temperature", 0.0)),
         )

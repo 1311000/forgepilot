@@ -502,6 +502,7 @@ def _task(args: argparse.Namespace) -> int:
     from forgepilot.kernel import create_root
     from forgepilot.orchestration import ClassifierGateway
     from forgepilot.orchestration.modes.task import plan_task, run_task
+    from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
     from forgepilot.orchestration.task_state import TaskState
     from forgepilot.runtime.assembly import assemble_session, usage_tracker
     from forgepilot.seams.refs import TicketId
@@ -610,6 +611,11 @@ def _task(args: argparse.Namespace) -> int:
                 approval=root.approval,
                 principal=record.principal,
                 compactor=getattr(root, "compaction", None),
+                # Read from the `agentLoop` row rather than defaulted, so a
+                # profile's `max_steps` bounds a *task* the way it bounds a chat.
+                # It used not to reach here at all, and every task ran on 12.
+                max_steps=getattr(getattr(root, "agentLoop", None), "max_steps", None)
+                or DEFAULT_MAX_STEPS,
             )
             _print_outcome(outcome)
         finally:

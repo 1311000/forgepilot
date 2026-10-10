@@ -30,7 +30,12 @@ from typing import Any, Mapping
 
 from forgepilot.identity.signing import verify
 from forgepilot.kernel import isolate_services, provide
-from forgepilot.runtime.guards import GuardRegistry, UsageTracker, default_guards
+from forgepilot.runtime.guards import (
+    USAGE_SERVICE,
+    GuardRegistry,
+    UsageTracker,
+    default_guards,
+)
 from forgepilot.seams.security import ExecutionConstraints
 
 __all__ = ["RequestScope", "open_request_scope"]
@@ -94,7 +99,13 @@ def open_request_scope(
         verify(constraints, key)
 
     extras = dict(extra_services or {})
-    ctx = isolate_services(root, CONSTRAINTS, *extras)
+    # ⚠️ **Every name this scope provides has to be in the isolate list.** It is
+    # not enough to provide one: an un-isolated `provide` in a child context leaks
+    # to the root, so two concurrent requests would share one tracker — and it
+    # fails as `service "usage" has been registered at <root>`, from whichever
+    # request happened to be second. `test_request_scopes_do_not_see_each_other` is
+    # the test that catches it, which is what it is for.
+    ctx = isolate_services(root, CONSTRAINTS, USAGE_SERVICE, *extras)
     provide(ctx, CONSTRAINTS, constraints)
     for name, value in extras.items():
         provide(ctx, name, value)
@@ -103,5 +114,12 @@ def open_request_scope(
     guards = GuardRegistry()
     for name, guard in default_guards(usage):
         guards.register(name, guard)
+
+    # ⚠️ **Provided, not just held.** The guards are built around this tracker, so
+    # anything that *counts* has to reach the same object. Holding it only on the
+    # `RequestScope` meant a caller could not — `ForgePilotAgent` defaulted a
+    # private one, the loop incremented that, and the budget guard watched a
+    # tracker nothing touched.
+    provide(ctx, USAGE_SERVICE, usage)
 
     return RequestScope(ctx=ctx, constraints=constraints, guards=guards, tracker=usage)

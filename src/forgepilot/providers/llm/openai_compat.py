@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from forgepilot.kernel import PluginService
@@ -37,6 +38,7 @@ from forgepilot.seams.llm import (
 )
 
 __all__ = [
+    "apply_price",
     "OpenAICompatLLMPlugin",
     "OpenAICompatError",
     "to_payload",
@@ -191,6 +193,27 @@ def chunk_from_delta(event: Mapping[str, Any]) -> tuple[list[StreamChunk], Usage
     return chunks, usage
 
 
+def apply_price(
+    usage: Usage, *, price_per_1k_input: float, price_per_1k_output: float
+) -> Usage:
+    """``usage`` with its cost filled in. Pure, so the arithmetic has a test.
+
+    Zero rates return the usage untouched, which is the honest answer: a
+    deployment that has not told us what a token costs has not told us what the
+    call cost, and inventing a figure would make a `max_cost_usd` budget fire on a
+    number nobody supplied.
+    """
+    if not (price_per_1k_input or price_per_1k_output):
+        return usage
+    return replace(
+        usage,
+        cost_usd=(
+            usage.input_tokens * price_per_1k_input / 1000.0
+            + usage.output_tokens * price_per_1k_output / 1000.0
+        ),
+    )
+
+
 async def iter_chunks(lines: AsyncIterator[str]) -> AsyncIterator[StreamChunk]:
     """Fold a stream of SSE lines into our chunk vocabulary."""
     async for line in lines:
@@ -239,6 +262,11 @@ class OpenAICompatLLMPlugin(PluginService):
         self.timeout: float = float(cfg.get("timeout_s", 120.0))
         self.include_usage: bool = bool(cfg.get("include_usage", True))
         self._max_context: int = int(cfg.get("max_context_tokens", 128_000))
+        # Prices per 1,000 tokens. Optional, because a deployment may not know
+        # them — but a `max_cost_usd` budget is dead without them, so `--dump-config`
+        # is where to look when a cost limit never fires.
+        self._price_in: float = float(cfg.get("price_per_1k_input", 0.0))
+        self._price_out: float = float(cfg.get("price_per_1k_output", 0.0))
 
         self._client: Any = None
 
@@ -293,7 +321,30 @@ class OpenAICompatLLMPlugin(PluginService):
                     f"{body[:500]}"
                 )
             async for chunk in iter_chunks(_aiter_lines(response)):
-                yield chunk
+                if chunk.kind == "usage" and chunk.usage is not None:
+                    yield replace(chunk, usage=self._priced(chunk.usage))
+                else:
+                    yield chunk
+
+    def _priced(self, usage: Usage) -> Usage:
+        """What this call cost, from the rates this row is configured with.
+
+        ⚠️ **Here rather than in the loop, and the reason is not tidiness.** This
+        is the only object that knows which model answered, and a deployment's
+        prices are a fact about *its* endpoint — the same kind of fact as `model`
+        and `base_url`, which is why they live on the same config row. Costing it
+        anywhere else means a second place that knows the model, and the two drift
+        the first time one changes.
+
+        Attaching it to the `Usage` also means every caller gets it for free —
+        including the compaction summariser, which reaches the model through
+        `guarded_complete` and would otherwise be invisible spend.
+        """
+        return apply_price(
+            usage,
+            price_per_1k_input=self._price_in,
+            price_per_1k_output=self._price_out,
+        )
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         collected: list[StreamChunk] = []

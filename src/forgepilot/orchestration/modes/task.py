@@ -28,6 +28,7 @@ from typing import Any, Sequence
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.orchestration.classifier import ClassifierGateway
+from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
 from forgepilot.orchestration.context_assembly import (
     PromptSection,
     assemble_system_sections,
@@ -271,6 +272,11 @@ async def run_task(
     #: Optional compaction. `None` keeps the loud overflow failure as the only
     #: thing that happens at the window, which is what task mode did before.
     compactor: Any = None,
+    #: The step ceiling for **each attempt's turn**. `run_task` drives `run_turn`
+    #: directly rather than through an agent, so it never saw the configured
+    #: `max_steps` and every task ran on the default — a profile setting that only
+    #: chat honoured. `attempts × max_steps` is the real bound on a task.
+    max_steps: int = DEFAULT_MAX_STEPS,
 ) -> TaskOutcome:
     """Execute a plan: branch, work, check, repair, deliver.
 
@@ -347,6 +353,7 @@ async def run_task(
             model=model,
             system_sections=plan.system_texts,
             workspace_root=handle.root,
+            max_steps=max_steps,
             tool_schemas=plan.tool_schemas(tools),
             tracker=tracker,
             compactor=compactor,

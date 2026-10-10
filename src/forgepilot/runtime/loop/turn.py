@@ -12,6 +12,7 @@ inside a budget that looks healthy.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -72,13 +73,7 @@ async def run_turn(
                     reason = "budget"
                     break
 
-            if step == max_steps - 1:
-                # The ceiling is checked *before* the step that would exceed it,
-                # so a turn that hits it ends with the reason saying so rather
-                # than looking like a model that simply stopped.
-                reason = "error"
-                break
-
+            step_started = time.monotonic()
             result: StepResult = await run_step(
                 session=session,
                 llm=llm,
@@ -101,10 +96,35 @@ async def run_turn(
 
             if tracker is not None:
                 tracker.tokens += result.usage.input_tokens + result.usage.output_tokens
+                # ⚠️ **Both of these had no writer at all**, on any path, while the
+                # budget guard read them — so `max_cost_usd` and `max_wall_seconds`
+                # were two limits that could never be reached. Measured, not
+                # inferred: `grep -rn "cost_usd" src/` found the reads and no
+                # assignment.
+                #
+                # Wall-clock is measured here because here is where the time is
+                # actually spent — a step is the model call plus its tools.
+                # Accumulated rather than assigned, because a scope outlives a turn
+                # in `--chat` and the budget is per scope.
+                tracker.cost_usd += result.usage.cost_usd
+                tracker.wall_seconds += time.monotonic() - step_started
                 tracker.tool_calls += len(result.tool_calls)
 
             if not result.wants_tools:
                 break
+        else:
+            # ⚠️ **`range` exhausted, which is the ceiling — and it used to be
+            # checked inside the loop instead**, as `if step == max_steps - 1:
+            # break`, one iteration early. That made `max_steps` yield
+            # `max_steps - 1` steps, so `DEFAULT_MAX_STEPS = 12` was 11 and every
+            # "12-step" turn was an 11-step one. Measured, not reasoned about:
+            # `test_the_step_ceiling_is_the_number_of_steps` counts the steps a
+            # ceiling of 4 produces and got 3.
+            #
+            # `for ... else` runs only when the loop was never broken out of, and
+            # every other exit above *is* a break — completion, cancellation and an
+            # exhausted budget all say so for themselves.
+            reason = "error"
 
     except ContextWindowExceeded:
         # Closed as an error rather than left open: the projection must always

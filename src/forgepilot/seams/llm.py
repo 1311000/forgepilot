@@ -84,6 +84,12 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    #: What this call cost, **attached by the provider** — it is the only thing
+    #: that knows which model answered, and the deployment's prices are a fact
+    #: about that endpoint in the same way `model` and `base_url` are. Zero when
+    #: the provider was given no rates, which is why the budget guard's cost check
+    #: is only meaningful on a row that has them.
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

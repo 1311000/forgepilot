@@ -12,6 +12,7 @@ guards the security boundary rather than one input among several.
 """
 
 from forgepilot.runtime.guards.builtin import (
+    USAGE_SERVICE,
     UsageTracker,
     default_guards,
     make_budget_guard,
@@ -37,6 +38,7 @@ __all__ = [
     "GuardView",
     "make_view",
     "UsageTracker",
+    "USAGE_SERVICE",
     "make_budget_guard",
     "path_scope_guard",
     "repo_scope_guard",

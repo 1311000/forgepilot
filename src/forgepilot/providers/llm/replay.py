@@ -43,11 +43,16 @@ def tool_call_turn(
     *,
     call_id: str = "call-1",
     text: str = "",
+    usage: Usage | None = None,
 ) -> tuple[StreamChunk, ...]:
     """A scripted assistant turn that requests one tool call.
 
     ``arguments_json`` is passed through verbatim, so a test can script malformed
     arguments on purpose and check the failure path.
+
+    ``usage`` mirrors :func:`text_turn`. It matters for budgets: a turn that asks
+    for a tool is the only kind that keeps a turn *going*, so a test of "the loop
+    stops once it has spent the budget" needs usage on a turn that does not end it.
     """
     chunks: list[StreamChunk] = []
     if text:
@@ -61,6 +66,8 @@ def tool_call_turn(
             arguments_delta=arguments_json,
         )
     )
+    if usage is not None:
+        chunks.append(StreamChunk(kind="usage", usage=usage))
     chunks.append(StreamChunk(kind="done"))
     return tuple(chunks)
 

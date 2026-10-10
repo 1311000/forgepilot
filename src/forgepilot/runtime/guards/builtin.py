@@ -23,6 +23,7 @@ __all__ = [
     "repo_scope_guard",
     "path_scope_guard",
     "UsageTracker",
+    "USAGE_SERVICE",
     "make_budget_guard",
     "default_guards",
 ]
@@ -127,6 +128,17 @@ class UsageTracker:
 
     def record_call(self) -> None:
         self.tool_calls += 1
+
+
+#: The name this tracker is provided under inside a request scope.
+#:
+#: ⚠️ **It has to be reachable, and that is not a convenience.** The guards are
+#: built around the scope's tracker, so anything that *counts* has to write to the
+#: same object or it is counting into a private one. `ForgePilotAgent` used to
+#: default its own, the loop incremented that, and the budget guard watched a
+#: tracker nothing touched — so the guard refused nothing while the loop's own
+#: between-step check went on working, which is exactly the shape that hides.
+USAGE_SERVICE = "usage"
 
 
 @dataclass(frozen=True, slots=True)
