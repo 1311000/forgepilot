@@ -67,6 +67,28 @@ def unsupported_event_kinds(events: Sequence[SessionEvent]) -> tuple[str, ...]:
     )
 
 
+def _stands_within(event: SessionEvent, low: int, high: int) -> bool:
+    """Whether ``event`` is currently what stands in for something in ``[low, high]``.
+
+    Two ways to be, and the second is the one that was missing:
+
+    - the event *is* one of those seqs — nothing has replaced it yet;
+    - the event is itself a ``REPLACE`` whose own window overlaps the range, which
+      is what is standing there now. Matching on ``seq`` alone cannot see that, so
+      superseding an already-superseded range found no hits at all and fell through
+      to the append branch.
+    """
+    if low <= event.seq <= high:
+        return True
+    if event.surface is not SurfaceOp.REPLACE:
+        return False
+    window = event.data.get("supersedes") or ()
+    if not (isinstance(window, (list, tuple)) and len(window) == 2):
+        return False
+    inner_low, inner_high = int(window[0]), int(window[1])
+    return inner_low <= high and low <= inner_high
+
+
 def derive_messages(events: Sequence[SessionEvent]) -> tuple[ChatMessage, ...]:
     """Fold the log into the message list the model should see.
 
@@ -106,14 +128,35 @@ def derive_messages(events: Sequence[SessionEvent]) -> tuple[ChatMessage, ...]:
             placed = False
             if isinstance(window, (list, tuple)) and len(window) == 2:
                 low, high = int(window[0]), int(window[1])
-                hits = [i for i, e in enumerate(visible) if low <= e.seq <= high]
+                hits = [i for i, e in enumerate(visible) if _stands_within(e, low, high)]
                 if hits:
                     visible = visible[: hits[0]] + [event] + visible[hits[-1] + 1 :]
                     placed = True
             if not placed:
-                # Nothing matched: the replacement stands alone, at the end. That
-                # is the honest place for a supersede range this projector cannot
-                # find — the alternative would be to drop the message silently.
+                # ⚠️ **A replacement that cannot be placed is dropped when it
+                # carries a call id**, and appended only when it does not.
+                #
+                # Appending is right for a summary: a handoff over a region is new
+                # content, and the end is where new content goes. It is wrong for a
+                # masked tool result, because that renders as a `tool` message — and
+                # a `tool` message at the end of a conversation answers a call from
+                # the start of it. The endpoint rejects the entire request:
+                #
+                #     Messages with role 'tool' must be a response to a preceding
+                #     message with 'tool_calls'
+                #
+                # Dropping fails closed. The model then sees whatever still stands
+                # in that range — the original body, unmasked — which is *more* than
+                # the log promised, never less, so it cannot break *model-visible
+                # means logged* in the direction that matters.
+                #
+                # This is a backstop, not the fix: `superseded_seqs` is what stops
+                # the unplaceable replacement from being emitted at all. It is here
+                # because "this should not happen" is the exact reasoning that let
+                # the first one happen, and a conversation is not the place to find
+                # out.
+                if event.data.get("callId"):
+                    continue
                 visible.append(event)
             continue
         visible.append(event)

@@ -98,7 +98,34 @@ SECTIONS = ("you are forgepilot",)
 
 
 def assert_no_orphan_tool_calls(messages: Sequence[Any]) -> None:
+    """Both directions, because the endpoint enforces both.
+
+    This checked only that every assistant call is answered — and it passed on a
+    conversation whose last four messages were `tool` results answering calls from
+    the *start* of it, which is the shape DeepSeek rejects with *"Messages with
+    role 'tool' must be a response to a preceding message with 'tool_calls'"*.
+    A `tool` message that answers nothing was invisible to it, because the loop
+    only ever looked forward from an assistant message.
+
+    So: a call must be answered immediately after, **and** an answer must belong to
+    the call it follows.
+    """
     for index, message in enumerate(messages):
+        if message.role is Role.TOOL:
+            previous = next(
+                (m for m in reversed(messages[:index]) if m.role is not Role.TOOL), None
+            )
+            announced = (
+                [c.call_id for c in previous.tool_calls]
+                if previous is not None and previous.role is Role.ASSISTANT
+                else []
+            )
+            assert message.tool_call_id in announced, (
+                f"tool message {index} answers {message.tool_call_id!r}, but the "
+                f"nearest preceding non-tool message announced {announced}"
+            )
+            continue
+
         if message.role is not Role.ASSISTANT or not message.tool_calls:
             continue
         wanted = [call.call_id for call in message.tool_calls]
@@ -221,6 +248,50 @@ async def test_masking_never_breaks_a_call_from_its_result() -> None:
             e.data.get("masked")
             for e in session.committed_events
             if e.seq in placeholders
+        )
+    finally:
+        await close(fibers)
+
+
+async def test_a_second_pass_does_not_mask_a_mask() -> None:
+    """⚠️ The real loop calls `compact` at the top of **every step**. These tests
+    called it once, and that is the whole reason this shipped broken.
+
+    A pass does not mutate the events it covers — the log is append-only, so the
+    original `tool/result` still carries `APPEND` afterwards. `select_mask_targets`
+    filtered on exactly that, on the documented reasoning that "a placeholder
+    carries `REPLACE`, so a second pass cannot mask a mask". The placeholder does
+    carry `REPLACE`; the *original* does not, and the original is what the
+    selection walks.
+
+    So the second pass emitted a replacement for a range that no longer existed in
+    the visible list — and `derive_messages` matches a `REPLACE` by the seq of the
+    events it supersedes, so it found nothing, fell through to its append branch,
+    and put a `tool` message at the **end of the conversation**, answering a call
+    from the beginning of it. DeepSeek rejects that outright:
+
+        Messages with role 'tool' must be a response to a preceding message with
+        'tool_calls'
+
+    Measured on a real ablation run: three of twelve `tight-window` attempts died
+    this way, and the two that died in `out-of-scope` were reported as `0 calls,
+    0 turns` — an unset counter, because the run raised before anything was
+    summarised.
+    """
+    root, fibers = await build({"tiers": ["mask"], "keep_recent_tool_results": 0})
+    try:
+        session = await make_session(root, turns=4)
+
+        first = await compact(root, session, window=200)
+        assert first.shadowed == 4, "the first pass should have masked every result"
+        assert_no_orphan_tool_calls(derive_messages(session.events))
+
+        second = await compact(root, session, window=200)
+
+        assert_no_orphan_tool_calls(derive_messages(session.events))
+        assert second.shadowed == 0, (
+            f"the second pass re-masked {second.shadowed} result(s) that were already "
+            f"masked — the model is paying for the same elision twice"
         )
     finally:
         await close(fibers)
@@ -453,6 +524,34 @@ async def test_the_breaker_opens_after_the_limit_and_stops_calling_the_model() -
         await close(fibers)
 
 
+async def test_nothing_to_do_is_not_a_failure_and_does_not_open_the_breaker() -> None:
+    """⚠️ `no-eligible-region` is a completed assessment, not a fault.
+
+    Both ways to reach it resolve themselves — a region below the summary floor
+    grows past it as the conversation does, and a fully masked conversation keeps
+    producing new results to mask. The breaker, though, **cannot unlatch**: it
+    blocks the very pass that would record a success and reset the streak. So
+    counting a free no-op as a failure latched it permanently on a session that
+    was about to become compactable.
+    """
+    root, fibers = await build(
+        # `failure_limit: 2`, and a floor nothing here can reach, so every pass
+        # after the first mask ends in `no-eligible-region` — which is what every
+        # step of the real `tight-window` run logged.
+        {"failure_limit": 2, "keep_recent_turns": 0, "summary_min_region_tokens": 1_000_000}
+    )
+    try:
+        session = await make_session(root, turns=3)
+        failures = [(await compact(root, session, window=200)).failure for _ in range(3)]
+
+        assert failures == [FAILURE_NO_REGION] * 3, (
+            f"a pass with nothing to do was counted as a fault and opened the "
+            f"breaker: {failures}"
+        )
+    finally:
+        await close(fibers)
+
+
 # ---------------------------------------------------------------------------
 # Pure pieces
 # ---------------------------------------------------------------------------
@@ -497,21 +596,34 @@ def test_snap_to_pairs_widens_rather_than_cutting() -> None:
 
 def test_consecutive_failures_counts_from_the_log() -> None:
     """Read from the log, not memory — a resumed session is exactly the one most
-    likely to be near its window, and an in-memory counter would have reset."""
+    likely to be near its window, and an in-memory counter would have reset.
+
+    And it counts only the failures that **cost a model call**. The breaker exists
+    to stop spending; a pass that found nothing eligible spent nothing, and its
+    condition resolves itself, so counting it would latch the breaker on a session
+    about to become compactable.
+    """
     from forgepilot.providers.compaction.tiered import consecutive_failures
 
-    def ev(seq, kind):
-        return SessionEvent(seq=seq, event_id=f"e{seq}", kind=kind, data={}, surface=SurfaceOp.LOG_ONLY)
+    def ev(seq, kind, code=None):
+        data = {"code": code} if code else {}
+        return SessionEvent(seq=seq, event_id=f"e{seq}", kind=kind, data=data, surface=SurfaceOp.LOG_ONLY)
+
+    def broke(seq):
+        return ev(seq, EventKind.COMPACTION_FAILED, FAILURE_EMPTY)
+
+    def free(seq):
+        return ev(seq, EventKind.COMPACTION_FAILED, FAILURE_NO_REGION)
 
     assert consecutive_failures([]) == 0
-    assert consecutive_failures([ev(1, EventKind.COMPACTION_FAILED)]) == 1
+    assert consecutive_failures([broke(1)]) == 1
     assert (
         consecutive_failures(
             [
-                ev(1, EventKind.COMPACTION_FAILED),
-                ev(2, EventKind.COMPACTION_FAILED),
+                broke(1),
+                broke(2),
                 ev(3, EventKind.COMPACTION_SUMMARY),  # a pass that worked
-                ev(4, EventKind.COMPACTION_FAILED),
+                broke(4),
             ]
         )
         == 1
@@ -520,9 +632,15 @@ def test_consecutive_failures_counts_from_the_log() -> None:
         consecutive_failures(
             [
                 ev(1, EventKind.COMPACTION_MASK),
-                ev(2, EventKind.COMPACTION_FAILED),
-                ev(3, EventKind.COMPACTION_FAILED),
+                broke(2),
+                broke(3),
             ]
         )
         == 2
     )
+    # A free failure neither counts nor breaks the streak: it is a pass that
+    # decided there was nothing to do, sitting between two that broke.
+    assert consecutive_failures([broke(1), free(2), broke(3)]) == 2
+    # Five free failures in a row are still zero — this is the case that used to
+    # open the breaker and never close it again.
+    assert consecutive_failures([free(seq) for seq in range(1, 6)]) == 0

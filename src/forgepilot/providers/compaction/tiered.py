@@ -41,6 +41,7 @@ from forgepilot.runtime.context_size import estimate_tokens, measure
 from forgepilot.runtime.events import (
     first_user_message_seq,
     last_seq_of_kind,
+    superseded_seqs,
     turn_spans,
 )
 from forgepilot.runtime.log_guard import guarded_complete
@@ -61,6 +62,7 @@ from forgepilot.seams.session import EventKind, SurfaceOp
 __all__ = [
     "TieredCompactionPlugin",
     "SUMMARY_INSTRUCTION",
+    "COSTLY_FAILURES",
     "consecutive_failures",
     "mask_placeholder",
     "select_mask_targets",
@@ -112,6 +114,10 @@ The single next action, with a direct quote from the user if one constrains it.
 #: the shape of what came back; not enough to be worth compacting again.
 _HEAD = 80
 _TAIL = 40
+
+#: The failures the breaker counts: the ones that consumed a model call.
+#: `no-eligible-region` is deliberately absent — see `consecutive_failures`.
+COSTLY_FAILURES = frozenset({FAILURE_MODEL_ERROR, FAILURE_TRUNCATED, FAILURE_EMPTY})
 
 
 # ---------------------------------------------------------------------------
@@ -174,13 +180,23 @@ def select_mask_targets(
 ) -> tuple[int, ...]:
     """Which tool results to mask, oldest first.
 
-    Only ``tool/result`` events that are still `APPEND` — a placeholder carries
-    `REPLACE`, so a second pass cannot mask a mask. The newest
-    ``keep_recent_tool_results`` are left alone: they are what the model is
-    currently reasoning about.
+    ⚠️ **`surface is APPEND` is not enough, and that was the defect.** The
+    docstring here used to claim that "a placeholder carries `REPLACE`, so a
+    second pass cannot mask a mask". The placeholder does; the *result it replaced*
+    does not, and the result it replaced is what this walk sees — the log is
+    append-only and a `REPLACE` supersedes without mutating. So a second pass
+    re-selected every result the first pass had masked.
+
+    `superseded_seqs` is the missing question: *has something already taken this
+    event's place?* A pass that asks it finds nothing to do on the second run,
+    which is both correct and free.
+
+    The newest ``keep_recent_tool_results`` are left alone: they are what the model
+    is currently reasoning about.
     """
     barrier = _resummarise_barrier(events)
     protected = _protected_seqs(events, policy)
+    already = superseded_seqs(events)
 
     candidates = [
         event.seq
@@ -189,6 +205,7 @@ def select_mask_targets(
         and event.surface is SurfaceOp.APPEND
         and event.seq > barrier
         and event.seq not in protected
+        and event.seq not in already
     ]
     if policy.keep_recent_tool_results:
         candidates = candidates[: -policy.keep_recent_tool_results] or []
@@ -272,11 +289,24 @@ def consecutive_failures(events: Sequence[Any]) -> int:
     session and per turn, so an in-memory counter resets on resume and the
     breaker silently reopens — which is the exact case it exists for, because a
     resumed session is the one most likely to be near its window.
+
+    ⚠️ **Only failures that cost a model call count, and the distinction is the
+    breaker's whole point.** The breaker exists to stop *spending*, so a pass that
+    spent nothing is not evidence of thrash. `no-eligible-region` is the code that
+    does not spend — and it is precisely the code that resolves itself: a region
+    below the summary floor grows past it as the conversation does, and a fully
+    masked conversation keeps producing new results to mask.
+
+    Counting those latched the breaker **permanently** on a session that was about
+    to become compactable, because it cannot unlatch: it blocks the very pass that
+    would record a success and reset the streak. Observed on every step of a real
+    `tight-window` run.
     """
     count = 0
     for event in reversed(events):
         if event.kind == EventKind.COMPACTION_FAILED:
-            count += 1
+            if str(event.data.get("code", "")) in COSTLY_FAILURES:
+                count += 1
         elif event.kind in (EventKind.COMPACTION_SUMMARY, EventKind.COMPACTION_MASK):
             break
     return count

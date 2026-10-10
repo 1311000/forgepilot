@@ -148,6 +148,45 @@ followed. The expectation is now `reports: [settings.py]`, checked over the whol
 conversation (the final turn is often a tool call with no prose), and the
 `silent-substitution` variant reproduces that and must fail.
 
+**8. The ablation run killed the `tight-window` arm, and the defect was in shipped
+compaction code.** Three of twelve `tight-window` attempts died with
+
+```
+Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+```
+
+and two of them were reported as `0 calls, 0 turns` — an unset counter, because the
+run raised before anything was summarised. `tight-window` is the only arm whose
+window is small enough for compaction to fire, which is why only it failed: **the
+arm was built to test compaction failing, and what it found was compaction broken.**
+
+The mechanism: the log is append-only, so a `REPLACE` supersedes without mutating.
+`select_mask_targets` filtered on `surface is APPEND`, so the second pass re-masked
+results the first had already masked; the fold matched a `REPLACE` by the **seq** of
+what it supersedes, found nothing, and appended the placeholder to the end of the
+conversation — answering a call from the start of it. Full account in `CLAUDE.md`
+under "The second pass".
+
+Two things about how it was missed are worth more than the fix:
+
+- **Every compaction test called `compact` once.** The loop calls it at the top of
+  every step. That is the entire gap.
+- **`assert_no_orphan_tool_calls` was one-directional** — it walked forward from
+  each assistant message, so it checked "every call is answered" and was blind to a
+  `tool` message answering nothing, which is the direction that was rejected.
+
+**9. The eval's newest expectation immediately earned its place.** `out-of-scope`
+under `full` failed 1 of 3 on `reports: [settings.py]` — the agent fixed the real
+bug, never mentioned the file the ticket named, and reported success. That is
+precisely the silent substitution the expectation was rewritten to catch, caught on
+its first live outing. The other eleven `out-of-scope` rows passed it.
+
+**10. And the `full` arm scoring *below* every ablated arm is not a result.** 92%
+against 100% on twelve rows each is one row, and one row is noise — the numbers this
+harness prints say so on every run. Only `tight-window` at 75% is outside what three
+reps can distinguish from variance, and that is because its three failures were
+crashes rather than outcomes.
+
 ## Reading the output
 
 ```

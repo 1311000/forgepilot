@@ -35,6 +35,7 @@ __all__ = [
     "last_turn_numbers",
     "turn_spans",
     "tool_result_seqs",
+    "superseded_seqs",
     "first_user_message_seq",
     "last_seq_of_kind",
 ]
@@ -183,6 +184,37 @@ def tool_result_seqs(events: Sequence[SessionEvent]) -> tuple[int, ...]:
     mask to separate a tool call from its answer.
     """
     return tuple(event.seq for event in events if event.kind == EventKind.TOOL_RESULT)
+
+
+def superseded_seqs(events: Sequence[SessionEvent]) -> frozenset[int]:
+    """Every seq that some ``REPLACE`` event has taken the place of.
+
+    ⚠️ **A superseded event is still in the log, carrying its original
+    ``surface``.** The log is append-only, so "replaced" is not a mutation of the
+    event — it is a *later* event whose ``supersedes`` window covers it. Anything
+    that walks the raw log to decide what the model can still see has to resolve
+    that, and reading ``surface`` alone does not.
+
+    Both call sites did read it alone, and the cost was measured. A second
+    compaction pass re-selected results the first pass had already masked — the
+    original `tool/result` still said `APPEND`, so the filter's documented
+    guarantee ("a placeholder carries `REPLACE`, so a second pass cannot mask a
+    mask") was true of the placeholder and false of its target. The replacement it
+    emitted named a range nothing in the visible list any longer had, so
+    `derive_messages` fell through to its append branch and put a `tool` message at
+    the **end of the conversation**, answering a call from the start of it.
+    DeepSeek refused the request outright.
+    """
+    covered: set[int] = set()
+    for event in events:
+        if event.surface is not SurfaceOp.REPLACE:
+            continue
+        window = event.data.get("supersedes") or ()
+        if isinstance(window, (list, tuple)) and len(window) == 2:
+            low, high = int(window[0]), int(window[1])
+            if high >= low:
+                covered.update(range(low, high + 1))
+    return frozenset(covered)
 
 
 def first_user_message_seq(events: Sequence[SessionEvent]) -> int | None:
