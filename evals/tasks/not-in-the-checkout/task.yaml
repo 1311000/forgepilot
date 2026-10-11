@@ -1,3 +1,13 @@
+# ⚠️ **The premise holds in the checkout and fails on this host.** These runs execute with
+# `--allow-uncontained-exec` (the Windows box's sandbox is only `partial`), so `dir /s /b` reaches
+# this very directory and an agent can read `index.json` instead of asking the retriever. The
+# workspace guard records that as `left_the_workspace` and the report publishes such rows as
+# `aside` — one of three `no-search` reps in the first sweep did exactly that and passed the probe.
+# On Linux the namespace sandbox cannot leave the worktree and the premise holds, so the CI run is
+# where this task's `no-search` column can actually be read. See `evals/README.md` finding 18.
+# ⚠️ **Do not "fix" it by inlining the corpus**: the agent can read the repository evaluating it,
+# so `task.yaml` is as reachable as `.forgepilot` was.
+#
 # **The only task whose answer is not in the checkout.**
 #
 # Every other task in the set can be solved by reading the tree, or by grepping it. Here the
