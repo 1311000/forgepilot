@@ -1,0 +1,92 @@
+# The one task in this set with **no failing test at all**.
+#
+# Every other task hands the agent something that breaks: an assertion, a missing
+# feature, a permission refusal. Here two modules compute the same statistic two
+# ways, the ticket says which side is authoritative, and the visible suite is green
+# either way — because every case the dashboard's own tests cover is one where the
+# two methods coincide (see `fixture/tests/test_percentiles.py` for the arithmetic).
+#
+# ⚠️ **So the only instrument that can score this task is the held-out input.** A run
+# that leaves the interpolation alone passes its own checks and fails the probe; a run
+# that "unifies" the two modules by changing the *report* fails the report's own test.
+# That is what makes this the task that prices the probes: with none, every one of
+# those trees scores identically and the row says nothing.
+#
+# ⚠️ **And it is deliberately not a trick.** The rule is stated twice in the fixture —
+# in `reporting.py`'s docstring and in `tests/test_reporting.py`, which pins the
+# even-length case — and the ticket says which side wins. What the task measures is
+# whether the agent *investigates before it edits*: a fix here requires reading a
+# module the ticket only names, and the failure mode is not "could not do it" but
+# "decided the disagreement was a matter of taste".
+name: no-failing-test
+fixture: fixture
+
+probes:
+  - name: the_method_is_the_house_one
+    file: probes/the_method_is_the_house_one.py
+
+ticket:
+  id: BUG-5
+  title: 周报和 dashboard 的同一个分位数对不上
+  description: |
+    复现步骤：
+    1. 运行 python -c "from percentiles import p50; from reporting import percentile_rank; print(p50([1,2,3,4]), percentile_rank([1,2,3,4], 50))"
+    2. 两个函数对同一批数据给出了不同的数
+
+    预期结果：两边一致，且以 reporting.py 的口径为准 —— 周报里的数是已经对外发过的
+    实际结果：dashboard 给 2.5、周报给 2.0，同一批数据两个数
+
+    受影响仓库：git.local/demo/stats
+    相关文件：percentiles.py、reporting.py
+
+expect:
+  states: [ready, delivered]
+  # ⚠️ Green **before** the fix as well as after it. That is the task, not a bug in
+  # the expectation: the agent's own suite cannot tell the two trees apart, so this
+  # line is not the discriminator and reading it as one would be a mistake.
+  checks: pass
+  oracle_pinned: any
+  # Two modules are named; the fix belongs in one of them.
+  max_changed_paths: 2
+  max_tool_calls: 40
+  # Room to read the report, its test, and the ticket's own reproduction before
+  # writing anything — which is the behaviour under test, so the budget must not
+  # punish it.
+  max_turns: 4
+  # The discriminator, and the only one.
+  probes: pass
+
+understanding:
+  category: bug
+  symptom: two modules compute the same percentile by different methods and disagree
+  expected: both use the nearest-rank convention the published report uses
+  actual: the dashboard interpolates and returns 2.5 where the report returns 2.0
+  confidence: 0.95
+
+# --- offline: the fix -------------------------------------------------------
+#
+#   evals/run.py --scripted --task no-failing-test                    -> pass
+#   evals/run.py --scripted --task no-failing-test \
+#       --variant leaves-the-method-alone                              -> FAIL, on the probe
+#
+# The second line is the one that matters, and it is deliberately *not* a failure of
+# `checks` — the checks pass there. If both lines ever pass, the probe has stopped
+# being held out (most likely by someone moving it under `tests/`).
+script:
+  - write: {path: percentiles.py, from: solution/percentiles.py}
+  - say: "对齐了口径：percentiles 现在直接调用 reporting 的 percentile_rank，不再插值"
+
+variants:
+  leaves-the-method-alone:
+    script:
+      - write: {path: percentiles.py, from: solution/percentiles_with_a_comment.py}
+      - say: "两个口径的差异我写在注释里了，dashboard 的插值保持不变"
+    expect:
+      # Every one of these is what an honest run produces, and the row still fails —
+      # on `probes`, which is the point. Written as `checks: fail` it would have been
+      # a variant that passes when the probe is caught *and* when nothing ran.
+      states: [ready, delivered]
+      checks: pass
+      probes: pass
+      # The question here is the verdict, not the size of the diff.
+      max_changed_paths: null

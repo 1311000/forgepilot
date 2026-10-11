@@ -146,6 +146,7 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | `find-the-bug` | **localisation** — the failing assertion names a value, not a place, and the module that owns the rule is three calls down and not the file the ticket names |
 | `find-the-rule` | **localisation at scale** — eight rule modules behind an engine that returns *sentences*, so the failing assertion is one string with no frame inside `policy/rules/` |
 | `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so |
+| `no-failing-test` | **the held-out input is the only instrument** — two modules compute one statistic two ways, the ticket says which side is authoritative, and the visible suite is green either way; a fix means reading a convention out of the codebase before editing, and the failure mode is not "could not do it" but "decided the disagreement was a matter of taste" |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
 **a task whose own correct answer does not score is a broken task** — and finding
@@ -444,6 +445,57 @@ instruments are independent: the probe does not need the oracle to be held, and 
 does not need the probe. What caught the mistake was reading the **reason** — the six rows
 failed on *"state 'ready' not in ['failed']"*, which is a good agent's signature, not a
 cheating one's.
+
+**13. A task with nothing failing is the only one that priced the probes — and a real model
+fell into it, though not the way it was designed to.** `no-failing-test` is the first task in
+the set with no failing test at all: two modules compute one statistic two ways, the ticket
+names the authoritative side, and the visible suite is green before the fix as well as after
+it. Verified four ways offline, because a task whose design is only asserted measures nothing
+(`fixture` = as shipped, `solution` = the delegation, `with_a_comment` = the plausible wrong
+answer, `flipped` = unified in the wrong direction):
+
+| tree | visible suite | probe |
+|---|---|---|
+| as shipped | **17 passed** | exit 1 |
+| + the fix | 17 passed | **exit 0** |
+| + a comment instead of the fix | **17 passed** | exit 1 |
+| + the report changed instead | 1 failed | exit 1 |
+
+```
+--scripted --task no-failing-test                                   -> pass
+--scripted --task no-failing-test --variant leaves-the-method-alone -> FAIL, on the probe
+```
+
+Then the live measurement (9 rows: `full`, `no-search`, `baseline` × 3):
+
+```
+full       2/3      (rep 3 failed on the probe)
+no-search  3/3
+baseline   3/3
+```
+
+**It is the set's first live failure that is neither a budget overrun nor a crash.** At n=3
+the 2/3-against-3/3 spread is not an arm effect and must not be read as one; what the row
+establishes is that this task *can* fail a real model on substance, which nothing else in the
+set did across 126 rows.
+
+⚠️ **And the failure was not the one the task was designed to catch.** The design predicted
+"the agent decides the disagreement is a matter of taste" — the variant that keeps the
+interpolation and documents it. What happened (`full` rep 3) is that the agent
+**investigated, wrote a 10-line `repro_check.py` to check the ticket's command, and stopped
+without editing `percentiles.py` at all** — `turns=1`, `attempts=1`, 17 calls, its last line
+of text "Let me run from there:". The visible checks then passed, because they pass on the
+unmodified tree; the state machine called the run `ready`; and **only the probe disagreed.**
+
+⚠️ **That exposes a property of this task shape worth stating plainly: when the suite is green
+before the fix, "do nothing" satisfies the harness's own success criterion.** `ready` with
+`checks: pass` is reachable by editing nothing, so on this task the probe is not a second
+opinion — it is the entire verdict. A `min_changed_paths`-style expectation would not have
+helped either, and the failing row is the proof: the run *did* change a path, a scratch file
+it left in the tree. Catching that needs an expectation that a **named** file must change,
+which is a new expectation kind rather than a config line. Until it exists, this task is
+scored by its probe and nothing else — said here rather than left for someone to discover
+from a green row.
 
 ## Reading the output
 
