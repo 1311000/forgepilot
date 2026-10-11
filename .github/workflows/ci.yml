@@ -3,7 +3,12 @@
 # `1053 passed, 217 skipped`, 922 of 7718 statements missed (**88.05%** against the 85 bar),
 # `All gates passed.` in `check`; the container suite `2 passed`, `--sandbox-check` exiting 1
 # for the default profile and 0 where containment is real, and `31 passed, 1 skipped` in
-# `sandbox`. See `docs/notes/gates-on-linux.md`. The workflow is deliberately thin: install
+# `sandbox`. It has been green on every push since, and the most recent one — 38140873105, on
+# the force-push that carried the rewritten history — is the first whose `check` counts differ:
+# **`1045 passed, 218 skipped`**, because `CLAUDE.md` is no longer in the checkout and the guard
+# over it skips as a single module instead of running its eight assertions. Coverage is
+# unchanged at 88.05%: those assertions are about prose, not statements.
+# See `docs/notes/gates-on-linux.md`. The workflow is deliberately thin: install
 # the package and call the same entry a person calls (`tools/check.py`), so a local green run
 # and a CI green run cannot be measuring different things.
 #

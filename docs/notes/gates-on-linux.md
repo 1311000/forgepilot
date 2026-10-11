@@ -253,6 +253,40 @@ its own milestone rather than a rider on the commit that switched CI on.
 change today; it is written down because a future red build caused by an action's runtime is
 exactly the "gate that fails for a reason unrelated to the change" this file argues against.
 
+## After the workspace documents left the repository
+
+`CLAUDE.md`, `ForgePilot文档.md` and `docs/实现方案.md` are written for whoever works in this
+directory, not for whoever clones it. They were removed from the history, added to
+`.gitignore:25-27`, and the rewritten `main` was force-pushed — which re-ran the workflow on a
+checkout that no longer contains them:
+[run 38140873105](https://github.com/1311000/forgepilot/actions/runs/38140873105), green in
+53 s (`check`) and 42 s (`sandbox`), and **the first run whose numbers differ from the table
+above**:
+
+| job | measured, on a checkout without the workspace documents |
+|---|---|
+| `check` | `ruff check .` clean; **`1045 passed, 218 skipped in 32.93s`**; TOTAL 7718 statements, **922 missed, 88.05%**; `All gates passed.` |
+| `sandbox` | unchanged: container suite `2 passed`, `--sandbox-check` exit 1 for the default profile and 0 in the `--privileged` container, native `31 passed, 1 skipped` |
+
+Eight fewer passes and one more skip are neither a regression nor noise: they are
+`tests/contract/test_the_workspace_instructions_fit_the_budget.py`, whose module-level
+`pytest.skip(..., allow_module_level=True)` fires when `CLAUDE.md` is absent. **A module-level
+skip counts as one skip, not as its eight tests**, so the file's eight assertions leave the pass
+column and a single skip takes their place — the delta is exactly the size of that file.
+Coverage does not move (922 missed in both), because those assertions are about prose rather
+than about statements. The honest reading is that **the front-door budget and the note table are
+checked on a developer's machine and nowhere else** — which is what "workspace guard" in that
+file's docstring means, and it is a smaller loss than a guard that aborts collection in a clone.
+
+⚠️ **Removing a file from the history is not the same as deleting it from GitHub.** No ref points
+at the old commits any more (`git ls-remote --heads origin` returns `main` alone), but GitHub
+keeps unreachable objects until its own garbage collection reaches them: at the time of writing,
+`gh api repos/1311000/forgepilot/git/trees/565ff1f` and
+`contents/CLAUDE.md?ref=565ff1f` both still answer, and the old Actions runs stay listed for the
+same reason. Only GitHub Support can force a purge. For documents whose confidentiality is
+"written for whoever works in this directory" rather than a secret, waiting is proportionate —
+and nothing sensitive was ever in them: `.env.local` and `.env` have never been committed.
+
 ## What the first run of the linter found
 
 Worth keeping, because it is the argument for the gate rather than a story about one
