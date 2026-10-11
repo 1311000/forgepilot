@@ -19,7 +19,10 @@ index that does not exist here, and a fake answering `True` would let a composit
 capability had been provided. The other two are the truth about this provider —
 `supports_symbols=True`, because the index declares its own symbols, and
 `covers_working_tree=False`, because it describes committed revisions. That last one is why
-every hit carries its ref: a hit can come from a revision the caller is not working on.
+every hit carries its ref: a hit can come from a revision the caller is not working on. **So
+the requested ref is a preference, not a filter** — `code_search` asks for `WORKING_TREE`
+because the agent is editing a checkout, and a provider that dropped every entry whose ref
+differed would answer "it is not there" about a file it is holding. See `_refs_to_serve`.
 
 **Loading is strict and eager.** A malformed index raises at boot naming the file and the
 entry, for the same reason a malformed ticket source does — a provider that silently serves a
@@ -184,6 +187,36 @@ class CodeIndexRetrieverPlugin(PluginService):
                 self.denied_repo_requests += 1
         return permitted
 
+    def _refs_to_serve(
+        self, permitted: set[RepoRef], requested: str
+    ) -> set[tuple[RepoRef, str]]:
+        """The ``(repo, ref)`` pairs to search: what was asked for where it exists, else held.
+
+        ⚠️ **The seam's own sentence, rather than a convenience.** It says a hit "may come from
+        a remote index at trunk while the developer is on a branch; a location that does not
+        name its revision is not safe to edit" — which is a *labelling* rule, not a filtering
+        one. `code_search` asks for `WORKING_TREE`, an index holds committed revisions, and a
+        plain `!=` filter would make every query empty: "no hits" from a provider that has the
+        file is the one answer a caller cannot tell from "it is not there".
+
+        It **prefers** what was asked for: where the index holds the requested ref for a repo,
+        only those entries are served, so one result set never mixes revisions. The fallback is
+        per repo and deterministic (the lexicographically first ref held) so two runs of the
+        same task serve the same revision — and every hit still says which one that was.
+        """
+        available: dict[RepoRef, set[str]] = {}
+        for indexed in self._files:
+            if indexed.repo in permitted:
+                available.setdefault(indexed.repo, set()).add(indexed.ref)
+        for symbol in self._symbols:
+            if symbol.location.repo in permitted:
+                available.setdefault(symbol.location.repo, set()).add(symbol.location.ref)
+
+        served: set[tuple[RepoRef, str]] = set()
+        for repo, refs in available.items():
+            served.add((repo, requested if requested in refs else sorted(refs)[0]))
+        return served
+
     async def search(
         self, query: SearchQuery, constraints: ExecutionConstraints
     ) -> Sequence[CodeHit]:
@@ -200,9 +233,10 @@ class CodeIndexRetrieverPlugin(PluginService):
             raise ValueError(f"invalid search pattern {query.pattern!r}: {exc}") from exc
 
         limit = min(query.max_hits, self.max_hits)
+        served = self._refs_to_serve(permitted, query.ref)
         hits: list[CodeHit] = []
         for indexed in self._files:
-            if indexed.repo not in permitted or indexed.ref != query.ref:
+            if indexed.repo not in permitted or (indexed.repo, indexed.ref) not in served:
                 continue
             if query.globs and not any(
                 indexed.path.endswith(glob.lstrip("*")) for glob in query.globs
@@ -235,11 +269,12 @@ class CodeIndexRetrieverPlugin(PluginService):
             return ()
 
         needle = query.name.lower()
+        served = self._refs_to_serve(permitted, query.ref)
         found = [
             hit
             for hit in self._symbols
             if hit.location.repo in permitted
-            and hit.location.ref == query.ref
+            and (hit.location.repo, hit.location.ref) in served
             and needle in hit.name.lower()
             and (not query.kinds or hit.kind in query.kinds)
         ]

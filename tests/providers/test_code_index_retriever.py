@@ -28,6 +28,7 @@ import pytest
 from forgepilot.providers.retrieve.index import CodeIndexRetrieverPlugin
 from forgepilot.seams.refs import PrincipalId, RepoRef, TenantId
 from forgepilot.seams.retriever import (
+    WORKING_TREE,
     Retriever,
     SearchQuery,
     SymbolKind,
@@ -143,17 +144,61 @@ async def test_open_slices_by_span_and_carries_the_ref(
     assert slice_.truncated is False
 
 
-async def test_asking_for_another_ref_returns_nothing(
+async def test_it_serves_what_it_holds_and_labels_it(
     retriever: CodeIndexRetrieverPlugin,
 ) -> None:
-    """A hit that silently came from another revision is the failure the ref prevents."""
+    """⚠️ **The ref is a preference, not a filter — and the tool asks for the working tree.**
+
+    `code_search` sends `WORKING_TREE`, because the agent is editing a checkout, while an index
+    holds committed revisions. Under a plain `!=` filter every query here would come back empty:
+    structurally, and indistinguishable from "the file is not there". The seam's rule is a
+    *labelling* one — a hit may come from trunk while the developer is on a branch — so the
+    provider serves what it has and the hit says which revision that was.
+    """
     hits = await retriever.search(
-        SearchQuery(pattern="must not repeat", repos=(REPO,), ref="release/1.0"),
+        SearchQuery(pattern="must not repeat", repos=(REPO,), ref=WORKING_TREE),
         constraints_for(REPO),
     )
-    # `Sequence`, so not `== ()`: the service proxy hands back a list on this path and a tuple
-    # on another, and pinning either would be testing the proxy rather than the seam.
-    assert list(hits) == []
+
+    assert len(hits) == 1
+    assert hits[0].location.ref == "main", "the hit must name the revision it really came from"
+
+
+async def test_it_prefers_the_requested_ref_when_it_has_it(tmp_path: Path) -> None:
+    """Two revisions of one file: asking for one must not quietly mix in the other."""
+    from forgepilot.config import resolve_plugin
+    from forgepilot.kernel import create_root, dispose_fiber
+
+    payload = {
+        "files": [
+            {"repo": "git.corp/team/svc-a", "path": "a.py", "ref": "main", "text": "one\n"},
+            {
+                "repo": "git.corp/team/svc-a",
+                "path": "a.py",
+                "ref": "release/1.0",
+                "text": "two\n",
+            },
+        ]
+    }
+    root = create_root()
+    fiber = await root.plugin(
+        resolve_plugin("forgepilot.providers.retrieve.index:CodeIndexRetrieverPlugin"),
+        {"index_path": str(an_index(tmp_path, payload))},
+    )
+    try:
+        asked = await root.retriever.search(
+            SearchQuery(pattern="o", repos=(REPO,), ref="release/1.0"), constraints_for(REPO)
+        )
+        assert [hit.location.ref for hit in asked] == ["release/1.0"]
+
+        # The fallback is per repo and deterministic, so two runs of one task serve the same
+        # revision rather than whichever the index happened to list first.
+        fell_back = await root.retriever.search(
+            SearchQuery(pattern="o", repos=(REPO,), ref=WORKING_TREE), constraints_for(REPO)
+        )
+        assert [hit.location.ref for hit in fell_back] == ["main"]
+    finally:
+        await dispose_fiber(fiber)
 
 
 async def test_it_re_checks_constraints_itself(
