@@ -165,11 +165,20 @@ directions, which is worth knowing before reading a variant's result:
 
 | arm | switched off | the task that makes it discriminate |
 |---|---|---|
-| `full` | nothing — the baseline | |
+| `full` | nothing — the reference every other arm is compared against | |
+| `baseline` | **all three at once**: no `code_search`, no held oracle, no repair loop | `two-attempts` — it is the loop this arm removes — and any task where search matters. Read the *aggregate* delta from this one |
 | `no-search` | `code_search`; the agent must already know which file to read | `find-the-rule` — eight modules, so enumeration costs something; the signal is **calls**, not pass/fail |
 | `no-pinning` | the oracle is not held fixed, so an edited test decides the check | `bug-fix/weakens-the-test` |
 | `no-repair` | one attempt; a failing check ends the task | `two-attempts` |
 | `tight-window` | a model window small enough that compaction has to work for anything to finish | any task long enough to cross the trigger |
+
+⚠️ **`baseline` is the aggregate control, and it is not a competitor.** Every other
+arm switches one mechanism off; `baseline` switches off all three this harness
+implements and can disable, so it answers what the per-mechanism arms average away:
+*do these earn their place together?* It is what "a generic agent" is made of
+**inside this harness** — not a measurement of anybody else's product. There is no
+Claude-Code arm here and there is not going to be one, which is the same reason the
+design doc's +32% is recorded as unverifiable rather than repeated.
 
 An arm is a project override and at most one patch row. If an arm needs more than
 that, the mechanism is probably not switchable — which is worth knowing too.
@@ -397,7 +406,7 @@ is recorded into every row (`arm_changes`) so a results file carries its own
 evidence:
 
 ```
-full             (nothing — the baseline configuration)
+full             (nothing — the reference every other arm is compared against configuration)
 no-repair        retry: {'max_attempts': 2, ...} -> {'max_attempts': 0, ...}
 no-search        tool_sets: {...} -> {'default': ['read_file'], 'bugfix': ['read_file', 'write_file', 'run']}
 tight-window     patch:llm: None -> {..., 'max_context_tokens': 6000}
