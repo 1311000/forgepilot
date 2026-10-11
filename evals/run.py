@@ -326,6 +326,13 @@ async def main_async(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from forgepilot.console import use_utf8_output
+
+    # The run prints a task's own ticket text in its failure list, which is whatever
+    # the ticket author typed — so this needs the same treatment as the report, and
+    # for the same reason.
+    use_utf8_output()
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--task", action="append", help="repeatable; default is every task")
     parser.add_argument("--arm", action="append", help="repeatable; default is `full`")

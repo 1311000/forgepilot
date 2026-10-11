@@ -163,7 +163,14 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
             if arm != "full" and baseline and passed < base_pass:
                 # ⚠️ The cell the ablation exists to find. `*` rather than a colour
                 # because this has to survive being pasted into a message.
-                mark = "*"
+                #
+                # ⚠️ **Unless every non-pass in the cell is a crash**, in which case
+                # it is marked `!` instead: the cell did drop, and the drop is not
+                # evidence about the arm. Two marks rather than one because they
+                # invite opposite actions — `*` says read this cell, `!` says this
+                # cell says nothing yet and the sweep is one run short.
+                failures = [r for r in group if not r.get("passed")]
+                mark = "!" if failures and all(_is_crash(r) for r in failures) else "*"
             cells.append(f"{f'{passed}/{len(group)}{mark}':>{width}}")
         print(f"{task:<16}" + "".join(cells))
 
@@ -173,6 +180,23 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
         for arm in arms
     ):
         print("\n* = fewer passes than `full` on that task — the cell to read")
+        print("! = fewer passes, and every one of them a crash — the arm is not why")
+
+
+def _is_crash(row: dict[str, Any]) -> bool:
+    """The run fell over rather than the agent failing.
+
+    ⚠️ **A crash is a result, and it is a result about the *infrastructure*.** The
+    105-row sweep has one: `error: ConnectError: [Errno 11001] getaddrinfo failed` —
+    DNS, on a `tight-window` cell, which the matrix then marked with the same `*` as
+    the two cells where the agent genuinely behaved differently. Read together, that
+    says "the arm costs you 5%", and the truth is "one HTTP request in 105 did not
+    resolve".
+
+    `row["error"]` is set by `run_one`'s handler and is the marker of a run that
+    raised rather than one that was scored.
+    """
+    return bool(row.get("error"))
 
 
 def _reasons_of(group: list[dict[str, Any]]) -> dict[str, int]:
@@ -231,6 +255,14 @@ def _print_failures(rows: list[dict[str, Any]]) -> None:
             print(f"    {count}x  {reason}")
         print()
 
+    crashes = [r for r in rows if _is_crash(r)]
+    if crashes:
+        print(
+            f"⚠️ {len(crashes)} of these row(s) did not run at all — `run_one` raised, "
+            f"so nothing about the agent is in them. They are why a cell can drop "
+            f"without the arm being responsible, and `_retry_failed` will re-run them "
+            f"along with everything else that did not pass."
+        )
     print(
         "A reason repeated on every row of a cell is the cell's behaviour; one that "
         "appears once is one run's."
@@ -360,6 +392,15 @@ def _shorten(text: str, limit: int = 150) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from forgepilot.console import use_utf8_output
+
+    # ⚠️ **Before the first `print`, and for the same reason the CLI does it.** With
+    # stdout a pipe Python encodes with the machine's code page, so this report
+    # printed every em dash as `��` for weeks without complaint — and then met a
+    # `⚠️` and died with `UnicodeEncodeError: 'gbk' codec can't encode character
+    # '⚠'`, *after* the table, on a run that had already done all its work.
+    use_utf8_output()
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--latest", action="store_true", help="only the newest result file")
     parser.add_argument("--file", default=None, help="one result file by name")

@@ -78,6 +78,62 @@ def test_the_cell_that_dropped_is_marked(capsys) -> None:
     assert "3/2" not in out
 
 
+def test_a_cell_whose_only_failures_are_crashes_is_not_marked_as_an_arm_effect(
+    capsys,
+) -> None:
+    """⚠️ **The 105-row sweep had exactly one of these.**
+
+    `out-of-scope / tight-window` came back 2/3 and the matrix marked it with the
+    same `*` as two cells where the agent genuinely behaved differently — so the arm
+    table read "tight-window costs 5%", and the third row's reason was
+    `error: ConnectError: [Errno 11001] getaddrinfo failed`. One HTTP request in 105
+    did not resolve.
+
+    `*` and `!` invite opposite actions: read this cell, versus this cell says
+    nothing yet and the sweep is one run short.
+    """
+    report._print_matrix(
+        [
+            row("t", "full", 1, passed=True),
+            row("t", "full", 2, passed=True),
+            row("t", "arm", 1, passed=True),
+            row("t", "arm", 2, passed=False, failures=("error: ConnectError",))
+            | {"error": "ConnectError: getaddrinfo failed"},
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "1/2!" in out, f"a crash was marked as a result about the arm:\n{out}"
+    assert "1/2*" not in out
+    assert "the arm is not why" in out
+
+
+def test_a_mixed_cell_is_still_marked_as_an_arm_effect(capsys) -> None:
+    """One real failure and one crash is a cell that moved — the crash does not
+    excuse the other."""
+    report._print_matrix(
+        [
+            row("t", "full", 1, passed=True),
+            row("t", "full", 2, passed=True),
+            row("t", "arm", 1, passed=False, failures=("checks did not pass",)),
+            row("t", "arm", 2, passed=False, failures=("error: ConnectError",))
+            | {"error": "ConnectError"},
+        ]
+    )
+
+    assert "0/2*" in capsys.readouterr().out
+
+
+def test_crashes_are_called_out_below_the_failure_reasons(capsys) -> None:
+    report._print_failures(
+        [row("t", "arm", 1, passed=False, failures=("error: ConnectError",)) | {"error": "x"}]
+    )
+
+    out = capsys.readouterr().out
+    assert "did not run at all" in out
+    assert "`run_one` raised" in out
+
+
 def test_a_clean_run_does_not_invent_a_failure_section(capsys) -> None:
     """The absence of failures is a fact worth stating, and it is not an empty
     table — an empty table reads as "the section is broken"."""

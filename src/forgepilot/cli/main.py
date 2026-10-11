@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from forgepilot import __version__
+from forgepilot.console import use_utf8_output
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -379,30 +380,6 @@ def _chat(args: argparse.Namespace) -> int:
         return 1
 
 
-def _use_utf8_output() -> None:
-    """Write stdout and stderr as UTF-8.
-
-    A ticket title is whatever the reporter typed, and ``--task`` prints it. When
-    stdout is a pipe — a redirect, a CI log, `| tail` — Python encodes it with the
-    machine's ANSI code page, so a Chinese title arrives as mojibake and a `⚠`
-    arrives as the literal characters ``\\u26a0``. Neither is a rendering choice
-    anyone made; both look like the program is broken.
-
-    ``errors="replace"`` rather than strict: output that cannot be encoded should
-    arrive with a placeholder, not abort a run that has already done the work.
-    """
-
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:  # a stream someone replaced with a plain writer
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):
-            # Already detached, or a closed stream. Not worth failing a command over.
-            pass
-
-
 def _minimum_enforcement(root: Any, args: argparse.Namespace) -> Any:
     """What ``--allow-uncontained-exec`` means, in one place.
 
@@ -678,7 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # precedence over the file.
     from forgepilot.env import load_local_env
 
-    _use_utf8_output()
+    use_utf8_output()
     load_local_env()
 
     parser = _build_parser()
