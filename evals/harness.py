@@ -65,6 +65,12 @@ class EvalTask:
     #: *harness* behaviour — `feature`'s `cheating` variant is the case that
     #: decides whether the oracle pinning is looking at the feature at all.
     variants: dict[str, Any] = field(default_factory=dict)
+    #: Patch rows this task adds to the run. The **only** way a task can change a plugin row
+    #: rather than a `project.yaml` value, and what a task whose answer sits behind a different
+    #: `Retriever` needs. Applied after the example's patch and **before** the arm's, so an arm
+    #: can still override it — see `run_layers` for why that order is the point rather than a
+    #: detail.
+    patches: tuple[dict[str, Any], ...] = ()
 
 
 def load_task(name: str) -> EvalTask:
@@ -97,6 +103,7 @@ def load_task(name: str) -> EvalTask:
         script=tuple(raw.get("script") or ()),
         probes=tuple(raw.get("probes") or ()),
         variants=dict(raw.get("variants") or {}),
+        patches=tuple(raw.get("patches") or ()),
     )
 
 
@@ -323,35 +330,44 @@ def write_project(task: EvalTask, into: Path, *, arm: Any = None):
     return load_project(path)
 
 
-async def boot(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: bool):
-    """Resolve the profile plus the example patch plus the arm, and load it.
+def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: bool):
+    """Every layer this run composes, in order. Pure, so the *order* is testable.
 
-    Three layers, in this order, and each one is a different kind of statement:
+    ⚠️ **The order is the point, not a detail.** Later layers win, and each position is a
+    deliberate statement about who may override whom:
 
-    1. the profile as shipped — bundles, then the user layer;
-    2. `examples/stat-fix/patch.yaml`, by **path**, so the eval runs the same file
-       the README tells a person to run;
-    3. the arm, inline, because an arm is a thing this harness invents for
-       comparison and does not deserve a committed file that looks like
-       deployment config.
+    1. the profile as shipped;
+    2. `examples/stat-fix/patch.yaml`, by path, so the eval runs the same file a person runs;
+    3. **the task's own rows** — what a task needs to change a *plugin row* rather than a
+       `project.yaml` value, e.g. pointing `retriever` at an index instead of a checkout;
+    4. the arm's rows, so **an arm can still override a task**. The arm is the thing under
+       comparison: a task quietly winning over it would make an ablation measure the task;
+    5. the scripted overrides, which must beat everything — a scripted run has to put the replay
+       model back whatever else configured, or it is not offline.
+
+    ⚠️ **Split out of `boot` so this can be asserted without booting anything.** The ordering
+    is the whole mechanism, and a mechanism whose absence produces no visible difference is
+    exactly what the arms taught this file — see `tests/evals/test_a_task_can_add_a_patch_row.py`.
     """
-    from forgepilot.config import apply_layers, compose_layers, load_profile
+    from forgepilot.config import compose_layers, load_profile
     from forgepilot.config.patch import patch_layer_from_mapping
-    from forgepilot.kernel import create_root
 
     profile = load_profile(FORGE / "configs", "default")
     layers = list(
         compose_layers(profile, [FORGE / "examples" / "stat-fix" / "patch.yaml"])
     )
 
+    if task.patches:
+        layers.append(patch_layer_from_mapping(f"--task:{task.name}", list(task.patches)))
+
     if arm_patches:
         layers.append(patch_layer_from_mapping(f"--arm:{task.name}", list(arm_patches)))
 
     if scripted:
-        # Two rows, and both are needed. `user.patch.yaml` swaps in the real
-        # model, so the replay row puts the scripted one back; and the classifier
-        # *also* runs on the model, so without the second row it declines every
-        # ticket and every offline run stops at `awaiting_info` before it starts.
+        # Two rows, and both are needed. `user.patch.yaml` swaps in the real model, so the
+        # replay row puts the scripted one back; and the classifier *also* runs on the model,
+        # so without the second row it declines every ticket and every offline run stops at
+        # `awaiting_info` before it starts.
         rows: list[dict[str, Any]] = [
             {
                 "id": "llm",
@@ -371,6 +387,25 @@ async def boot(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: b
             )
         layers.append(patch_layer_from_mapping("--scripted", rows))
 
+    return profile, layers
+
+
+async def boot(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: bool):
+    """Resolve the profile plus the example patch plus the arm, and load it.
+
+    Three layers, in this order, and each one is a different kind of statement:
+
+    1. the profile as shipped — bundles, then the user layer;
+    2. `examples/stat-fix/patch.yaml`, by **path**, so the eval runs the same file
+       the README tells a person to run;
+    3. the arm, inline, because an arm is a thing this harness invents for
+       comparison and does not deserve a committed file that looks like
+       deployment config.
+    """
+    from forgepilot.config import apply_layers
+    from forgepilot.kernel import create_root
+
+    profile, layers = run_layers(task, arm_patches, scripted=scripted)
     resolved = apply_layers(tuple(layers), profile=profile.name)
     root = create_root()
     await resolved.materialize_async(root)
