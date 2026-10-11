@@ -137,6 +137,29 @@ def _print_attempt_gap(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _routed_away(row: dict[str, Any]) -> bool:
+    """A row the **router** ended before any work happened, on a task that did not want it.
+
+    ⚠️ **Live routing is a model decision, and a model can decline.** `harness.boot` swaps in
+    the fixed classifier only under `--scripted`, so a live run's ticket is classified by the
+    real model — the `understanding:` block in a task file is a replay fixture, not what live
+    uses. When it declines, the run ends `awaiting_info` with no turns and no tool calls, and
+    the row fails however good the agent would have been. Counting that in an arm's pass rate
+    measures the router.
+
+    ⚠️ **`awaiting_info` alone is not the signature**, and testing only the state would hide
+    real results in the other direction: `incomplete` *expects* that state, and its rows pass.
+    Three conditions together are the signature — the state, no work done, and a row the task
+    did not accept. Measured rate when this was written: 1 of 138 live rows.
+    """
+    return (
+        row.get("state") == "awaiting_info"
+        and not row.get("passed")
+        and not row.get("turns")
+        and not row.get("tool_calls")
+    )
+
+
 def _print_arms(rows: list[dict[str, Any]]) -> None:
     """The comparison the arms exist for: the same tasks, one mechanism off."""
     arms: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -153,19 +176,38 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
         )
         return
 
-    print(f"\n{'arm':<16}{'n':>4}{'pass rate':>12}{'median calls':>14}{'median secs':>13}")
-    print("-" * 60)
-    base = arms.get("full", [])
+    print(
+        f"\n{'arm':<16}{'n':>4}{'routed':>8}{'pass rate':>12}"
+        f"{'median calls':>14}{'median secs':>13}"
+    )
+    print("-" * 68)
+    base = [r for r in arms.get("full", []) if not _routed_away(r)]
+    routed_rows: list[dict[str, Any]] = []
     for arm, group in sorted(arms.items(), key=lambda kv: (kv[0] != "full", kv[0])):
-        passed = sum(1 for r in group if r.get("passed"))
-        rate = passed / len(group)
+        routed = [r for r in group if _routed_away(r)]
+        ran = [r for r in group if not _routed_away(r)]
+        routed_rows += routed
+        if ran:
+            rate = sum(1 for r in ran if r.get("passed")) / len(ran)
+            rate_text = f"{rate:>11.0%}"
+        else:
+            rate, rate_text = 0.0, f"{'-':>11}"
         delta = ""
-        if base and arm != "full":
+        if base and arm != "full" and ran:
             base_rate = sum(1 for r in base if r.get("passed")) / len(base)
             delta = f"  ({rate - base_rate:+.0%} vs full)"
         print(
-            f"{arm:<16}{len(group):>4}{rate:>11.0%}{_median([r.get('tool_calls', 0) for r in group]):>14}"
-            f"{_median([r.get('wall_s', 0) for r in group]):>13}{delta}"
+            f"{arm:<16}{len(group):>4}{len(routed):>8}{rate_text}"
+            f"{_median([r.get('tool_calls', 0) for r in ran]):>14}"
+            f"{_median([r.get('wall_s', 0) for r in ran]):>13}{delta}"
+        )
+
+    if routed_rows:
+        named = ", ".join(f"{r['task']}/{r['arm']}/rep{r['rep']}" for r in routed_rows)
+        print(
+            f"\n⚠️ {len(routed_rows)} row(s) were routed away before any work — {named} —\n"
+            f"   and are out of the rates above. A live ticket is classified by the model, so a\n"
+            f"   decline ends the run whatever the agent would have done."
         )
 
 
@@ -227,7 +269,7 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
     print(f"\n{'task':<16}" + "".join(f"{a:>{width}}" for a in arms))
     print("-" * (16 + width * len(arms)))
     for task in tasks:
-        baseline = counts.get((task, "full"), [])
+        baseline = [r for r in counts.get((task, "full"), []) if not _routed_away(r)]
         base_pass = sum(1 for r in baseline if r.get("passed"))
         cells = []
         for arm in arms:
@@ -235,8 +277,13 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
             if not group:
                 cells.append(f"{'-':>{width}}")
                 continue
-            passed = sum(1 for r in group if r.get("passed"))
-            mark = ""
+            # The fraction is over the rows that actually ran. A routed-away row is not one
+            # more failure in the numerator, it is a row that never became evidence — and it
+            # is marked rather than dropped, so the cell accounts for every row in the file.
+            ran = [r for r in group if not _routed_away(r)]
+            routed = len(group) - len(ran)
+            passed = sum(1 for r in ran if r.get("passed"))
+            mark = "r" if routed else ""
             if arm != "full" and baseline and passed < base_pass:
                 # ⚠️ The cell the ablation exists to find. `*` rather than a colour
                 # because this has to survive being pasted into a message.
@@ -246,18 +293,19 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
                 # evidence about the arm. Two marks rather than one because they
                 # invite opposite actions — `*` says read this cell, `!` says this
                 # cell says nothing yet and the sweep is one run short.
-                failures = [r for r in group if not r.get("passed")]
-                mark = "!" if failures and all(_is_crash(r) for r in failures) else "*"
-            cells.append(f"{f'{passed}/{len(group)}{mark}':>{width}}")
+                failures = [r for r in ran if not r.get("passed")]
+                mark = ("!" if failures and all(_is_crash(r) for r in failures) else "*") + mark
+            cells.append(f"{f'{passed}/{len(ran)}{mark}':>{width}}")
         print(f"{task:<16}" + "".join(cells))
 
     if any(
         arm != "full" and len(counts.get((task, arm), []))
         for task in tasks
         for arm in arms
-    ):
+    ) or any(_routed_away(r) for r in rows):
         print("\n* = fewer passes than `full` on that task — the cell to read")
         print("! = fewer passes, and every one of them a crash — the arm is not why")
+        print("r = a row was routed away before any work — it is not in that fraction")
 
 
 def _is_crash(row: dict[str, Any]) -> bool:
