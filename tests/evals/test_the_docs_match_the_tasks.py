@@ -74,3 +74,24 @@ def test_the_readme_does_not_hand_count_the_task_set() -> None:
         f"the count is {len(H.available_tasks())} today and was wrong in four files "
         f"the last time it changed"
     )
+
+
+def test_the_front_door_points_at_the_authority_instead_of_restating_it() -> None:
+    """⚠️ **`README.md` said「业务代码尚未开始」while a thousand tests passed.**
+
+    Nothing read that file, so nothing could catch the drift — it was invisible until a person
+    happened to open it, and it is the first thing a newcomer reads. The repair is structural
+    rather than a fresher sentence: the front door no longer restates status at all. It names
+    the one maintained list (`CLAUDE.md`'s State of the work) and the commands that re-derive
+    the facts for themselves.
+
+    Deliberately narrow, in the same spirit as the count guard above: this checks that the
+    **pointer** is there, not what the section says. A test over prose would be either brittle
+    or vacuous, and the failure it guards against is a second list, not a wrong adjective.
+    """
+    front = (FORGE / "README.md").read_text(encoding="utf-8")
+
+    assert "State of the work" in front, (
+        "README.md must point at CLAUDE.md's State of the work rather than restating it: it "
+        "once claimed the business code had not started, a thousand passing tests later"
+    )
