@@ -743,11 +743,15 @@ def base_paths(repo: Path) -> frozenset[str]:
 
 
 #: Absolute paths, in the two shapes a shell command can carry them.
-#: ⚠️ `_ABSOLUTE_POSIX` demands **two** separators on purpose: `dir /s /b` is a
-#: Windows command with two switches, and a one-separator rule reads `/s` and `/b`
-#: as paths. Every POSIX path worth flagging has a second slash; a switch does not.
+#: ⚠️ The POSIX pattern accepts a **single** separator, and leans on
+#: `_ways_out`'s project-membership test to reject a switch: `/s` and `/src` are
+#: spelled alike and no shape rule can tell them apart, but only one of them is
+#: under the checkout. The earlier rule demanded two separators — which made every
+#: checkout at a top-level path (`/src`, `/app`, `/repo`: the ordinary container
+#: shape, and what the Linux gate run used) invisible to this detector. Measured,
+#: not inferred: `cd /d "/src" && dir /s /b` was reported by nothing.
 _ABSOLUTE_WINDOWS = re.compile(r"[A-Za-z]:[\\/][^\s\"'|&;)]*")
-_ABSOLUTE_POSIX = re.compile(r"/[^\s\"'|&;)]+/[^\s\"'|&;)]*")
+_ABSOLUTE_POSIX = re.compile(r"/[^\s\"'|&;)]+")
 
 
 def _ways_out(command: str, *, project: Path, allowed: tuple[Path, ...]) -> list[str]:

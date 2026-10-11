@@ -57,6 +57,23 @@ def test_a_command_that_cds_into_the_project_is_caught() -> None:
     assert str(FORGE) in found[0]
 
 
+def test_a_checkout_at_a_top_level_path_is_still_caught(tmp_path: Path) -> None:
+    """A container checkout is `/src`, one slash, and the rule used to need two.
+
+    That made the detector blind for exactly the shape the Linux gate run used:
+    the command was reported by nothing. `/s` in `dir /s /b` is spelled like
+    `/src`, so shape cannot separate them — membership of the project can, and
+    that is the test this pins.
+    """
+    # `project` is resolved by the caller in production (`FORGE.resolve()`), and the
+    # comparison is against resolved matches — so a test that passes an unresolved
+    # path would be comparing `/src` with `D:\src` and proving nothing.
+    project = Path("/src").resolve()
+    reasons = H._ways_out("cd /d /src && dir /s /b", project=project, allowed=(tmp_path,))
+    assert reasons, "a checkout at a top-level path was not caught"
+    assert not H._ways_out("dir /s /b", project=project, allowed=(tmp_path,))
+
+
 def test_a_command_that_names_a_solution_is_caught() -> None:
     solution = FORGE / "evals" / "tasks" / "out-of-scope" / "solution" / "metrics.py"
     found = findings_for(f'type "{solution}"')
