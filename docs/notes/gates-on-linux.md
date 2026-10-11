@@ -213,6 +213,13 @@ there. Trigger: `push` on `main`. Run:
 | `check` | `ruff check .` clean; **`1053 passed, 217 skipped in 27.54s`**; TOTAL 7718 statements, **922 missed, 88.05%**; `Required test coverage of 85.0% reached.`; `All gates passed.` |
 | `sandbox` | 8/8 steps. `tests/providers/test_namespace_sandbox_container.py` → **`2 passed in 3.90s`**. `--sandbox-check`: default profile → `claim read_scope: not declared`, `probe none`, `required full`, `shell refused, nothing executed`, exit 1 (asserted by the step); privileged `ubuntu:24.04` → `claim read_scope: host`, `probe full`, `shell ran, exit code 0`, `result OK`. `tests/providers/test_namespace_sandbox.py` → **`31 passed, 1 skipped`** |
 
+**Run [38139967155](https://github.com/1311000/forgepilot/actions/runs/38139967155) is the one
+that carried this section, and it reproduced every number above** — `1053 passed, 217 skipped
+in 33.24s`, 88.05%, `All gates passed.`, the container `2 passed in 2.71s`, the native
+`31 passed, 1 skipped` with the same reason line, and the same two `--sandbox-check` verdicts.
+Quoting a single green run would leave the ordinary question open — whether it was the tree or
+the day — so the second one is recorded beside it.
+
 ⚠️ **The two runs skip the same number of tests, and that is not agreement.** This box reports
 `1053 passed, 217 skipped` as well — the counts match, the *sets* do not: here the container
 and namespace suites skip for want of a Linux kernel, while the `check` job names no
