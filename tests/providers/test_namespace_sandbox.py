@@ -306,18 +306,42 @@ async def test_a_write_outside_the_workspace_is_refused() -> None:
     directory: a namespace on that kernel cannot bind a path its own mount table
     has never heard of, and `/mnt/c/...` is a different filesystem with different
     permissions semantics.
+
+    ⚠️ **The preparation happens *after* the probe, and here the order is the whole
+    difference between a skip and a crash.** It used to run first, and `wsl` exists
+    only on the host where this test is *skipped* — on the host that runs it,
+    `subprocess.run(["wsl", …], check=True)` raised `FileNotFoundError` before the
+    guard written to handle exactly that case could answer. The test could not pass
+    anywhere, and — worse for the job it exists to do — it could not say *why*
+    either. Read, not measured: the first Linux run is what confirms the reason
+    line names the transport rather than the kernel.
     """
     workspace = Path("/tmp/forgepilot-sandbox-test")
-    subprocess.run(
-        ["wsl", "-d", "docker-desktop", "--", "mkdir", "-p", workspace.as_posix()],
-        capture_output=True,
-        check=True,
-    )
 
     async for plugin in _load({"enter": wsl_enter()}):
         if plugin.probe() is not SandboxEnforcement.FULL:
-            pytest.skip("the WSL distro cannot create namespaces on this host")
+            pytest.skip(
+                "no namespace boundary on this host: the transport "
+                f"{wsl_enter()[0]!r} is missing, or it cannot create namespaces for "
+                "this user (see `_probe_now`)"
+            )
 
+        # Reachable only where the transport exists, so this call's precondition is
+        # the guard above rather than an assumption about which host is running.
+        subprocess.run(
+            ["wsl", "-d", "docker-desktop", "--", "mkdir", "-p", workspace.as_posix()],
+            capture_output=True,
+            check=True,
+        )
+
+        # ⚠️ Two things about this step are **read, not measured**, and both have to
+        # be settled before this test can pass on a host whose probe says `FULL`:
+        # the writable mount is `policy.workspace_root` — `/srv/checkouts/svc-a`,
+        # unconditionally bound (`namespace.py:116`) — while the cwd written to
+        # below is `/tmp/forgepilot-sandbox-test`; and `/tmp` is replaced by a fresh
+        # tmpfs last (`namespace.py:129`), which hides anything prepared under it and
+        # makes the launcher's `cd` exit 126. So the first real run of this test
+        # measures its own setup as much as the boundary.
         inside = await plugin.run(
             ["sh", "-c", "echo ok > inside.txt && cat inside.txt"],
             policy=policy(SandboxMode.WORKSPACE_WRITE),
