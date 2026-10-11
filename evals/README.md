@@ -570,6 +570,48 @@ fails exactly as documented (`no-repair` on `two-attempts`, on the **checks**), 
 variant fails on the **probe** alone. `feature`'s older `cheating` variant is untouched — its
 checks fail, and the probe clause is deliberately not consulted in that state.
 
+**15. The live sweep of the two new probes answered one question, refused another, and found a
+defect in the session store.** Twelve rows, `full` and `baseline` on `feature` and
+`two-attempts`:
+
+```
+feature      full 3/3   baseline 3/3      -> the probe never fired; every run implemented the rule
+two-attempts full 2/3   baseline 3/3      -> the one failure was NOT the agent's
+```
+
+- **`feature`'s probe did not discriminate, and that is still a result.** Before it, this
+  task's `checks` were nearly vacuous, so *nothing* could be said about whether a live model's
+  `median` was right. Six runs later the statement is "measured, and correct on inputs it was
+  never shown" — an unanswerable question turned into an answered one, which is what a probe is
+  for when it is not catching anything. **A probe that never fires is not a probe that failed.**
+- ⚠️ **`two-attempts` rep 2 failed with `awaiting_info`, 0 turns, 0 tool calls — a router
+  decline, not an agent failure.** `harness.boot` adds the fixed classifier **only under
+  `--scripted`**, so in live mode **the real model also decides the ticket's routing**, and the
+  `understanding:` block in a task file is a replay fixture rather than what live uses. When it
+  declines, the row fails no matter how good the agent is.
+
+  Measured rate, so nobody over-reads it: **1 of 138 live rows** (0.7%), and **0 of 108
+  non-`incomplete` rows** in the 126-row sweep — the same `two-attempts` ticket routed fine
+  18 times out of 18 there. Rare, but structural, and the reading rule is: **an `awaiting_info`
+  row measures the router, not the run.** An arm's pass rate currently folds it in.
+
+- ⚠️ **And chasing that empty log found a real defect in shipped code: a session id was not an
+  identity.** `runtime/assembly.py` built ids as `session-<UTC stamp>` with **no unique
+  component**, while `httpapi/routes.py` had used `<stamp>-<uuid4().hex[:8]>` all along. Two
+  sessions in the same second therefore shared an id, and the store opens in **append** mode —
+  so nothing was truncated and nothing was lost: **two sessions' event streams interleaved in
+  one file**, and reading by id returned a mixture. Evidence: eighteen `awaiting_info` rows
+  inside a 4.5-second window left **four** files; three sequential 0.2s eval runs left **two**.
+  Fixed by extracting `new_session_id()` with the same shape the HTTP path uses.
+
+  ⚠️ **The first hypothesis was wrong and is worth recording.** The `awaiting_info` return in
+  `run_task` is the only one without an `await session.flush()` beside it — every other return
+  has one, one of them with a comment explaining why — so "a missing flush" looked certain. It
+  is not: `plan_task` takes no session and appends nothing, and `evals/run.py` returns *before*
+  calling `run_task` at all. An empty log on that path is by construction, and the flush would
+  have been a no-op that looked like a fix. What settled it was an isolation run — three
+  `awaiting_info` runs, sequentially, no concurrency, 0.2s each — rather than the pattern.
+
 ## Reading the output
 
 ```

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from forgepilot.identity.policy import policy_listener
 from forgepilot.identity.scope import RequestScope
@@ -33,7 +34,26 @@ from forgepilot.seams.refs import SessionId
 from forgepilot.seams.security import ExecutionConstraints, Principal
 from forgepilot.seams.session import SessionHeader
 
-__all__ = ["SessionRuntime", "assemble_session"]
+__all__ = ["SessionRuntime", "assemble_session", "new_session_id"]
+
+
+def new_session_id() -> SessionId:
+    """A session id that is an **identity**, not a timestamp.
+
+    ⚠️ **The stamp alone was not unique, and the file it names *is* the session.** Two
+    sessions opened in the same second produced the same `SessionId`, so the durable store
+    — which opens in append mode and therefore does not truncate — put both event streams
+    in one file, and reading by id returned a mixture of two sessions. `routes.py` had
+    carried a random suffix all along; this path had not.
+
+    The difference is invisible until two runs start inside the same second, which is
+    exactly what a batch of fast CLI runs does. Measured before the fix: three sequential
+    eval runs of 0.2s each left **two** session files, and eighteen `awaiting_info` rows
+    inside a 4.5-second window left **four**.
+    """
+    return SessionId(
+        f"session-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
+    )
 
 
 @dataclass
@@ -84,9 +104,7 @@ async def assemble_session(
             "and a policy keyed on teams would silently see an empty set."
         )
 
-    resolved_id = session_id or SessionId(
-        f"session-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
-    )
+    resolved_id = session_id or new_session_id()
     store = root.sessionPersistence
     try:
         session = await Session.open(store, resolved_id)
