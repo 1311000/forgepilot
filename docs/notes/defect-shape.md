@@ -64,7 +64,7 @@ about; qualify it or use "repo host".
 
 ## The repeated defect shape, and where it has actually appeared
 
-Six times now, in this codebase: **a field that looks enforced and is not.** It is
+Fourteen rows now, in this codebase: **a field that looks enforced and is not.** It is
 worth recognising on sight, because the cost is not the missing check — it is that
 everything downstream behaves as though the check happened.
 
@@ -92,6 +92,22 @@ It has one now, and `pull_request_payload` passes it through, so it moved from t
 table's "gap" column to "enforced". The distinction is worth keeping: a field with
 no consumer *because the consumer does not exist* is a gap; a field with a consumer
 that ignores it is a defect.
+
+**Twice the shape appeared in a document rather than a field, and both are pinned by
+`tests/contract/test_the_workspace_instructions_fit_the_budget.py` now.**
+
+- **`CLAUDE.md` was 188315 bytes while a harness injects the first 65536.** The
+  repository's most authoritative document was read up to a mid-paragraph point, and the
+  reader had no way to tell — the file read as authoritative while two thirds of it never
+  arrived. Fixed by the split into this directory, and the budget is a test, not a
+  resolution: a *note nobody reads* and a *rule nobody can find* are the same failure.
+- **`docs/实现方案.md` (30 KB, the implementation plan) sat in the tree for the whole
+  project and no instruction named it**, beside `ForgePilot文档.md` — which the front door
+  did name. Two Chinese design documents, one referenced and one not, with nothing saying
+  how they relate; the obvious reading was that the named one was the only one. The guard
+  now fails on an orphan document, and on a reference to a path that is not there, which
+  is the failure mode the split *created*: a front door that is mostly pointers is one
+  where a rename leaves a reader following a dead end.
 
 ⚠️ **`PolicyService.decide()` was the largest one — a whole service rather than a
 field, wired at P1-9.** For most of this project's life `grep -rn "\.decide("
