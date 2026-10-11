@@ -35,7 +35,7 @@ dev = [
     # produced a hit. So the tests need the real thing, and this is where a
     # development machine gets it. A deployment installs ripgrep its own way.
     "ripgrep-bin>=14.0",
-    # The gates. `scripts/check.py` runs `ruff check` and `pytest --cov`, and both
+    # The gates. `tools/check.py` runs `ruff check` and `pytest --cov`, and both
     # tools are declared here rather than installed ad hoc: a gate that only works on
     # the machine where somebody happened to `pip install` it is not a gate, and that
     # is the same shape as the undeclared `httpx` this file already records.
@@ -85,7 +85,7 @@ asyncio_mode = "auto"
 filterwarnings = ["error::RuntimeWarning"]
 
 # ---------------------------------------------------------------------------
-# The gates. One command runs all of them: `python scripts/check.py`
+# The gates. One command runs all of them: `python tools/check.py`
 # ---------------------------------------------------------------------------
 # ⚠️ **These are configured explicitly rather than inherited**, and that is not a
 # formality: this tree reports **354 findings** under ruff's own defaults, so an

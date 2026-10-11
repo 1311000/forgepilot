@@ -1,7 +1,15 @@
 """Every gate, in one command. Run this; CI runs this.
 
-    python scripts/check.py             # every gate
-    python scripts/check.py --format    # also check formatting (see below)
+    python tools/check.py             # every gate
+    python tools/check.py --format    # also check formatting (see below)
+
+⚠️ **This lives in `tools/` rather than `scripts/`, and the difference is not cosmetic.**
+On a case-insensitive filesystem — every Windows checkout — a `scripts/` directory here
+*is* the `Scripts/` directory a deployment may already have. That is not a theory: adding
+`scripts/` swept a pre-existing `Scripts/A.bat` into the same local directory, where
+Explorer shows one folder and Linux would build two, and where `git add scripts` is a
+pathspec that reaches files nobody meant to stage. `tools/` collides with neither, so the
+name is chosen for the platform trap rather than for taste.
 
 ⚠️ **CI calls this file rather than repeating the commands**, for the same reason
 `config.apply_layers()` is the single composition function: two lists of commands
