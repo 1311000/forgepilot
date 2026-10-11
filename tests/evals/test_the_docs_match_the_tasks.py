@@ -9,8 +9,10 @@ Four places had the same stale count, all written when there were four tasks:
 
     evals/README.md:3    "Four tasks, five arms, one JSONL per run."
     evals/README.md:26   "~4 seconds for all four tasks"
-    CLAUDE.md:195        "`evals/` — four task shapes, five arms, ..."
-    CLAUDE.md:819        "Four tasks, five arms, one JSONL row per attempt."
+    CLAUDE.md (was :195, now docs/notes/evals.md)
+                         "`evals/` — four task shapes, five arms, ..."
+    CLAUDE.md (was :819, now docs/notes/evals.md)
+                         "Four tasks, five arms, one JSONL row per attempt."
 
 The substantive half of that claim — **that every task is documented** — is
 checkable, so it is checked here. A prose count will drift again; a missing table row

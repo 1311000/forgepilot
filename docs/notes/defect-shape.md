@@ -1,0 +1,116 @@
+# The repeated defect shape, and the seam table this project diverged from
+
+> **This file was split out of `CLAUDE.md` deliberately.** The harness injects only the first
+> 65536 bytes of the front door, so `CLAUDE.md` keeps the *rules* and this file keeps the
+> *evidence*: what was measured, what went wrong, and what it cost. Nothing injects it
+> automatically — **read it before adding a field, flag or capability that is supposed to be enforced**.
+>
+> `CLAUDE.md` names this file in its "Where the rest lives" table; that is the link back.
+
+## ⚠️ Divergence from the design doc's seam table (P1-2)
+
+The doc's seam table puts `create_branch` / `commit` on **`vcs`**:
+
+```
+| `vcs`       | ensure_mirror() / create_branch() / commit() / push() / open_pull_request() / diff() |
+| `workspace` | prepare() / diff() / changed_paths() / dispose()   ← GitWorktreeWorkspacePlugin（每会话一个 worktree）
+```
+
+That table does not survive contact with `commit`'s own signature:
+`commit(repo, branch, message, author, constraints)` **takes no path**, and the
+workspace it must commit is a different object from the repository it names. The
+mock hid this because it fabricates shas and never touches a tree.
+
+**Decision (P1-2, done): a session's working tree belongs to `workspace`, so the
+local git operations on it do too.** `workspace` is a real per-session
+`git worktree` — which the doc's own tree already asks for
+(`workspace/ git_worktree.py(先行)`) — and `vcs` keeps only what needs a remote:
+`ensure_mirror`, `push`, `open_pull_request`. Two reasons this is the right split
+rather than a convenience: it matches how the two things actually differ (a local
+checkout vs a service that owns state), and it is the split the doc's *file tree*
+already implies even though its table does not.
+
+What the move cost, and what it bought:
+
+- **`Workspace.commit(handle, message, author, constraints)`** — the one
+  `Workspace` method that takes constraints, because it is the one that writes
+  version-control history rather than rearranging a directory. The
+  `allows_repo` / `write_code` checks that used to live on `vcs.commit` moved with
+  it; losing them in the move would have been the easy mistake.
+- **`vcs.create_branch` is gone, not moved.** `prepare()` already checks the tree
+  out *onto* a branch, so the old call was creating a second name for a branch
+  that already existed — the sort of thing that only looks reasonable while
+  nothing is real.
+- **`LocalTempWorkspacePlugin.commit` refuses** (`NotARepository`). It is a
+  directory, not a repository; a fabricated sha would look like delivery, land in
+  the session log as evidence, and be undetectable downstream.
+- **The mock's `push` had to change.** It refused a branch it had not seen
+  created — an artefact of `vcs` owning branch creation. Pushing a new branch is
+  precisely how a remote learns about it, so the old check modelled the wrong
+  thing.
+- **`CommitAuthor` moved to `seams/refs.py`**, next to `CommitRef`: both seams
+  produce commits, and a working tree that must import the remote-host seam to
+  name an author has the dependency backwards.
+- **`tests/conftest.py::make_origin_repo`** builds a real repository for the task
+  rig. The task and review suites now run against real git end to end — branch,
+  commit and worktree — which is what made the seam change verifiable at all.
+
+**Vocabulary: 「宿主」 is taken.** In this codebase 宿主 means *the machine*
+("a fact about **the host**", "host state"). The remote service that owns
+repositories and pull requests is the **repo host** — which
+`seams/vcs.py`'s docstring already calls it, and which `RepoRef.host` names.
+Using 宿主 for both is exactly the ambiguity the Guard glossary entry warns
+about; qualify it or use "repo host".
+
+## The repeated defect shape, and where it has actually appeared
+
+Six times now, in this codebase: **a field that looks enforced and is not.** It is
+worth recognising on sight, because the cost is not the missing check — it is that
+everything downstream behaves as though the check happened.
+
+| Field | What was wrong |
+|---|---|
+| `ToolDefinition.required_operation` | recorded, snapshotted, shown in `--dump-config`, consulted by nothing |
+| `Provenance.evidence_refs` | docstring said "no evidence ⇒ not a memory"; only `kind` was checked |
+| `MemoryRecord` audience | `scope_ref` and `provenance.repo` treated as interchangeable; the wrong one was checked |
+| `SandboxExecutionPolicy.mode` | accepted and never read (fixed — `PolicyNotEnforceable`) |
+| `PullRequestDraft.draft` | set in one place, read in none, while the code did the opposite |
+| `Vcs.capabilities()` | declared by every provider, read by nothing |
+| `ResourceTargets.commands` | extracted by the `run` tool's `describe_targets`, read by no guard — the guards look at `repos` and `paths` only |
+| `_narrowed_paths` | a **filter** where the operation is an **intersection** — a grant of `"."` behind a project limited to `src/` produced *nothing writable*. Fixed at P1-11; every existing test used the same set on both sides, which is the one case the two agree on |
+| `UsageTracker.cost_usd` / `wall_seconds` | the budget guard read both; **nothing wrote either, on any path**. Two of four budget dimensions were unreachable limits. Fixed — see `docs/notes/agent-loop.md` |
+| `ForgePilotAgent.tracker` | `field(default_factory=UsageTracker)` and `create()` never passed one, so the loop counted into the agent's private tracker while the **guard** watched the scope's. The per-step check in `turn.py` used the agent's and worked, which is why it looked fine |
+| `max_steps` | checked one iteration **early** (`if step == max_steps - 1: break`), so it yielded `max_steps - 1` steps — `DEFAULT_MAX_STEPS = 12` meant 11. And `run_task` never passed it, so a profile's ceiling reached chat but not task mode |
+| ~~`PolicyService.decide()`~~ | the whole service was unwired — **wired at P1-9**; see `docs/notes/task-delivery.md` |
+| `SandboxExecutionPolicy.network` | accepted and never read, **one branch over from `mode`**. It defaults to `DENY`, every caller threads its constraints through (`builtin.run`, `repair.run_checks`), and the model's scope section stated `Network: deny` — while `local.py` spawned the command with an unrestricted network reach. Fixed at P4-1; see `docs/notes/sandbox.md`. ⚠️ **This one is worse than the others in the table**, because the false statement was made *to the model*, which then reasoned from it |
+| `Plan.repos` / `plan.repos[0]` | `plan_task` filled the plan with **every** repository the ticket named (and, when it named none, with every repository the project declared) while `run_task` executed against `repos[0]`. A two-repository ticket was fixed in one of them and reported `READY` / `DELIVERED`. ⚠️ The worst instance of the shape so far, because the discarded half of a *cross-repository* change is exactly what nobody goes to look at. Fixed at P5-2; see `docs/notes/task-delivery.md` |
+
+`capabilities()` is now load-bearing: `run_task` consults it before opening a pull
+request. `PullRequestDraft.draft` was a **known** absence rather than an oversight —
+a flag for a repo-host provider to send upstream, and there was no host provider.
+It has one now, and `pull_request_payload` passes it through, so it moved from the
+table's "gap" column to "enforced". The distinction is worth keeping: a field with
+no consumer *because the consumer does not exist* is a gap; a field with a consumer
+that ignores it is a defect.
+
+⚠️ **`PolicyService.decide()` was the largest one — a whole service rather than a
+field, wired at P1-9.** For most of this project's life `grep -rn "\.decide("
+src/` returned nothing, and the `policy` row's `default` and
+`ask_operations: [open_pr]` were read by a function nothing invoked. What actually
+enforced authority was `ExecutionConstraints` plus the guards plus
+`ToolDefinition.required_operation` — and those work — while the finer-grained
+per-operation allow/ask/deny design was built, tested to the letter and never
+connected. See `docs/notes/task-delivery.md`.
+
+`ResourceTargets.commands` is the same kind of **gap**: nothing reads it, because
+**there is no command guard** — `permitted_operations` decides whether `run` may
+execute at all, and no policy anywhere constrains *which* commands. That is a
+policy feature nobody has asked for, not an oversight. It matters here only
+because `run` now reaches a shell: if a deployment ever wants a command
+allow-list, this is the field it reads, and it will need the shell to be part of
+what it inspects rather than a wrapper it never sees.
+
+
+## Unverified claim in the design doc
+
+The doc cites a **+32% end-to-end delivery-success improvement** over a generic Claude Code workflow. The doc itself concedes the eval platform/version, success criteria, sample size, comparison conditions, and whether 32% is relative or percentage-points are all unspecified, and that it does not establish the current design achieved it. **Do not repeat this number in any material** until it is something we measured ourselves. Design decisions here are justified by invariants and threat models, not by an expected lift.
