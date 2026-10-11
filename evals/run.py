@@ -227,23 +227,43 @@ async def run_one(
             # would miss exactly the buffer a crash leaves behind. `session.events`
             # is the whole in-memory log.
             try:
-                row["left_the_workspace"] = list(
-                    H.tool_calls_that_left_the_workspace(
-                        runtime.session.events,
-                        # The scratch *root*, not this attempt's directory. Sibling
-                        # attempts hold other tasks' fixtures and no answers, so
-                        # allowing them costs nothing and removes a whole class of
-                        # false positive — a command that navigates within the
-                        # scratch area is not what this is looking for.
-                        scratch=H.scratch_root(),
-                        interpreter=sys.executable,
-                    )
+                calls = H.calls_outside_the_workspace(
+                    runtime.session.events,
+                    # The scratch *root*, not this attempt's directory. Sibling
+                    # attempts hold other tasks' fixtures and no answers, so
+                    # allowing them costs nothing and removes a whole class of
+                    # false positive — a command that navigates within the
+                    # scratch area is not what this is looking for.
+                    scratch=H.scratch_root(),
+                    interpreter=sys.executable,
+                    # ⚠️ `contain` is a claim about the **boundary**, and it decides whether
+                    # any of these can be an escape. The containment layer pins the
+                    # namespace sandbox with `read_scope: workspace`, and that provider
+                    # refuses to execute unless its own probe verifies the claim — so a
+                    # command that ran under it could not have read the eval's material:
+                    # the material is **absent**, not read-only. Measured, because exit
+                    # codes cannot see the difference: `ls -la /eval/` exits 0 and lists an
+                    # empty mask. Uncontained rows keep the effect-aware verdict.
+                    reads_confined=contain,
                 )
+                # Both keys, on purpose. `left_the_workspace` is every **attempt** — it
+                # is what this detector has always recorded, and the attempt is worth
+                # reading on its own (under a boundary that confines reads, an attempt
+                # that was refused is evidence the agent *stayed* inside). Only
+                # `escaped_workspace`, the attempts that got something, may take the
+                # row out of the report: a command that printed nothing is not a reason
+                # to discard the row. See finding 21.
+                row["left_the_workspace"] = [call.describe() for call in calls]
+                row["escaped_workspace"] = [call.describe() for call in calls if call.escaped]
             except Exception as exc:  # noqa: BLE001
                 # Recorded as a finding, not swallowed. A detector that broke and
                 # reported nothing would be indistinguishable from a clean run —
                 # which is the failure this whole mechanism exists to stop.
                 row["left_the_workspace"] = [f"detector failed: {type(exc).__name__}: {exc}"]
+                # The *effect-aware* key too: a broken detector must leave the row
+                # aside rather than scorable, or the defect would quietly turn every
+                # contaminated row into a pass rate.
+                row["escaped_workspace"] = list(row["left_the_workspace"])
             try:
                 await runtime.close()
             except Exception:  # noqa: BLE001
@@ -252,6 +272,7 @@ async def run_one(
     row.setdefault("changed", [])
     row.setdefault("pinned", [])
     row.setdefault("left_the_workspace", [])
+    row.setdefault("escaped_workspace", [])
     row.setdefault("check_verdicts", [])
     # The held-out probes, run against the tree the agent left behind. Defaulted
     # rather than left absent so `score` can tell "this task holds nothing out"

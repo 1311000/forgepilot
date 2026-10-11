@@ -161,7 +161,7 @@ def _routed_away(row: dict[str, Any]) -> bool:
 
 
 def _escaped(row: dict[str, Any]) -> bool:
-    """A row whose agent ran shell commands **outside the checkout**.
+    """A row whose agent ran shell commands outside the checkout **and got something**.
 
     ⚠️ **`score` already says what such a row is worth**, in its own words: *"so nothing in this
     row is evidence about the agent"*. Counting it as an agent failure therefore measures the
@@ -173,7 +173,17 @@ def _escaped(row: dict[str, Any]) -> bool:
     `dir /s /b …\\.forgepilot | findstr /i "contract index"`, and once into the session logs.
     **Three of three `no-search` rows did it**, which is the behaviour, not a coincidental reason
     string.
+
+    ⚠️ **Since finding 21 this is the *effect*-aware key, not every attempt.** With the boundary
+    confining reads the same three rows still tried (`ls -la /eval`, `nslookup git.local`,
+    `git clone http://git.local/…`) and were refused, and this function, reading the attempt,
+    marked all three aside — which is the opposite of what they show: a command that was refused
+    is evidence the agent *stayed* inside the boundary. `escaped_workspace` is computed from each
+    flagged call's paired `tool/result`; the attempt-only key is still read for the rows recorded
+    before it existed.
     """
+    if "escaped_workspace" in row:
+        return bool(row.get("escaped_workspace"))
     return bool(row.get("left_the_workspace"))
 
 
@@ -181,8 +191,10 @@ def _aside(row: dict[str, Any]) -> bool:
     """A row that is not evidence about the agent — two causes, and they read differently.
 
     `routed away`: the classifier declined, so no work happened and the router is what failed.
-    `left the checkout`: work happened, and the agent went outside the workspace for something, so
-    the row says the sandbox was probed rather than that the task was solved or not.
+    `left the checkout`: work happened, and the agent went outside the workspace **and got
+    something**, so the row says the sandbox was probed rather than that the task was solved or
+    not. An attempt the boundary refused is not this: it is a row that says the agent tried and
+    stayed inside, and it is scored.
     """
     return _routed_away(row) or _escaped(row)
 
@@ -443,9 +455,37 @@ def _print_failures(rows: list[dict[str, Any]]) -> None:
             f"without the arm being responsible, and `_retry_failed` will re-run them "
             f"along with everything else that did not pass."
         )
+    _print_probes(rows)
     print(
         "A reason repeated on every row of a cell is the cell's behaviour; one that "
         "appears once is one run's."
+    )
+
+
+def _print_probes(rows: list[dict[str, Any]]) -> None:
+    """Rows that reached outside the checkout and **got nothing** — the boundary held.
+
+    ⚠️ **Without this line the number is silent about the most interesting thing in the
+    cell.** Since finding 21 an attempt the boundary refused does not disqualify its row
+    (it is evidence the agent stayed inside), and `escaped_workspace` is what the aside
+    mark reads — so a cell full of boundary probes looks exactly like a cell where the
+    agent simply failed. Measured: the three contained `no-search` rows probed 19, 41
+    and 10 times each and got through zero times, which is the finding 20 hole closed
+    and not merely a task the model could not do.
+    """
+    probed = [
+        row
+        for row in rows
+        if row.get("left_the_workspace") and not row.get("escaped_workspace")
+    ]
+    if not probed:
+        return
+    counts = ", ".join(str(len(row["left_the_workspace"])) for row in probed)
+    print(
+        f"\nThe boundary was probed and held: {len(probed)} row(s) ran shell commands "
+        f"outside the checkout and none of them got through ({counts} command(s) each). "
+        f"Under a boundary that confines reads an attempt is not contamination — it is "
+        f"the agent finding out where the answers are not."
     )
 
 

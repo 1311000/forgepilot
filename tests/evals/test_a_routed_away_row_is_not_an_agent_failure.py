@@ -137,6 +137,33 @@ def test_escaping_the_checkout_is_the_second_cause() -> None:
     assert report._aside(a_row_that_escaped(arm="no-search", rep=1, passed=False)) is True
 
 
+def test_a_boundary_probe_that_held_is_printed_rather_than_hidden(capsys) -> None:
+    """Since finding 21 an attempt the boundary refused does not disqualify its row.
+
+    ⚠️ The row is then scored, and the cell prints a pass rate — so without this line the
+    most interesting fact about it is invisible: three contained `no-search` rows probed the
+    boundary 19, 41 and 10 times and got through zero times, which is the hole closed and not
+    a task the model merely failed.
+    """
+    row = a_row(arm="no-search", rep=1, passed=False, state="failed", turns=3, tool_calls=34)
+    row["left_the_workspace"] = ["seq 44: references '/eval' :: ls -la /eval/"]
+    row["escaped_workspace"] = []
+    report._print_failures([row])
+    out = capsys.readouterr().out
+
+    assert "boundary was probed and held" in out
+    assert "(1 command(s) each)" in out
+
+
+def test_a_row_that_got_through_is_not_reported_as_a_held_boundary(capsys) -> None:
+    row = a_row_that_escaped(arm="no-search", rep=1, passed=False)
+    row["escaped_workspace"] = list(row["left_the_workspace"])
+    report._print_failures([row])
+    out = capsys.readouterr().out
+
+    assert "boundary was probed and held" not in out
+
+
 def test_a_row_that_left_the_checkout_does_not_lower_the_arms_rate(capsys) -> None:
     # Two arms, because the table is a comparison and `_print_arms` returns early on one.
     report._print_arms(

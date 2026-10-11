@@ -276,12 +276,18 @@ Closing the route meant a boundary that confines **reads**, and it has since bee
 every top-level entry the boundary does not name becomes an empty `tmpfs`, the claim is
 opt-in (`ReadScope.WORKSPACE`) because it costs something, and `probe()` verifies *that*
 claim with a read rather than a write. The measured effect on this task, in the same
-`--privileged ubuntu:24.04` container: `full` **1/1 pass** (13 calls) and every `no-search`
-row **failed with the file unchanged**, where finding 20 had all three `ready` with the
-held-out probe satisfied. What the sweep still cannot print is the *rate*, and that is now
-the instrument's fault rather than the boundary's: `left_the_workspace` flags the attempt,
-not the success, so an attempted read the boundary refused still disqualifies its own row.
-See finding 21.
+`--privileged ubuntu:24.04` container: `full` **1/1 pass** (8–13 calls) and every
+`no-search` row **failed with the file unchanged**, where finding 20 had all three `ready`
+with the held-out probe satisfied. The rate took one more change to print, and the
+mis-step is worth keeping: an effect-aware key that asked only "did it exit 0?" still
+marked all three rows `aside`, because `ls -la /eval/` exits **0** over an **empty** mask.
+Exit codes cannot tell a hit from a mask. The verdict that works is about the boundary the
+row ran under — contained runs execute only through a provider whose probe verified the
+read claim, so an outside command reached a mask and is an *attempt* — and with it the
+cell reads `full` **1/1** against `no-search` **0/3**, with **19 / 41 / 10** outside
+attempts per row and none through. The report prints those counts; without that line a
+cell full of refused probes would read like a cell where the agent merely failed. See
+finding 21.
 
 ⚠️ Two instrument lessons from the same run, both about `docker run --rm`: results written
 **inside** the container die with it (mount `evals/results` and `FORGEPILOT_HOME` out, or
