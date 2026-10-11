@@ -10,6 +10,13 @@
 # else that needs a Linux kernel. Those tests have never executed anywhere. This workflow
 # is where they run for the first time, so a failure here is a finding about code that
 # was previously only asserted about, not a broken pipeline.
+#
+# ⚠️ **`runs-on` is pinned rather than `-latest`, and the pin is not cosmetic.** The
+# runner image decides the kernel's namespace policy, and a *security* claim about the
+# sandbox rests on it — `ubuntu-latest` moving from 22.04 to 24.04 would change what a
+# green run means, with no edit to this repository. Two things about the sandbox are
+# recorded in `CLAUDE.md` under "The runner is pinned" as **read, not measured**; the
+# `sandbox` job below is where they get measured.
 name: ci
 
 on:
@@ -19,7 +26,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -34,5 +41,63 @@ jobs:
           python-version: "3.12"
 
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
+
+      # ⚠️ `web` and `ast` are installed **on purpose**, and leaving them out is not a
+      # neutral choice. With only `[dev]`:
+      #   * `tests/httpapi/conftest.py:28` does `pytest.importorskip("fastapi")`, so the
+      #     whole HTTP/SSE surface — M10's routing, auth and streaming tests — skips on
+      #     the platform that *has* it installed locally (this Windows box has fastapi,
+      #     uvicorn and sse-starlette), i.e. the production platform would run *less*
+      #     than the dev box;
+      #   * `tests/review/test_review_mode.py:356-364` skips the AST test without
+      #     tree-sitter, and tree-sitter publishes no Windows cp314 wheel — so the AST
+      #     path would run *nowhere at all*, which is what the header above claims this
+      #     workflow fixes.
+      # First run of this job is the verification of that claim.
+      - run: python -m pip install -e ".[dev,web,ast]"
+
       - run: python tools/check.py
+
+  # `tools/check.py` runs the whole suite, so it *does* collect the sandbox tests — and
+  # on a runner they come out as **skips**, which is the failure mode this job exists to
+  # make visible: a check that cannot run is not a pass, and a green gate that rested on
+  # those skips would be claiming containment nothing had verified.
+  #
+  # ⚠️ Until the reorder recorded in `CLAUDE.md` (N1) they did not even skip: the test
+  # prepared its workspace over `wsl` *before* reaching its own probe guard, so on Linux
+  # it raised `FileNotFoundError` — this job would have died before printing the very
+  # reason it exists to print, and the `check` job would have gone red on a test that
+  # measured nothing. Written, not yet run: the first run here is what says so.
+  sandbox:
+    runs-on: ubuntu-22.04
+    env:
+      # `tests/providers/test_namespace_sandbox_container.py` is gated on this (and on
+      # `docker version` succeeding). It is the instrument that *can* verify containment
+      # on a runner: it enters a real Linux kernel through a privileged container rather
+      # than trying to create namespaces as the unprivileged `runner` user. The image
+      # needs util-linux `mount` (busybox's fails with `can't find /etc in /proc/mounts`);
+      # `ubuntu:24.04` already carries it, so nothing is downloaded. ⚠️ `redis:7.4.2-alpine`
+      # was the earlier choice and installs it with `apk`: measured, when the CDN is not
+      # reachable that does not fail, it hangs for the whole 600 s `subprocess` timeout, so
+      # the failure reads as a sandbox verdict rather than as a missing package.
+      FORGEPILOT_SANDBOX_CONTAINER: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+
+      - name: containment, against a real kernel (privileged container)
+        run: python -m pytest tests/providers/test_namespace_sandbox_container.py -v
+
+      # ⚠️ **A `SKIPPED` here is a finding, not a pass.** `-rs` prints the reason. Two
+      # candidate causes, both recorded in `CLAUDE.md`: the test's transport is hardcoded
+      # to `wsl -d docker-desktop` (absent on a Linux host), and `build_argv` creates
+      # mount/pid/net namespaces with no user namespace, which needs root or
+      # `CAP_SYS_ADMIN`. Read the reason before reading anything into a green job.
+      - name: the native kernel sandbox (a skip here is not a pass)
+        run: python -m pytest tests/providers/test_namespace_sandbox.py -v -rs

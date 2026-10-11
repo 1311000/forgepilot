@@ -5,24 +5,41 @@
 closes the gap that `wsl.exe` could not (it rewrites POSIX-looking arguments and
 drops positional parameters, so the provider's argv cannot cross it).
 
-    FORGEPILOT_SANDBOX_CONTAINER=redis:7.4.2-alpine \
+    FORGEPILOT_SANDBOX_CONTAINER=ubuntu:24.04 \
       pytest tests/providers/test_namespace_sandbox_container.py -v
 
 Without that variable the test skips: the ordinary suite should not require
 Docker, and it certainly should not pull an image.
 
-**Two requirements of the image**, both measured rather than assumed:
+**Three requirements of the image**, all measured rather than assumed:
 
 - **`--privileged`.** A default container denies `unshare` outright
   (`unshare(0x20000): Operation not permitted` — no `CAP_SYS_ADMIN`).
 - **util-linux `mount`, not busybox's.** Alpine ships busybox, whose `mount`
   cannot remount a bind read-only: `mount -o remount,bind,ro /etc` fails with
-  `can't find /etc in /proc/mounts`. The `redis:7.4.2-alpine` recipe therefore
-  installs util-linux first.
+  `can't find /etc in /proc/mounts`.
+- **An image that already carries util-linux, or a network that can install it.**
+  The `apk add -q --no-cache util-linux` below is a no-op on a glibc image and a
+  download on Alpine. Measured: with no reachable CDN, `redis:7.4.2-alpine` does
+  not fail — it hangs until the 600 s `subprocess` timeout, so the failure reads
+  as a sandbox verdict rather than as a missing package. `ubuntu:24.04` has it
+  already, needs no network, and passes in 1.6 s, which is why it is the example.
 
 The script that runs is `build_argv`'s own output, byte for byte — only the
 trailing `exec "$@"` is replaced, because there is no caller-supplied command to
 run; the assertions follow instead.
+
+⚠️ **On Windows the interpreter's integrity label decides whether this runs at
+all.** Docker Desktop's engine is reached over a named pipe, and a process at Low
+mandatory integrity cannot open it: `docker version` then exits 1 with
+`permission denied while trying to connect to the docker API at
+npipe:////./pipe/dockerDesktopLinuxEngine`, while `shutil.which("docker")` finds
+the binary happily. The workspace venv's `python.exe` carries
+`Mandatory Label\\Low Mandatory Level:(I)(NW)` under `icacls`, so every process
+started from it is Low — which is why this file was first executed from the base
+interpreter with the venv's packages on `PYTHONPATH`, and why the skip reason now
+names the failed half instead of assuming the variable was unset. CI is
+unaffected: it runs on Linux, where the engine is a Unix socket.
 """
 
 from __future__ import annotations
@@ -51,20 +68,40 @@ echo "workspace_root=$w subdir=$s outside=$o git=$g tmp=$t existing=$r"
 """
 
 
-def _docker_usable() -> bool:
-    if not IMAGE or shutil.which("docker") is None:
-        return False
+def _docker_problem() -> str:
+    """Why the containment assertions cannot run here — in the caller's own words.
+
+    The reason used to be one sentence that assumed the only cause was an unset
+    variable, so it told a caller who had just set the variable to set it. There
+    are three causes and they want three answers.
+    """
+    if not IMAGE:
+        return "FORGEPILOT_SANDBOX_CONTAINER is not set"
+    if shutil.which("docker") is None:
+        return "docker is not on PATH"
     probe = subprocess.run(["docker", "version"], capture_output=True, check=False)
-    return probe.returncode == 0
+    if probe.returncode == 0:
+        return ""
+    lines = probe.stderr.decode("utf-8", "replace").strip().splitlines()
+    return f"docker cannot reach the engine (exit {probe.returncode}): " + (
+        lines[-1] if lines else probe.stdout.decode("utf-8", "replace").strip()[:120]
+    )
+
+
+_DOCKER_PROBLEM = _docker_problem()
+
+
+def _docker_usable() -> bool:
+    return not _DOCKER_PROBLEM
 
 
 pytestmark = pytest.mark.skipif(
-    not _docker_usable(),
+    bool(_DOCKER_PROBLEM),
     reason=(
-        "set FORGEPILOT_SANDBOX_CONTAINER to a Linux image with util-linux `mount` "
-        "(e.g. redis:7.4.2-alpine, with util-linux installed) to run the containment "
-        "assertions against a real kernel. Docker on Windows is a Linux host; a "
-        "privileged container is what reaches it."
+        f"{_DOCKER_PROBLEM}. These assertions need a Linux kernel with util-linux "
+        "`mount`: point FORGEPILOT_SANDBOX_CONTAINER at an image that carries it "
+        "(e.g. ubuntu:24.04). Docker on Windows is a Linux host, and a privileged "
+        "container is what reaches it."
     ),
 )
 
