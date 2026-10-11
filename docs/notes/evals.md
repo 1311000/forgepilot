@@ -237,7 +237,10 @@ Both are environment facts rather than defects in this repository — but the se
 one is worth knowing before blaming the harness for thousands of new files in
 `git status`.
 
-### ⚠️ The sandbox confines writes, not reads — measured, and an eval arm depended on it
+### ⚠️ The sandbox confined writes, not reads — measured, and an eval arm depended on it
+*(closed since: `ReadScope.WORKSPACE` masks every unnamed top-level entry, `probe()` verifies that
+claim with a read, and the eval's containment row claims it — see the last paragraph of this section
+and `evals/README.md` finding 21. What follows is the measurement that made the case.)*
 
 `FORGEPILOT_EVAL_CONTAIN=1` swaps the eval's `sandbox` row for `NamespaceSandboxPlugin`
 and raises `minimum_enforcement_for_exec` to `FULL`. Run that way against
@@ -257,22 +260,28 @@ corpus printed**; `find /eval/evals/tasks -name index.json` → rc 0; `cat /etc/
 rc 0; `ls /work/evals/tasks` → rc 0; while `echo poison > …/POISON` → **rc 2, `Read-only
 file system`**.
 
-Two consequences, and the sandbox is not the thing at fault — it does what it was built to
+Two consequences, and the sandbox was not the thing at fault — it did what it was built to
 do (protect the host from the command) and the *eval* was asking it a question it does not
 answer:
 
-- **`not-in-the-checkout`'s `no-search` column cannot be obtained in this harness** — not on
-  this box, not on Linux, and **not in CI**, whose checkout *is* the filesystem the eval runs
-  in. The retracted claim ("on Linux the shell cannot leave the worktree and the premise
-  holds") is recorded in `evals/README.md` findings 18–20.
+- **`not-in-the-checkout`'s `no-search` column cannot be obtained with the boundary as it
+  stood** — not on this box, not on Linux, and **not in CI**, whose checkout *is* the
+  filesystem the eval runs in. The retracted claim ("on Linux the shell cannot leave the
+  worktree and the premise holds") is recorded in `evals/README.md` findings 18–20.
 - **What it does measure is worth publishing**: whether the agent stays inside the boundary
   while failing to finish — `out-of-scope`'s property applied to information rather than to
   writes. All three contained rows broke it.
 
-Closing the route means a boundary that confines **reads**: rule 1 becomes a `tmpfs` root
-plus explicit binds for the interpreter, the toolchain and the workspace, so everything else
-is *absent* rather than read-only. That changes `providers/sandbox/namespace.py`'s policy for
-**every** caller, and it is a milestone rather than a rider on an eval finding.
+Closing the route meant a boundary that confines **reads**, and it has since been built:
+every top-level entry the boundary does not name becomes an empty `tmpfs`, the claim is
+opt-in (`ReadScope.WORKSPACE`) because it costs something, and `probe()` verifies *that*
+claim with a read rather than a write. The measured effect on this task, in the same
+`--privileged ubuntu:24.04` container: `full` **1/1 pass** (13 calls) and every `no-search`
+row **failed with the file unchanged**, where finding 20 had all three `ready` with the
+held-out probe satisfied. What the sweep still cannot print is the *rate*, and that is now
+the instrument's fault rather than the boundary's: `left_the_workspace` flags the attempt,
+not the success, so an attempted read the boundary refused still disqualifies its own row.
+See finding 21.
 
 ⚠️ Two instrument lessons from the same run, both about `docker run --rm`: results written
 **inside** the container die with it (mount `evals/results` and `FORGEPILOT_HOME` out, or

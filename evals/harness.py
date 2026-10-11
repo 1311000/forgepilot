@@ -149,13 +149,20 @@ def scratch_root() -> Path:
     project tree — which an IDE reports as *"directories wrongly registered as VCS
     roots"*, one per worktree, sixty of them after a full sweep.
 
-    **What this does not fix, stated so nobody reads it as closed:** `run` still has
-    no containment, and the project's own path reaches the model anyway through the
-    check command's interpreter (`${FORGEPILOT_PYTHON} -m pytest -q`, expanded to
-    the host venv). An agent that deliberately searched the tree it was told about
-    could still find `evals/tasks/`. What moves out of reach is the *accidental*
-    case — a relative walk, a sibling task's fixture, an over-eager `dir /s /b` —
-    and that is the case that actually happens.
+    **What this does not fix, stated so nobody reads it as closed:** the `run` tool has no
+    containment *unless the run asks for it*, and the project's own path reaches the model
+    through the check command's interpreter (`${FORGEPILOT_PYTHON} -m pytest -q`, expanded to
+    the host venv). An agent that deliberately searched the tree it was told about can still
+    find `evals/tasks/`, and what moves out of reach by default is the *accidental* case — a
+    relative walk, a sibling task's fixture, an over-eager `dir /s /b`.
+
+    ⚠️ **`contain=True` closes the deliberate case too, and only then.** The containment row
+    claims `read_scope: workspace`, so a command inside that boundary cannot read the task
+    directory at all — but it also cannot read an interpreter *the toolchain set does not
+    name*, which is why a contained run of this harness is started with `sys.executable`
+    already inside `/usr` (`FORGEPILOT_PYTHON` is set from it, and the check command is
+    expanded from that). See `tests/evals/test_containment_confines_reads.py` and
+    `evals/README.md` finding 21.
 
     `$FORGEPILOT_EVAL_SCRATCH` overrides it; the default sits beside the sessions
     and mirrors the runtime state this project already keeps out of the checkout.
@@ -334,11 +341,27 @@ def write_project(task: EvalTask, into: Path, *, arm: Any = None):
 #: `src/forgepilot/bundles/kernel_sandbox/patch.yaml` ships, inline for the same reason an arm is
 #: inline: whether a *run's* commands are confined is a property of that run, not a deployment's
 #: configuration. It is the row that makes `no-search` mean something.
+#:
+#: ⚠️ **`read_scope: workspace`, and it is the half that made the sentence above true.** Until the
+#: boundary confined reads, this row confined *writes*: the container was bound read-only, which
+#: is visible rather than hidden, so `run` could `cat` the answer out of an index sitting beside
+#: the task and `no-search` measured nothing (finding 20). The file tools were never the hole —
+#: `runtime/tools/builtin.py::_resolve` refuses an absolute path or one that leaves the workspace
+#: root — so the shell was the only way out, and the shell is what this claim closes.
+#:
+#: ⚠️ **`host` would keep the row, and every measurement under it, honest but useless**: it is
+#: verified by a write, so a deployment that leaks every read still probes `full`. `workspace` is
+#: verified by a *read* the boundary must refuse, and an unverifiable claim reports `partial`,
+#: which `arm` turns into a refusal to execute (126) rather than a confidently wrong run.
 CONTAINMENT_ROWS: list[dict[str, Any]] = [
     {
         "id": "sandbox",
         "plugin": "forgepilot.providers.sandbox.namespace:NamespaceSandboxPlugin",
-        "config": {"enter": ["unshare"], "max_output_bytes": 64000},
+        "config": {
+            "enter": ["unshare"],
+            "read_scope": "workspace",
+            "max_output_bytes": 64000,
+        },
         "tier": "trusted",
     }
 ]
