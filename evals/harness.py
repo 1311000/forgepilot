@@ -382,7 +382,10 @@ def script_turns(task: EvalTask) -> list[Any]:
 
     ``write`` reads a file out of the task directory and issues the ``write_file``
     call that produces it, so the solution lives as a readable file rather than as
-    a YAML block scalar. ``say`` is a text-only turn.
+    a YAML block scalar. ``say`` is a text-only turn. ``search`` issues a
+    ``code_search`` call with the arguments given **verbatim**, and it is what gives a
+    task whose answer is *not in the checkout* an offline path at all — the vocabulary
+    used to be ``write``/``say``, and neither can ask a question.
 
     Padded with ``say`` turns: the repair loop asks the model again whenever a
     check fails, and a script that runs out raises rather than inventing a reply —
@@ -403,6 +406,15 @@ def script_turns(task: EvalTask) -> list[Any]:
                     "write_file",
                     _json.dumps({"path": str(spec["path"]), "content": content}),
                     call_id=f"c{index}",
+                )
+            )
+        elif "search" in step:
+            # Verbatim, like `tool_call_turn`'s own docstring asks for: the harness does not
+            # need to know `code_search`'s argument schema, and a task may script a malformed
+            # one on purpose to exercise the failure path.
+            turns.append(
+                tool_call_turn(
+                    "code_search", _json.dumps(dict(step["search"])), call_id=f"c{index}"
                 )
             )
         elif "say" in step:
