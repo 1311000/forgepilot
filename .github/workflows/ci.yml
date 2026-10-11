@@ -1,0 +1,38 @@
+# ⚠️ **This workflow has never run.** The repository has no remote configured, so
+# nothing has exercised it — it is here so that the first push finds a gate instead of
+# a promise, and it is deliberately thin: install the package, call the same entry a
+# person calls (`scripts/check.py`), so a local green run and a CI green run cannot be
+# measuring different things.
+#
+# ⚠️ **Expect the first real run to be informative rather than green.** Linux is the
+# *production* platform and the development box is Windows, where **215 tests skip** —
+# the namespace sandbox, the container transport, the tree-sitter AST path and anything
+# else that needs a Linux kernel. Those tests have never executed anywhere. This workflow
+# is where they run for the first time, so a failure here is a finding about code that
+# was previously only asserted about, not a broken pipeline.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The **declared floor** (`requires-python = ">=3.12"`) rather than the
+          # development box's 3.14: the gate should hold on the oldest interpreter a
+          # deployment is allowed to use. A 3.14 job can be added when the runners have
+          # it; adding one now would produce a red build for a reason that has nothing
+          # to do with the change, and a gate that fails for an unrelated reason is a
+          # gate people stop reading.
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python scripts/check.py
