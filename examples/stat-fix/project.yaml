@@ -80,6 +80,9 @@ tool_sets:
     - read_file
     - code_search
     - write_file
+    # See `configs/projects/example/project.yaml`: `edit_file` is the targeted
+    # replace, and the one to prefer for a change to an existing file.
+    - edit_file
     - run
 
 category_tool_sets:

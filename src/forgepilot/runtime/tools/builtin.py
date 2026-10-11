@@ -365,6 +365,208 @@ async def _write_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
 
 
 # ---------------------------------------------------------------------------
+# edit_file
+# ---------------------------------------------------------------------------
+def _match_offsets(text: str, needle: str) -> list[int]:
+    """Non-overlapping match offsets, in order."""
+    offsets: list[int] = []
+    index = text.find(needle)
+    while index != -1:
+        offsets.append(index)
+        index = text.find(needle, index + len(needle))
+    return offsets
+
+
+def _flatten_map(text: str) -> tuple[str, list[int]]:
+    """``text`` with CRLF flattened to LF, plus a map back to the original offsets.
+
+    ⚠️ **A map rather than an index, because the substitution changes length.** A
+    ``\\r\\n`` is two characters and its flattened form is one, so a match found at
+    offset *i* in the flattened text is **not** at offset *i* in the file — and a
+    slice taken that way edits the wrong characters while reporting success. Position
+    *k* of the flattened text came from ``positions[k]`` of the original, and the
+    final entry is the end offset so a slice end has a mapping too.
+    """
+    out: list[str] = []
+    positions: list[int] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("\r\n", index):
+            out.append("\n")
+            positions.append(index)
+            index += 2
+            continue
+        out.append(text[index])
+        positions.append(index)
+        index += 1
+    positions.append(len(text))
+    return "".join(out), positions
+
+
+def _uniqueness_refusal(path: str, count: int) -> ToolOutcome:
+    """Refuse to guess which occurrence was meant.
+
+    This is the whole reason `edit_file` exists rather than a `str.replace` helper:
+    a substring that appears more than once is the normal case in real code, and the
+    alternatives are both bad — replace the first (silently edits the wrong site) or
+    replace all (silently edits sites nobody mentioned). Naming the count and the two
+    ways forward costs one turn; guessing costs a review.
+    """
+    return ToolOutcome(
+        content=(
+            f"old_string appears {count} times in {path}. This tool will not choose "
+            f"one for you: include enough surrounding lines to make it unique, or "
+            f"pass replace_all to change every occurrence deliberately."
+        ),
+        is_error=True,
+        meta={"path": path, "occurrences": count, "ambiguous": True},
+    )
+
+
+async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
+    """Replace an exact piece of a file, refusing anything it cannot do exactly.
+
+    Three rules, and each exists because the alternative fails *quietly*:
+
+    - **The search text must be found.** A near miss — one space of indentation, a
+      line ending the model normalised — is reported with the file's size, not
+      guessed at. Writing the file unchanged and reporting success would be the
+      worst outcome available.
+    - **It must be found once**, unless ``replace_all`` says otherwise. See
+      :func:`_uniqueness_refusal`.
+    - **The file is read the way `read_file` reads it** (raw bytes, no newline
+      translation), so the text the model was shown is the text this searches. The
+      two tools disagreeing about what a file *is* would make every copy-pasted
+      edit miss — and the miss would look like the model's mistake.
+    """
+    if not ctx.capabilities.fs_write:
+        raise CapabilityNotGranted("this call was not granted filesystem write")
+
+    import json
+
+    args = json.loads(call.arguments_json or "{}")
+    path = _resolve(ctx.workspace_root, str(args["path"]))
+    old = str(args.get("old_string", ""))
+    new = str(args.get("new_string", ""))
+    replace_all = bool(args.get("replace_all", False))
+    label = str(args["path"])
+
+    if not old:
+        return ToolOutcome(
+            content=(
+                "old_string is empty, and an empty search matches everywhere — it "
+                "would insert your text at every position in the file. Use write_file "
+                "to replace a file wholesale."
+            ),
+            is_error=True,
+            meta={"phase": "arguments"},
+        )
+    if old == new:
+        return ToolOutcome(
+            content="old_string and new_string are identical, so this edit changes nothing",
+            is_error=True,
+            meta={"phase": "arguments"},
+        )
+
+    if not path.exists():
+        return ToolOutcome(content=f"no such file: {label}", is_error=True)
+    if path.is_dir():
+        return ToolOutcome(
+            content=f"{label} is a directory, not a file", is_error=True,
+            meta={"is_directory": True},
+        )
+
+    raw = path.read_bytes()
+    if len(raw) > MAX_READ_BYTES:
+        # ⚠️ Refused rather than truncated. `read_file` truncates because showing
+        # part of a file is useful; writing back part of a file destroys the rest,
+        # and "it edited a big file" and "it deleted the tail of a big file" would
+        # produce the same success message.
+        return ToolOutcome(
+            content=(
+                f"{label} is {len(raw)} bytes, larger than this tool edits "
+                f"({MAX_READ_BYTES}). Refusing rather than rewriting a truncated "
+                f"file — use a narrower edit or write_file."
+            ),
+            is_error=True,
+            meta={"phase": "size", "bytes": len(raw)},
+        )
+
+    text = raw.decode("utf-8", errors="replace")
+    offsets = _match_offsets(text, old)
+    normalised = False
+
+    if not offsets:
+        # Second attempt: the model may have normalised the line endings when it
+        # wrote the search text, which is the one difference a copy-paste makes
+        # invisible. Matching is retried on a flattened copy; the *result* is still
+        # spliced into the original bytes, so untouched text is byte-identical.
+        flat, positions = _flatten_map(text)
+        flat_offsets = _match_offsets(flat, old.replace("\r\n", "\n"))
+        if not flat_offsets:
+            return ToolOutcome(
+                content=(
+                    f"old_string was not found in {label} ({len(text.splitlines())} "
+                    f"lines read). It must match the file exactly, including "
+                    f"indentation and blank lines — read the file and copy the text "
+                    f"you want to replace."
+                ),
+                is_error=True,
+                meta={"path": label, "occurrences": 0},
+            )
+        if len(flat_offsets) > 1 and not replace_all:
+            return _uniqueness_refusal(label, len(flat_offsets))
+        offsets = [
+            positions[index] for index in flat_offsets
+        ]
+        ends = [positions[index + len(old.replace("\r\n", "\n"))] for index in flat_offsets]
+        normalised = True
+    else:
+        if len(offsets) > 1 and not replace_all:
+            return _uniqueness_refusal(label, len(offsets))
+        ends = [index + len(old) for index in offsets]
+
+    if not replace_all:
+        offsets, ends = offsets[:1], ends[:1]
+
+    # ⚠️ **The inserted text takes the file's own line endings.** Without this an
+    # edit into a CRLF file splices LF lines into it, and the mixed endings show up
+    # as a whole-file diff in review — a one-line change presented as hundreds.
+    replacement = new
+    if "\r\n" in text and "\r\n" not in new:
+        replacement = new.replace("\n", "\r\n")
+
+    result = text
+    for start, end in reversed(list(zip(offsets, ends))):
+        result = result[:start] + replacement + result[end:]
+
+    # `newline=""`: the default translates `\n` to `os.linesep` on the way out, so
+    # on Windows a file already holding CRLF would come back with `\r\r\n`. The text
+    # is spliced, not regenerated, and it must be written as it stands.
+    path.write_text(result, encoding="utf-8", newline="")
+
+    return ToolOutcome(
+        content=(
+            f"edited {label}: replaced {len(offsets)} occurrence(s) of the search "
+            f"text, {len(result) - len(text):+d} bytes"
+            + (
+                " (the search text was matched with line endings normalised, and the "
+                "replacement was written with the file's own)"
+                if normalised
+                else ""
+            )
+        ),
+        meta={
+            "path": label,
+            "occurrences": len(offsets),
+            "replaceAll": replace_all,
+            "newlineNormalised": normalised,
+            "bytes": len(result),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
 def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
@@ -510,6 +712,46 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             effects=frozenset({ToolEffect.READ, ToolEffect.WRITE}),
             required_operation=Operation.WRITE_CODE,
             execute=_write_file,
+            describe_targets=_targets_paths("path"),
+        ),
+        ToolDefinition(
+            name="edit_file",
+            description=(
+                "Replace an exact piece of an existing file. `old_string` must match "
+                "the file exactly — including indentation — and must appear exactly "
+                "once unless `replace_all` is true. Prefer this over write_file: it "
+                "changes one place instead of re-emitting the whole file."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "workspace-relative path"},
+                    "old_string": {
+                        "type": "string",
+                        "description": "the exact text to replace, copied from read_file",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "what to replace it with; empty deletes it",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": (
+                            "replace every occurrence; default false, and without it an "
+                            "ambiguous search is refused rather than guessed"
+                        ),
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+                "additionalProperties": False,
+            },
+            # READ as well as WRITE: it reads the file to match against. Declaring
+            # only WRITE would claim a capability set this tool cannot work without —
+            # and `arm` intersects the declaration, so the narrower claim would grant
+            # an edit on a call that cannot read.
+            effects=frozenset({ToolEffect.READ, ToolEffect.WRITE}),
+            required_operation=Operation.WRITE_CODE,
+            execute=_edit_file,
             describe_targets=_targets_paths("path"),
         ),
         ToolDefinition(

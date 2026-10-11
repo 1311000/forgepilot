@@ -54,6 +54,11 @@ tool_sets:
     - read_file
     - code_search
     - write_file
+    # Targeted replace. Prefer this to `write_file` for a change to an existing
+    # file: it edits one place instead of re-emitting the whole file, and it refuses
+    # an ambiguous or unmatched search rather than guessing. `write_file` stays for
+    # a new file or a wholesale rewrite.
+    - edit_file
     - run
 category_tool_sets:
   bug: bugfix
