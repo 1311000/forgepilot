@@ -7,6 +7,7 @@ Commands available now::
     forgepilot --config-dir configs --dump-config
     forgepilot --patch ./dev.yaml --dump-config
     forgepilot --boot                        resolve and load every enabled plugin
+    forgepilot --sandbox-check               can this host contain what the profile needs?
     forgepilot --chat                        interactive session against the model
     forgepilot --task T-1                    run one ticket end to end
     forgepilot --serve                       serve the HTTP/SSE API the UI talks to
@@ -47,6 +48,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--boot",
         action="store_true",
         help="resolve the profile and actually load every enabled plugin",
+    )
+    config.add_argument(
+        "--sandbox-check",
+        action="store_true",
+        help=(
+            "ask the configured sandbox what it can enforce on this host, and exit "
+            "non-zero when that is weaker than this profile requires"
+        ),
     )
     config.add_argument("--profile", default="default", help="profile name (default: default)")
     config.add_argument(
@@ -123,18 +132,52 @@ def _dump_config(args: argparse.Namespace) -> int:
     Goes through exactly the same :func:`apply_layers` that a future boot path
     will use, so the printed tree cannot drift from what actually loads.
     """
-    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.config import ConfigError
 
     try:
-        profile = load_profile(args.config_dir, args.profile)
-        layers = compose_layers(profile, args.patch)
-        resolved = apply_layers(layers, profile=profile.name)
+        _, resolved = _resolve(args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     print(resolved.dump(), end="")
     return 0
+
+
+def _resolve(args: argparse.Namespace) -> Any:
+    """Resolve the profile into the effective tree, or raise :class:`ConfigError`.
+
+    The one place the CLI turns arguments into a resolved configuration, so
+    ``--dump-config``, ``--boot`` and ``--sandbox-check`` cannot disagree about
+    which profile they are describing.
+    """
+    from forgepilot.config import apply_layers, compose_layers, load_profile
+
+    profile = load_profile(args.config_dir, args.profile)
+    return profile, apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+
+
+def _apply_rows(root: Any, resolved: Any) -> list[tuple[str, str, str, str | None]]:
+    """Load every enabled row onto ``root``.
+
+    Returns ``(row id, state, plugin, error)`` per row, where ``state`` is the
+    fiber's state or ``"FAILED"`` with the exception in ``error``. One loader, so
+    ``--boot``'s report and ``--sandbox-check``'s setup cannot drift about what
+    loading a profile means.
+    """
+    from forgepilot.config import apply_row
+    from forgepilot.kernel import fiber_state_name
+
+    loaded: list[tuple[str, str, str, str | None]] = []
+    for row in resolved.enabled_rows():
+        try:
+            fiber = apply_row(root, row)
+            state = fiber_state_name(fiber) if fiber is not None else "skipped"
+        except Exception as exc:  # noqa: BLE001 - report every row, do not stop at the first
+            loaded.append((row.id, "FAILED", row.plugin, f"{type(exc).__name__}: {exc}"))
+            continue
+        loaded.append((row.id, state, row.plugin, None))
+    return loaded
 
 
 def _boot(args: argparse.Namespace) -> int:
@@ -144,18 +187,11 @@ def _boot(args: argparse.Namespace) -> int:
     what the dump prints is what boots. That is the whole reason the two share a
     composition function.
     """
-    from forgepilot.config import (
-        ConfigError,
-        apply_layers,
-        apply_row,
-        compose_layers,
-        load_profile,
-    )
-    from forgepilot.kernel import create_root, fiber_state_name
+    from forgepilot.config import ConfigError
+    from forgepilot.kernel import create_root
 
     try:
-        profile = load_profile(args.config_dir, args.profile)
-        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+        profile, resolved = _resolve(args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -166,16 +202,11 @@ def _boot(args: argparse.Namespace) -> int:
     print(f"profile: {profile.name}   mode: {profile.default_mode}")
     print(f"  {'row':<16} {'state':<10} plugin")
 
-    for row in resolved.enabled_rows():
-        try:
-            fiber = apply_row(root, row)
-            state = fiber_state_name(fiber) if fiber is not None else "skipped"
-        except Exception as exc:  # noqa: BLE001 - report every row, do not stop at the first
+    for row_id, state, plugin, error in _apply_rows(root, resolved):
+        print(f"  {row_id:<16} {state:<10} {plugin}")
+        if error is not None:
             failures += 1
-            print(f"  {row.id:<16} {'FAILED':<10} {row.plugin}")
-            print(f"      {type(exc).__name__}: {exc}")
-            continue
-        print(f"  {row.id:<16} {state:<10} {row.plugin}")
+            print(f"      {error}")
 
     disabled = [row.id for row in resolved.rows if row.disabled]
     if disabled:
@@ -183,6 +214,146 @@ def _boot(args: argparse.Namespace) -> int:
 
     print(f"\nresult: {'OK' if failures == 0 else str(failures) + ' row(s) FAILED'}")
     return 0 if failures == 0 else 1
+
+
+def _sandbox_row(resolved: Any, service: Any) -> Any:
+    """The configuration row that provided ``root.sandbox``, or ``None``.
+
+    Found by the **service name** the plugin registered, which is what a profile
+    names its row after by convention (``id: sandbox``). ``None`` is a legitimate
+    answer — a profile may call the row anything it likes — and the caller then
+    prints the claim as undeclared rather than inventing one. A claim nobody can
+    read is worth less than an honest "not declared"; the *verification* is
+    ``probe()`` and does not depend on this.
+    """
+    name = getattr(service, "name", None)
+    if not isinstance(name, str):
+        return None
+    try:
+        return resolved.row(name)
+    except KeyError:
+        return None
+
+
+def _sandbox_check(args: argparse.Namespace) -> int:
+    """Ask the host the question ``arm`` asks before it hands out a shell: *can you contain this?*
+
+    A :class:`~forgepilot.seams.sandbox.Sandbox` answers it with ``probe()``, and
+    until this command nothing outside a live session ever called it. **``--boot``
+    reports that the row loaded, which is a different claim**: the kernel-sandbox
+    row loaded on this machine for as long as its boundary confined writes and not
+    reads (finding 20, ``docs/notes/evals.md``), and nothing failed.
+
+    Exit status is the point — a pipeline step can gate on it instead of reading
+    prose. ``0`` when this host does what this profile requires, ``1`` when it does
+    not, ``2`` when the configuration cannot be resolved or provides no sandbox.
+    ``--allow-uncontained-exec`` lowers the requirement to ``none`` through the same
+    helper ``--chat`` and ``--task`` use, so the flag keeps exactly one meaning.
+    """
+    import asyncio
+
+    from forgepilot.config import ConfigError
+    from forgepilot.kernel import create_root
+    from forgepilot.runtime.tools.arm import enforcement_rank
+    from forgepilot.seams.refs import SessionId
+    from forgepilot.seams.sandbox import (
+        SandboxEnforcement,
+        SandboxExecutionPolicy,
+        SandboxMode,
+    )
+    from forgepilot.seams.security import NetworkAccess
+
+    try:
+        profile, resolved = _resolve(args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    root = create_root()
+    broken = [
+        (row_id, error)
+        for row_id, _state, _plugin, error in _apply_rows(root, resolved)
+        if error is not None
+    ]
+
+    sandbox = getattr(root, "sandbox", None)
+    if sandbox is None or not hasattr(sandbox, "probe"):
+        for row_id, error in broken:
+            print(f"error: row {row_id!r} did not load: {error}", file=sys.stderr)
+        print(
+            "error: this profile provides no `sandbox` service, so there is no boundary "
+            "to check. Put the sandbox row back (the base bundle carries one).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # A row that failed *beside* the sandbox does not change the boundary, but it
+    # does change what this profile can do — said out loud, without failing a
+    # boundary that is genuinely fine.
+    for row_id, error in broken:
+        print(f"note: row {row_id!r} did not load: {error}", file=sys.stderr)
+
+    row = _sandbox_row(resolved, sandbox)
+    claim = (row.config.get("read_scope") if row is not None else None) or "not declared"
+    service_name = getattr(sandbox, "name", "sandbox")
+    workspace = (args.workspace or Path.cwd()).resolve()
+
+    async def run_one() -> Any:
+        policy = SandboxExecutionPolicy(
+            mode=SandboxMode.WORKSPACE_WRITE,
+            workspace_root=workspace,
+            session_id=SessionId("sandbox-check"),
+            network=NetworkAccess.DENY,
+        )
+        # The cheapest command there is, through the same seam a tool call uses.
+        # `probe()` says what the backend believes; this says what happens.
+        return await sandbox.run(["true"], policy=policy, cwd=workspace, env={}, timeout_s=30)
+
+    try:
+        actual = sandbox.probe()
+        result = asyncio.run(run_one())
+    except Exception as exc:  # noqa: BLE001 - a backend that cannot answer is the answer
+        print(
+            f"error: the `{service_name}` sandbox could not be exercised: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    required = _minimum_enforcement(root, args) or SandboxEnforcement.FULL
+
+    print(f"profile      : {profile.name}")
+    if row is not None:
+        print(f"sandbox      : {row.id} -> {row.plugin}")
+    else:
+        print(f"sandbox      : service {service_name!r} (no row here is named that)")
+    print(f"claim        : read_scope: {claim}")
+    print(f"probe        : {actual.value}")
+    print(f"required     : {required.value}")
+    if result.executed:
+        print(f"shell        : ran, exit code {result.exit_code}")
+    else:
+        print("shell        : refused, nothing executed")
+        for line in (result.stderr or "").splitlines():
+            print(f"               {line}")
+
+    met = enforcement_rank(actual) >= enforcement_rank(required)
+    ran = bool(result.executed) and result.exit_code == 0
+    if met and (ran or required is SandboxEnforcement.NONE):
+        print("result       : OK")
+        return 0
+
+    if not met:
+        print(
+            f"result       : FAILED — this profile requires {required.value!r} before a "
+            f"tool may run a command, and this host's boundary reports {actual.value!r}"
+        )
+    else:
+        print(
+            f"result       : FAILED — the probe reports {actual.value!r}, but a command "
+            f"could not be run through the boundary"
+        )
+    return 1
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -716,6 +887,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("--kernel-check", args.kernel_check),
             ("--dump-config", args.dump_config),
             ("--boot", args.boot),
+            ("--sandbox-check", args.sandbox_check),
             ("--chat", args.chat),
             ("--task", bool(args.task)),
             ("--serve", args.serve),
@@ -731,6 +903,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dump_config(args)
     if args.boot:
         return _boot(args)
+    if args.sandbox_check:
+        return _sandbox_check(args)
     if args.chat:
         return _chat(args)
     if args.task:

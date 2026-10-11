@@ -94,6 +94,39 @@ jobs:
       - name: containment, against a real kernel (privileged container)
         run: python -m pytest tests/providers/test_namespace_sandbox_container.py -v
 
+      # ⚠️ **The invariant that holds on every host.** The default profile's sandbox is the
+      # *recording* one: it never executes, so it enforces nothing, and `--sandbox-check`
+      # must refuse it. This is the failure mode the command exists to catch — `--boot`
+      # reports that the row **loaded**, which is a different claim, and the kernel-sandbox
+      # row loaded for as long as its boundary confined writes and not reads (finding 20).
+      - name: the check refuses a sandbox that enforces nothing
+        run: |
+          if python -m forgepilot --config-dir configs --sandbox-check; then
+            echo "::error::--sandbox-check passed for the recording sandbox, which never executes"
+            exit 1
+          fi
+
+      # ⚠️ **And where containment is real, it must pass** — the same command, the same exit
+      # status an operator's pipeline reads. Measured on this recipe before it was written
+      # here (`.tmp/p2_sandbox_check.sh`, `ubuntu:24.04 --privileged`): `read_scope: host`
+      # and `read_scope: workspace` both print `probe: full`, run the shell command, and
+      # exit 0, while the default profile exits 1. The in-container install is deliberate:
+      # a venv outside the boundary's named toolchain set is masked, so a check command
+      # would die `command not found` rather than report anything.
+      - name: the same check where containment is real (privileged container)
+        run: |
+          docker run --rm --privileged -v "$PWD:/src:ro" ubuntu:24.04 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq python3 python3-venv util-linux >/dev/null
+            mkdir -p /w && tar -C /src -cf - . | tar -C /w -xf -
+            cd /w
+            python3 -m venv /v
+            /v/bin/pip install -q -e ".[dev]"
+            /v/bin/python -m forgepilot --config-dir configs \
+              --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check
+          '
+
       # ⚠️ **A `SKIPPED` here is a finding, not a pass.** `-rs` prints the reason. Two
       # candidate causes, both recorded in `CLAUDE.md`: the test's transport is hardcoded
       # to `wsl -d docker-desktop` (absent on a Linux host), and `build_argv` creates

@@ -172,6 +172,29 @@ emits the host dynamically and names **both** shells ("`/bin/sh` on Linux and ma
 `cmd.exe`/`COMSPEC` only under `os.name == "nt"` — POSIX gets `shlex.split(posix=True)`
 and `/bin/sh -c`.
 
+## The `sandbox` job, and the one assertion that holds on every host
+
+The workflow gained a job for the namespace sandbox rather than a note about it, and
+the job's second half is the part that needs `--privileged`: a default container
+denies `unshare` outright, so a boundary test that runs unprivileged would pass by
+testing the wrong thing. The job pins `FORGEPILOT_SANDBOX_CONTAINER: ubuntu:24.04`
+and runs `tests/providers/test_namespace_sandbox_container.py` plus
+`forgepilot --sandbox-check` **inside** the container, installing there rather than
+mounting the checkout's venv: the boundary names a toolchain set, and an interpreter
+outside it is masked, so the check's own command would die `command not found` — a
+false negative that looks exactly like a broken sandbox.
+
+The first half is the one that holds everywhere, and it is the reason the check is in
+CI at all: **the default profile must exit non-zero.** On this Windows box, on a Linux
+runner, and in the container, `recording` reports `none` while the profile's bar is
+`full`. That is the assertion a host cannot accidentally satisfy.
+
+The recipe is not aspirational — every command in the workflow's container step was
+run by hand first, and the note that it *was* measured is in the step. Like the rest
+of the workflow it stays unexecuted until the repository has a remote (P2-3): the
+distinction between "measured by hand" and "run by CI" is the whole subject of this
+file, so it is written down rather than blurred.
+
 ## What the first run of the linter found
 
 Worth keeping, because it is the argument for the gate rather than a story about one

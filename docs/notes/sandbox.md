@@ -112,6 +112,55 @@ planted at `/outside/secret.txt` before the masks comes back **unreadable** insi
 them, while `/ws` stays writable, `/ws/.git` stays read-only, `/tmp` stays a fresh
 tmpfs and `/etc/passwd` stays readable.
 
+### The same question as a command: `forgepilot --sandbox-check`
+
+`probe()` is called by `arm` on every `exec`, and by then it is too late to be
+interesting: the run has a principal, a workspace and a ticket, and the answer is a
+refusal. Nothing asked the host the question *before* the run, and nothing asked it in
+CI at all — which is the same shape as every other defect in
+`docs/notes/defect-shape.md`: a number one caller reads, and no way to read it on
+purpose.
+
+```
+.venv/Scripts/python.exe -m forgepilot --config-dir configs --sandbox-check
+```
+
+It resolves the profile exactly as `--boot` does (the two now share `_resolve` and
+`_apply_rows`, so they cannot disagree about what the profile *is*), prints six
+labelled lines — `profile`, `sandbox`, `claim`, `probe`, `required`, `shell` — and
+decides on two things rather than one:
+
+- **the claim**: `enforcement_rank(probe()) >= enforcement_rank(required)`, where
+  `required` comes from `_minimum_enforcement()` — the same function that decides what
+  `--allow-uncontained-exec` means, so the flag has exactly one meaning in this
+  codebase;
+- **the run**: one real command (`true`) pushed through `sandbox.run(...)` with the
+  same `SandboxExecutionPolicy` a tool would use. A boundary that *reports* `full` and
+  cannot execute anything fails here, which is the failure mode the probe alone cannot
+  see — `set -e` catches a mount that failed, not a launcher that refuses to start.
+
+Exit **0** when both hold, **1** when either does not, **2** when the profile has no
+`sandbox` service at all (a disabled row reads as absent on the root context, so the
+check says so instead of crashing on `None`). `--allow-uncontained-exec` lowers
+`required` to `none`, so the command then exits 0 *and still prints what it saw* —
+the point is to make the decision visible, not to block a fixture.
+
+Measured, four cases in `ubuntu:24.04 --privileged` (Docker Desktop's real kernel) and
+one on Windows:
+
+| host / profile | probe | required | shell | exit |
+|---|---|---|---|---|
+| Windows, default (`recording`) | `none` | `full` | refused | 1 |
+| Windows, `kernel_sandbox` | `none` (the provider's own refusal names the AppArmor policy) | `full` | refused | 1 |
+| Linux, default (`recording`) | `none` | `full` | refused | 1 |
+| Linux, `kernel_sandbox`, `read_scope: host` | `full` | `full` | ran, 0 | 0 |
+| Linux, `kernel_sandbox`, `read_scope: workspace` | `full` | `full` | ran, 0 | 0 |
+| Linux, `read_scope: host` + `--allow-uncontained-exec` | `full` | `none` | ran, 0 | 0 |
+
+The `workspace` row is the one worth keeping: the read claim that finding 20 measured
+as *unmet* is now verified from the CLI, on a real kernel, with no
+`--allow-uncontained-exec` anywhere in the command.
+
 ### Telling the model the boundary was the reason
 
 `runtime/sandbox_denial.py`, and the `run` tool surfaces it. Codex issue **#41320**
