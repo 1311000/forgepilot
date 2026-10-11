@@ -132,9 +132,20 @@ def test_scope_is_frozen_and_slotted(rig) -> None:
         principal=Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
     )
 
-    with pytest.raises(AttributeError):
+    # ⚠️ `TypeError` here is not sloppiness. On the whole 3.12 line the `__setattr__`
+    # that `@dataclass(frozen=True, slots=True)` generates closes over the class from
+    # *before* `slots=True` re-created it, so its `type(self) is cls` guard misses and
+    # `super(cls, self)` raises `TypeError: super(type, obj): obj must be an instance
+    # or subtype of type`. Measured on four interpreters: 3.12.3 and 3.12.15 raise
+    # TypeError for an unknown attribute and FrozenInstanceError for a declared one;
+    # 3.13.16 and 3.14.8 raise FrozenInstanceError for both. The property under test —
+    # that the scope cannot be extended at runtime — holds either way, and the floor
+    # this project declares is 3.12, so the test accepts both exception types instead
+    # of the one the interpreter it happens to run on produces.
+    with pytest.raises((AttributeError, TypeError)):
         scope.sandbox = object()  # type: ignore[misc]
 
+    assert not hasattr(scope, "sandbox"), "the assignment went through after all"
     assert not hasattr(scope, "__dict__"), "slots must be in force, or attributes can be added"
 
 
