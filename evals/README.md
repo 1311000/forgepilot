@@ -376,6 +376,75 @@ harness prints say so on every run. Only `tight-window` at 75% is outside what t
 reps can distinguish from variance, and that is because its three failures were
 crashes rather than outcomes.
 
+**11. The first six-arm live sweep found no aggregate delta — and that is a fact about the
+tasks, not about the mechanisms.** 126 rows (7 tasks × 6 arms × 3 reps), 119 passed, no
+crashes, run `20261011T034912-live`:
+
+```
+arm             n   pass rate   median calls
+full           21       100%         10
+baseline       21       100%          9      (+0%)
+no-search      21       100%         12      (+0%)
+no-repair      21        95%         11      (-5%)
+no-pinning     21        90%         11      (-10%)
+tight-window   21        81%         12      (-19%)
+```
+
+`full` and `baseline` are **both 21/21**. So with this model on this task set, search + the
+held oracle + the repair loop together change *nothing measurable by pass rate* — which is
+the third time this harness has produced this shape, and the first time it was visible at
+the aggregate rather than arm by arm. **Read it as "these tasks are too easy for this
+model", not as "the mechanisms do nothing"**, and the per-cell detail says why:
+
+- **The signal is where the README said to look for it, and it is not in the pass rate.**
+  `find-the-rule` medians: `full` **11** calls, `baseline` **21**, `no-search` **19**. The
+  search mechanism costs roughly 1.9× the calls when removed, on the one task built to
+  price enumeration — and comparing *overall* mean calls per arm (11.0 vs 10.8) averages
+  that away. The table above is per arm and per task for exactly this reason.
+- **`tight-window` is the only arm with a cost that reproduces**: −19%, a pass lost on four
+  different tasks, and two of its failures are **budget overruns** (`60` and `46` tool calls
+  against a limit of 40). Losing context makes the agent re-explore; that is an interpretable
+  mechanism, not noise.
+- **`no-pinning`'s −10% and `no-repair`'s −5% are concentrated on `out-of-scope`** (1/3 and
+  2/3), where the failure reason is `the agent never mentioned 'settings.py'`. The same reason
+  also appears under `tight-window`, which is the tell: at n=3 that is **one run's variance,
+  not a cell's behaviour** — this file's own rule.
+- **The repair loop converted two *checks* and zero *rows*.** Both conversions are
+  `tight-window/rep3` (`find-the-bug` and `find-the-rule`, verdicts `False,True`) and both
+  rows still failed on the tool-call budget. So `pass@1 106/126 → pass@2 108/126` is a
+  statement about check verdicts, and nothing in this sweep became a pass *because* of the
+  loop.
+- ⚠️ **`two-attempts` — the task built to make `no-repair` discriminate — was solved on the
+  first attempt, 3/3, under every arm.** Its repair-loop arm is therefore **unfalsifiable in
+  live runs** and only discriminates in `--scripted` mode. A task set whose discriminating
+  cells only work with a replay model cannot support a claim about a real one.
+
+⚠️ **`pass@1` / `pass@2` track the *check*, not the row's expectation.** On `incomplete`,
+whose correct outcome is to stop *before* the model, they read `0/3` while `pass` is `3/3`;
+on a variant whose expectation is `failed` the same inversion appears. The columns answer
+"did the check pass on attempt N"; the `pass` column answers "did the row meet what the task
+asked for". Read them together or not at all.
+
+**12. A variant's `script` only applies under `--scripted`, and running one live is
+meaningless.** `--variant weakens-the-test --live` looks like the oracle experiment and is
+not one: under `--live` the model is real and never follows the script, so it simply fixes
+the bug, the checks pass, and all six rows "fail" their expectation — under `full` *and*
+`no-pinning` alike, which reads like "the oracle does not discriminate". It does, in the mode
+the variant was written for:
+
+```
+--scripted --variant weakens-the-test
+  full        3/3 PASS   state failed, checks fail   (the held oracle decides)
+  no-pinning  3/3 FAIL   state ready,  checks pass   (the weakened test decides)
+```
+
+And on those same `no-pinning` rows the **held-out probe** fired unprompted
+(`moving_average([2,4,6,8,10], 3) -> [4,6]`), which is the confirmation that the two
+instruments are independent: the probe does not need the oracle to be held, and the oracle
+does not need the probe. What caught the mistake was reading the **reason** — the six rows
+failed on *"state 'ready' not in ['failed']"*, which is a good agent's signature, not a
+cheating one's.
+
 ## Reading the output
 
 ```
