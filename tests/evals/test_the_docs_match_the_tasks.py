@@ -33,7 +33,9 @@ import arms as arm_module  # noqa: E402
 import harness as H  # noqa: E402
 
 README = (FORGE / "evals" / "README.md").read_text(encoding="utf-8")
-CLAUDE = (FORGE / "CLAUDE.md").read_text(encoding="utf-8")
+# `CLAUDE.md` is deliberately untracked (`.gitignore`), so nothing here reads it: a clone has
+# no front door, and a module-level `read_text` on one would abort collection instead of
+# skipping. The counts it used to carry now live in `docs/notes/evals.md`.
 
 
 def test_every_task_has_a_row_in_the_readme_table() -> None:

@@ -2,7 +2,7 @@
 
 企业级 Coding Agent 平台：面向「查 Bug → 修 Bug → 出可评审 PR」这条链路，在通用编码 Agent 之上补齐三样东西——企业上下文（跨仓代码、TAPD 工单）、固化的构建/测试/返修流程、可解释的代码评审。
 
-架构设计见 `ForgePilot文档.md`；实现方案见 `CLAUDE.md` 与 plans 目录。
+架构设计见 `ForgePilot文档.md`，实现方案见 `docs/实现方案.md` 与 `~/.claude/plans/`。**这三份和 `CLAUDE.md` 一样不进仓库**——它们是工作区里的私有说明与记录（`.gitignore` 里写了原因），克隆下来得到的是代码、`docs/notes/` 与本文件。
 
 ## 架构定位
 
@@ -24,7 +24,7 @@
 .venv/Scripts/python.exe -m forgepilot --kernel-check
 ```
 
-三种模式、`--serve`、端到端跑一张工单、以及评测的入口，都在 `CLAUDE.md` 的 **Commands** 里——那里是唯一的清单。
+三种模式、`--serve`、端到端跑一张工单、以及评测的入口，都在工作区文档 `CLAUDE.md` 的 **Commands** 里——那里是唯一的清单（该文件不进仓库，见 `.gitignore`）。
 
 ## 当前进度
 

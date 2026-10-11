@@ -14,6 +14,18 @@ dist/
 .env.local
 .env
 
+# Workspace-private documents: instructions and design records written for whoever is
+# working in *this* directory, not for whoever clones it. `CLAUDE.md` is the file a harness
+# injects into the model's context, and `ForgePilot文档.md` / `docs/实现方案.md` are the two
+# documents it names as the sources of intent and of the build decisions. Each belongs to a
+# workspace, so each is kept here and never committed — they were tracked once and were
+# removed from the history too, and a clone gets the code, `docs/notes/` and `README.md`.
+# `tests/contract/test_the_workspace_instructions_fit_the_budget.py` is the guard on the
+# front door and skips when the file is not in the checkout.
+CLAUDE.md
+ForgePilot文档.md
+docs/实现方案.md
+
 # `pytest --cov` writes this beside whatever directory it ran in, so the gate left an
 # untracked file in the repository root the first time it was run. Output, not source.
 .coverage

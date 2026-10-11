@@ -17,6 +17,12 @@ Three directions, because each one fails differently:
 * **the front door over budget** — the tail is silently not read (the original defect);
 * **a note named but absent** — a reader is sent to a file that is not there;
 * **a note present but unnamed** — nobody reads it, which is the same failure, quieter.
+
+⚠️ **This is a workspace guard, not a checkout guard.** `CLAUDE.md` is deliberately untracked
+(`.gitignore`): it is written for whoever works in *this* directory, and it was removed from
+the history along with the two documents it names. A clone therefore has no front door to
+read, and the module skips there rather than failing a checkout for a file it was never
+supposed to contain. The check earns its place on the machine that has the instructions.
 """
 
 from __future__ import annotations
@@ -33,6 +39,14 @@ NOTES_DIR = FORGE / "docs" / "notes"
 
 #: The workspace-instruction budget: what the harness injects before truncating.
 BUDGET = 65_536
+
+if not FRONT_DOOR.exists():
+    pytest.skip(
+        f"{FRONT_DOOR.name} is not in this checkout — it is deliberately untracked "
+        f"(`.gitignore`), so there is no front door to check here. Run this in a workspace "
+        f"that carries the instructions.",
+        allow_module_level=True,
+    )
 
 
 def _front_door() -> str:
