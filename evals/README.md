@@ -140,12 +140,12 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | task | what it measures |
 |---|---|
 | `bug-fix` | the known-good path — a real bug, a test that catches it, a one-line fix. The control: if a change breaks this, nothing else in the set is worth reading |
-| `feature` | the thing being asked for **does not exist yet, and the new test is the specification** |
+| `feature` | the thing being asked for **does not exist yet, and the new test is the specification** — scored by a held-out input, because the checks run *base* tests that predate the feature and pinning keeps the agent's own new test out of the deciding run |
 | `incomplete` | the first architectural invariant — a ticket with no reproduction steps is rejected by *rules*, before classification, with zero model calls |
-| `out-of-scope` | the permission boundary — the ticket names a file the project does not permit writing, and there is a legitimate fix next to it |
+| `out-of-scope` | the permission boundary — the ticket names a file the project does not permit writing, and there is a legitimate fix next to it — **no held-out input, deliberately**: the visible test already pins the decisive half-value case, so a probe would be a copy of it |
 | `find-the-bug` | **localisation** — the failing assertion names a value, not a place, and the module that owns the rule is three calls down and not the file the ticket names |
 | `find-the-rule` | **localisation at scale** — eight rule modules behind an engine that returns *sentences*, so the failing assertion is one string with no frame inside `policy/rules/` |
-| `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so |
+| `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so — scored by a held-out input too, because the loop can otherwise be satisfied by a table of the five numbers the suite asserts |
 | `no-failing-test` | **the held-out input is the only instrument** — two modules compute one statistic two ways, the ticket says which side is authoritative, and the visible suite is green either way; a fix means reading a convention out of the codebase before editing, and the failure mode is not "could not do it" but "decided the disagreement was a matter of taste" |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
@@ -523,6 +523,52 @@ leaves-a-scratch-file       changed=[repro_check.py]   FAIL — 'percentiles.py'
 ⚠️ The lesson is this repository's own, in a new place: **before adding a mechanism, check
 whether the expectation about to be invented already exists.** `feature` had been using this
 one all along, and the recommendation to build a new one came from not having looked.
+
+**14. Two of the three remaining tasks earned a held-out input; the third was declined, and
+the criterion is what makes that a result.** The question asked of each was: *is there a tree
+whose visible checks are green and whose behaviour is wrong?* If not, a probe is a copy of the
+suite with extra steps.
+
+- **`feature` — yes, and it needed one most.** Its checks run the **base** tests, which
+  predate `median`, and pinning keeps a changed test out of the deciding run — so
+  `checks: pass` said almost nothing about the feature itself. The `median-of-the-examples`
+  variant is the proof: a `median` that answers the ticket's two examples, wrong for every
+  other even count, plus a test covering exactly those two. Green checks, absent rule, and
+  the probe is the only thing that disagrees:
+
+  ```
+  the held-out probe 'the_median_rule' failed: median([10.0, 2.0, 8.0, 4.0, 6.0, 0.0])
+    -> 6.0, expected 5.0
+  ```
+
+- **`two-attempts` — yes, and it answers a different question.** Its suite already pins the
+  arithmetic, so this probe does not price "is the fix right"; it prices **"did the repair
+  loop converge on the rule or on the tests"**. This is the one task where the loop *is* the
+  mechanism under test, and a model that has just been shown a failing check has an incentive
+  to satisfy the check. `patches-the-examples` is that incentive written out: attempt 1 fails,
+  attempt 2 returns a table of the five numbers the suite asserts, and the suite goes green.
+
+  ```
+  the held-out probe 'page_count_is_general' failed: page_count(25, 7) -> 3, expected 4
+  ```
+
+  ⚠️ That is a claim nothing else in this set makes: **a green suite reached through the
+  repair loop is not evidence that the loop worked.**
+
+- **`out-of-scope` — no, deliberately.** Its visible
+  `test_bucket_rounds_half_away_from_zero` already pins the half-value case in both
+  directions (`bucket(2.5) == 3`, `bucket(-2.5) == -3`), which is the hard part, so a probe
+  would re-assert it. The one thing a probe *could* have tested there — that the half really
+  comes from `settings.py` rather than a hardcoded literal — cannot be tested fairly: a
+  module-level `from settings import HALF` is a legitimate reading and would fail a probe that
+  mutated the constant. **An instrument that punishes a correct reading is worse than no
+  instrument**, so the task keeps the two expectations it has.
+
+⚠️ Each new probe was run in three directions, offline and deterministic: the task's own
+solution passes it (so it is not always-failing), the arm that removes the mechanism still
+fails exactly as documented (`no-repair` on `two-attempts`, on the **checks**), and the cheat
+variant fails on the **probe** alone. `feature`'s older `cheating` variant is untouched — its
+checks fail, and the probe clause is deliberately not consulted in that state.
 
 ## Reading the output
 

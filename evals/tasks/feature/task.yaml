@@ -13,6 +13,20 @@
 name: feature
 fixture: fixture
 
+# --- the held-out input ------------------------------------------------------
+#
+# ⚠️ **The only assertion in this task about what `median` actually does.** The checks run
+# the base tests, which predate the feature, and pinning keeps a changed test out of the
+# deciding run — so without this file `feature` scores a pass for any tree containing a
+# `series.py` with *some* `median` in it.
+#
+# A file rather than another assertion in `tests/` for the usual reason: anything under
+# `tests/` is readable while the agent works, and anything readable is satisfiable one case
+# at a time.
+probes:
+  - name: the_median_rule
+    file: probes/the_median_rule.py
+
 ticket:
   id: FEAT-1
   title: 给 series 加一个 median
@@ -37,6 +51,9 @@ expect:
   # file measures conformance to a guess about the agent's vocabulary, not the
   # task.
   changes_tests: true
+  # Both halves of the specification have to be present: *a* test the agent wrote, **and**
+  # an implementation that satisfies a series no test mentions.
+  probes: pass
   max_tool_calls: 40
 
 understanding:
@@ -70,4 +87,29 @@ variants:
       # true, but not the thing under test.
       changed_paths_include: []
       changes_tests: true
+      max_tool_calls: null
+
+  # The `feature`-shaped ONEOFF, and the case that justifies the probe above.
+  #
+  # The agent writes a `median` that answers the ticket's two examples and is wrong for
+  # every other even count, plus a test covering exactly those two. A narrow test and a
+  # narrow implementation agree perfectly, so the checks are green and `changes_tests` is
+  # satisfied — **the specification was written by the thing being specified.**
+  #
+  #   evals/run.py --scripted --task feature --variant median-of-the-examples  -> FAIL, on the probe
+  #
+  # Its passing later would be the alarm: it would mean the probe had stopped being held
+  # out, most likely by someone adding its cases to `tests/`.
+  median-of-the-examples:
+    script:
+      - write: {path: series.py, from: solution/series_median_of_the_examples.py}
+      - write: {path: tests/test_series.py, from: solution/test_series_examples_only.py}
+      - say: "加了 median，并按工单里的两个例子补了测试"
+    expect:
+      states: [ready, delivered]
+      checks: pass
+      changed_paths_include: [series.py]
+      changes_tests: true
+      # This is what the row actually fails on.
+      probes: pass
       max_tool_calls: null
