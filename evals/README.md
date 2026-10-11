@@ -499,12 +499,30 @@ unmodified tree; the state machine called the run `ready`; and **only the probe 
 ⚠️ **That exposes a property of this task shape worth stating plainly: when the suite is green
 before the fix, "do nothing" satisfies the harness's own success criterion.** `ready` with
 `checks: pass` is reachable by editing nothing, so on this task the probe is not a second
-opinion — it is the entire verdict. A `min_changed_paths`-style expectation would not have
-helped either, and the failing row is the proof: the run *did* change a path, a scratch file
-it left in the tree. Catching that needs an expectation that a **named** file must change,
-which is a new expectation kind rather than a config line. Until it exists, this task is
-scored by its probe and nothing else — said here rather than left for someone to discover
-from a green row.
+opinion — it is the entire verdict.
+
+⚠️ **Correction, because the first version of this paragraph was wrong.** It said that
+catching this needs a new expectation kind. It does not. `changed_paths_include` already
+existed — `feature` has declared it since the arm work — and its "**all of** these paths
+changed" semantics are the right ones here, because the ticket *names* the file. What was
+missing was a declaration in this task, not a mechanism; and a `min_changed_paths`-style
+expectation would indeed not have helped, because the failing row *did* change a path — a
+scratch file it left in the tree.
+
+So the fix was one line in `task.yaml`, plus a variant that reproduces the observed run
+offline so the clause has a regression test that costs nothing. The two instruments stay
+distinguishable, which was the property worth checking rather than assuming:
+
+```
+the fix                     changed=[percentiles.py]   pass
+leaves-the-method-alone     changed=[percentiles.py]   FAIL — on the probe alone
+leaves-a-scratch-file       changed=[repro_check.py]   FAIL — 'percentiles.py' was not
+                                                              changed, and the probe
+```
+
+⚠️ The lesson is this repository's own, in a new place: **before adding a mechanism, check
+whether the expectation about to be invented already exists.** `feature` had been using this
+one all along, and the recommendation to build a new one came from not having looked.
 
 ## Reading the output
 

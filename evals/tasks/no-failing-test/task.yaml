@@ -48,6 +48,18 @@ expect:
   oracle_pinned: any
   # Two modules are named; the fix belongs in one of them.
   max_changed_paths: 2
+  # ⚠️ **The clause that catches "investigated, then stopped."** A task whose suite is
+  # green before the fix can be satisfied by editing *nothing*, and the first live run
+  # proved it: 17 calls, a 10-line `repro_check.py` of its own, `percentiles.py`
+  # untouched, `ready` with `checks: pass`.
+  #
+  # `changed_paths_include` is the expectation that already existed for this — `feature`
+  # declares it — so what was missing was a line here, not a mechanism. "All of" is the
+  # right semantics rather than "at least one of" for the same reason it is right there:
+  # the ticket **names** the file, so the fix belongs in it. A run that edits the report
+  # instead has moved the problem, not fixed it, and is caught by the report's own test
+  # as well.
+  changed_paths_include: [percentiles.py]
   max_tool_calls: 40
   # Room to read the report, its test, and the ticket's own reproduction before
   # writing anything — which is the behaviour under test, so the budget must not
@@ -89,4 +101,25 @@ variants:
       checks: pass
       probes: pass
       # The question here is the verdict, not the size of the diff.
+      max_changed_paths: null
+
+  # The measured live failure, reproduced without a network — so the clause above has a
+  # regression test that costs nothing to run. This is the **observed** run, not an
+  # invented one: `changed: [repro_check.py]`, `percentiles.py` untouched, the checks
+  # green because nothing was broken.
+  #
+  #   evals/run.py --scripted --task no-failing-test \
+  #       --variant leaves-a-scratch-file            -> FAIL
+  #
+  # It fails twice, and both statements are true of the run: `percentiles.py` was not
+  # changed (the new clause) and the interpolation is still in the tree (the probe). The
+  # report lists both reasons; neither is redundant, because they are the two independent
+  # instruments this task needs and it now has both.
+  leaves-a-scratch-file:
+    script:
+      - write: {path: repro_check.py, from: solution/scratch_repro.py}
+      - say: "先把工单里的命令复现一遍，确认两边的差异"
+    expect:
+      states: [ready, delivered]
+      checks: pass
       max_changed_paths: null
