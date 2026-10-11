@@ -1,22 +1,29 @@
-# ⚠️ **This workflow has never run.** The repository has no remote configured, so
-# nothing has exercised it — it is here so that the first push finds a gate instead of
-# a promise, and it is deliberately thin: install the package, call the same entry a
-# person calls (`tools/check.py`), so a local green run and a CI green run cannot be
-# measuring different things.
+# ✅ **This workflow has run.** The first real run — 38139694497, on the push that gave the
+# repository its remote — was **green in both jobs, 42 s and 43 s**: `ruff` clean,
+# `1053 passed, 217 skipped`, 922 of 7718 statements missed (**88.05%** against the 85 bar),
+# `All gates passed.` in `check`; the container suite `2 passed`, `--sandbox-check` exiting 1
+# for the default profile and 0 where containment is real, and `31 passed, 1 skipped` in
+# `sandbox`. See `docs/notes/gates-on-linux.md`. The workflow is deliberately thin: install
+# the package and call the same entry a person calls (`tools/check.py`), so a local green run
+# and a CI green run cannot be measuring different things.
 #
-# ⚠️ **Expect the first real run to be informative rather than green.** Linux is the
-# *production* platform and the development box is Windows, where **215 tests skip** —
-# the namespace sandbox, the container transport, the tree-sitter AST path and anything
-# else that needs a Linux kernel. Those tests have never executed anywhere. This workflow
-# is where they run for the first time, so a failure here is a finding about code that
-# was previously only asserted about, not a broken pipeline.
+# ⚠️ **The first run was green; the one skip in it is a finding, and it is the one this file
+# predicted.** `test_a_write_outside_the_workspace_is_refused` — the test the namespace
+# provider exists for — is hardcoded to the `wsl` transport, so on the runner it skips with a
+# reason that names the transport rather than the kernel, exactly as its docstring said the
+# first Linux run would confirm. The real-kernel evidence therefore comes from the
+# `--privileged` container step, whose suite *does* execute. A later skip for a *different*
+# reason is a finding about code that was previously only asserted about, not a broken
+# pipeline — the `sandbox` job's step is named for that.
 #
 # ⚠️ **`runs-on` is pinned rather than `-latest`, and the pin is not cosmetic.** The
 # runner image decides the kernel's namespace policy, and a *security* claim about the
 # sandbox rests on it — `ubuntu-latest` moving from 22.04 to 24.04 would change what a
-# green run means, with no edit to this repository. Two things about the sandbox are
-# recorded in `CLAUDE.md` under "The runner is pinned" as **read, not measured**; the
-# `sandbox` job below is where they get measured.
+# green run means, with no edit to this repository. What the pin means in practice was
+# settled by the first run: the native boundary is not exercised on `ubuntu-22.04` (the
+# skip above), so the `sandbox` job's container step is where containment is executed, and
+# whether an unprivileged runner could run the native transport at all stays open — see
+# `CLAUDE.md` under "The runner is pinned".
 name: ci
 
 on:
@@ -127,10 +134,12 @@ jobs:
               --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check
           '
 
-      # ⚠️ **A `SKIPPED` here is a finding, not a pass.** `-rs` prints the reason. Two
-      # candidate causes, both recorded in `CLAUDE.md`: the test's transport is hardcoded
-      # to `wsl -d docker-desktop` (absent on a Linux host), and `build_argv` creates
-      # mount/pid/net namespaces with no user namespace, which needs root or
-      # `CAP_SYS_ADMIN`. Read the reason before reading anything into a green job.
+      # ⚠️ **A `SKIPPED` here is a finding, not a pass.** `-rs` prints the reason, and the
+      # first run supplied it: `31 passed, 1 skipped`, the skip naming the **transport** —
+      # `no namespace boundary on this host: the transport 'wsl' is missing` — rather than
+      # the kernel. That was one of the two candidates recorded in `CLAUDE.md`; the other
+      # (`build_argv` builds mount/pid/net namespaces with no user namespace, so it needs
+      # root or `CAP_SYS_ADMIN`) is the reason a different transport is not a config change.
+      # Read the reason before reading anything into a green job.
       - name: the native kernel sandbox (a skip here is not a pass)
         run: python -m pytest tests/providers/test_namespace_sandbox.py -v -rs

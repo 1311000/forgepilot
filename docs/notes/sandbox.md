@@ -266,8 +266,11 @@ the pure tests, which asserted the *rule list* rather than what the sequence doe
    container with no locale. It is now asserted pure-ASCII.
 
 **`tests/providers/test_namespace_sandbox.py::test_a_write_outside_the_workspace_is_refused`
-still skips on Windows**, with the four wsl.exe transport failures named in its
-reason. `test_namespace_sandbox_container.py` is the one that runs here.
+skips on Windows *and on the Linux runner*, and in both cases the reason names the transport**
+— the four wsl.exe failures here, and `no namespace boundary on this host: the transport 'wsl'
+is missing` in CI (run 38139694497). `test_namespace_sandbox_container.py` is the one that
+executes against a real kernel, `2 passed` in that run, so the write refusal is verified —
+just not by this test. See `docs/notes/gates-on-linux.md`.
 
 ## Sandbox notes (read before running anything for real)
 

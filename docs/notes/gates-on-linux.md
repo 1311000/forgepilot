@@ -25,7 +25,7 @@ yet measured* is worth more than one that quietly reads as verified:
 
 | # | What | Evidence | What settles it |
 |---|---|---|---|
-| **N1** | The only test that runs a command through the real boundary **cannot pass anywhere.** It is `skipif(not ON_LINUX)`, and on Linux its transport is `["wsl", "-d", "docker-desktop", "--", "unshare"]` — `wsl` does not exist there, so `probe()` returns `NONE` (`namespace.py:267`). ⚠️ **The skip is not what happens.** The test prepared its workspace *before* reaching that guard: `subprocess.run(["wsl", …], check=True)` at `:311` raised `FileNotFoundError`, so the `-rs` reason the `sandbox` job exists to print was never printed, and the `check` job (the whole suite) would have gone red on a test that measured nothing. Fixed by moving the preparation behind the guard — and **measured on Linux: it skips instead of crashing**. And when it *can* run, two read-not-measured inconsistencies stand in its way: the writable bind is `policy.workspace_root` (`/srv/checkouts/svc-a`, bound unconditionally at `namespace.py:116`) while the test writes in `/tmp/forgepilot-sandbox-test`, and `/tmp` is replaced by a fresh tmpfs **last** (`namespace.py:129`) — which hides anything prepared under it and makes the launcher's `cd` exit 126. Containment's executing instrument is the `--privileged` container test, whose image is now `ubuntu:24.04` (`redis:7.4.2-alpine` hung on `apk add util-linux` — see "The first Linux run"). On Windows the decorator skips it | `tests/providers/test_namespace_sandbox.py:271-279,311-319`; `tests/providers/test_namespace_sandbox_container.py:103-117` | **Measured.** On Linux that file is `16 passed, 1 skipped`, and the reason at `:323` names the transport: `no namespace boundary on this host: the transport 'wsl' is missing, or it cannot create namespaces for this user`. The reorder is the whole difference between that skip and the `FileNotFoundError` that would have killed the job. ⚠️ The `/tmp`-vs-`workspace_root` inconsistency is **not** exercised on the skipping path, so it stays unmeasured; and switching the native transport to `unshare -U -r` is now supported by N2's measurement but is a decision, not a typo fix |
+| **N1** | The only test that runs a command through the real boundary **cannot pass anywhere.** It is `skipif(not ON_LINUX)`, and on Linux its transport is `["wsl", "-d", "docker-desktop", "--", "unshare"]` — `wsl` does not exist there, so `probe()` returns `NONE` (`namespace.py:267`). ⚠️ **The skip is not what happens.** The test prepared its workspace *before* reaching that guard: `subprocess.run(["wsl", …], check=True)` at `:311` raised `FileNotFoundError`, so the `-rs` reason the `sandbox` job exists to print was never printed, and the `check` job (the whole suite) would have gone red on a test that measured nothing. Fixed by moving the preparation behind the guard — and **measured on Linux: it skips instead of crashing**. And when it *can* run, two read-not-measured inconsistencies stand in its way: the writable bind is `policy.workspace_root` (`/srv/checkouts/svc-a`, bound unconditionally at `namespace.py:116`) while the test writes in `/tmp/forgepilot-sandbox-test`, and `/tmp` is replaced by a fresh tmpfs **last** (`namespace.py:129`) — which hides anything prepared under it and makes the launcher's `cd` exit 126. Containment's executing instrument is the `--privileged` container test, whose image is now `ubuntu:24.04` (`redis:7.4.2-alpine` hung on `apk add util-linux` — see "The first Linux run"). On Windows the decorator skips it | `tests/providers/test_namespace_sandbox.py:271-279,311-319`; `tests/providers/test_namespace_sandbox_container.py:103-117` | **Measured.** On Linux that file was `16 passed, 1 skipped` in the hand-run container, and on the runner it is `31 passed, 1 skipped` (the file grew), and the reason at `:448` names the transport: `no namespace boundary on this host: the transport 'wsl' is missing, or it cannot create namespaces for this user`. The reorder is the whole difference between that skip and the `FileNotFoundError` that would have killed the job. ⚠️ The `/tmp`-vs-`workspace_root` inconsistency is **not** exercised on the skipping path, so it stays unmeasured; and switching the native transport to `unshare -U -r` is now supported by N2's measurement but is a decision, not a typo fix |
 | **N2** | `build_argv`'s flags are `["--mount","--pid","--ipc","--uts","--fork","--mount-proc"]` (+`--net`) — **no `-U`, no `-r`.** Creating a mount/pid/net namespace needs `CAP_SYS_ADMIN` in the *current* user namespace, so the bundled `enter: [unshare]` requires root or a privileged container. A non-root deployment fails on **every** distro, and the refusal message's explanation (Ubuntu 24.04's AppArmor policy) is not the operative cause for that caller | `src/forgepilot/providers/sandbox/namespace.py:212`; the claims it qualifies are `providers/sandbox/namespace.py:252-253` and `bundles/kernel_sandbox/patch.yaml:24-27` | **Measured** in a `--privileged` container on Docker Desktop's kernel (`6.18.40.1-microsoft-standard-WSL2`): as root both forms exit 0; as uid 1000 the shipped argv exits **1** (`unshare: unshare failed: Operation not permitted`) while `unshare -U -r …` exits **0** and `unshare -U true` exits **0**. The refusal message's AppArmor explanation is not the operative cause for this caller — `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` does not exist on that kernel. ⚠️ The AppArmor half needs an Ubuntu-23.10+/24.04 *host* and cannot be measured from inside a container, so the 22.04 pin stands |
 | **N3** | The workflow installed `-e ".[dev]"`, and `[dev]` carries neither `web` nor `ast` — so on CI the **HTTP/SSE surface would not run either**: `tests/httpapi/conftest.py:28` is a module-level `pytest.importorskip("fastapi")`, and the production platform would have executed *less* than this Windows dev box (fastapi, uvicorn and sse-starlette are installed here). The AST test has the same shape from the other side — it needs `tree-sitter`, whose Wheel exists only on Linux, and `[dev]` does not ask for it, so the AST path would have run **nowhere at all** | `pyproject.toml:29-44` (`dev`), `:52-70` (`web`, `ast`); `tests/httpapi/conftest.py:28`; `tests/review/test_review_mode.py:331-334,356-364` | fixed in `ci.yml` to `-e ".[dev,web,ast]"`; **the first run of that job is the verification** — for the two extras *and* for the AST path, which may well be red, which is a finding rather than a broken pipeline |
 | **N4** | The skip inventory was wrong the first time, and the mistake is reusable: `@pytest.mark.skipif` finds the two decorator gates, but a **module** is gated by `pytestmark = pytest.mark.skipif(...)`, which no decorator pattern sees — and the wholesale disappearances are there. The gates in `tests/`: 2 module-level (`test_namespace_sandbox_container.py:61` on `_docker_usable()`; `test_github_vcs_live.py:39` on two env vars), 2 decorators (`test_namespace_sandbox.py:278` Linux; `test_review_mode.py:356` tree-sitter), 1 `importorskip` (`httpapi/conftest.py:28`), 3 per-test `pytest.skip` (`contract/test_import_graph.py:89,116,130`). So the Linux run newly executes the **container suite** (once a job exports `FORGEPILOT_SANDBOX_CONTAINER` **and** `docker` is on `PATH` — the `sandbox` job supplies both, which is why that job is where containment can first be *executed*), the **AST test**, and the **HTTP/SSE suite** (N3). ⚠️ `test_github_vcs_live.py` must **stay** skipped: it pushes a branch and opens a real pull request, so exporting those two variables into any job turns a gate into an outward-facing act | `tests/providers/test_namespace_sandbox_container.py:54-69`; `tests/providers/test_github_vcs_live.py:36-46` | `pytest tests/ -q -rs` on Linux, then compare the skip reasons against this list |
@@ -87,8 +87,9 @@ first container run measures; the verification command therefore is `docker run
 ## The first Linux run
 
 The gate ran on Linux for the first time in this session, in a local `ubuntu:24.04`
-container — not in CI, which still has no remote. The recipe, because two of its steps are
-the difference between a measurement and a story:
+container — not in CI, which still had no remote at that moment (the workflow has since run
+for real: see "The workflow itself, run for the first time" below). The recipe, because two
+of its steps are the difference between a measurement and a story:
 
 ```bash
 docker run --rm -v <tree>:/work:ro ubuntu:24.04 bash -c '
@@ -190,10 +191,60 @@ runner, and in the container, `recording` reports `none` while the profile's bar
 `full`. That is the assertion a host cannot accidentally satisfy.
 
 The recipe is not aspirational — every command in the workflow's container step was
-run by hand first, and the note that it *was* measured is in the step. Like the rest
-of the workflow it stays unexecuted until the repository has a remote (P2-3): the
-distinction between "measured by hand" and "run by CI" is the whole subject of this
-file, so it is written down rather than blurred.
+run by hand first, and the note that it *was* measured is in the step. It has since run
+**in CI** (see below), which is what the distinction was for: measured by hand first, then
+confirmed by the runner (`probe full`, `shell ran, exit code 0`, `result OK`, and the
+container suite's `2 passed`).
+
+## The workflow itself, run for the first time
+
+`.github/workflows/ci.yml` had never executed because the repository had no remote. It does
+now — but **not the repository this project's own examples push into**: `1311000/test` is the
+fixture `examples/stat-fix/github/` and `tests/providers/test_github_vcs_live.py` operate on
+(its `main` is the seeded `metrics-stats` tree and it carries the example's two pull requests),
+so the source went to a repository of its own, `1311000/forgepilot`, and `main` was pushed
+there. Trigger: `push` on `main`. Run:
+[38139694497](https://github.com/1311000/forgepilot/actions/runs/38139694497).
+
+**Both jobs green, in 42 s and 43 s**, and the numbers are the interesting part:
+
+| job | measured |
+|---|---|
+| `check` | `ruff check .` clean; **`1053 passed, 217 skipped in 27.54s`**; TOTAL 7718 statements, **922 missed, 88.05%**; `Required test coverage of 85.0% reached.`; `All gates passed.` |
+| `sandbox` | 8/8 steps. `tests/providers/test_namespace_sandbox_container.py` → **`2 passed in 3.90s`**. `--sandbox-check`: default profile → `claim read_scope: not declared`, `probe none`, `required full`, `shell refused, nothing executed`, exit 1 (asserted by the step); privileged `ubuntu:24.04` → `claim read_scope: host`, `probe full`, `shell ran, exit code 0`, `result OK`. `tests/providers/test_namespace_sandbox.py` → **`31 passed, 1 skipped`** |
+
+⚠️ **The two runs skip the same number of tests, and that is not agreement.** This box reports
+`1053 passed, 217 skipped` as well — the counts match, the *sets* do not: here the container
+and namespace suites skip for want of a Linux kernel, while the `check` job names no
+`FORGEPILOT_SANDBOX_CONTAINER` image, so its container suite skips for a different reason and
+its AST and HTTP/SSE suites run (N3, N6). What the run does settle is the line count: **922
+missed against 942 here** — executing the POSIX-only paths moves coverage *up*, the direction
+the bar was chosen for, and equal pass counts say nothing about it.
+
+**N1's prediction is now measured on the runner it was written for.** The native step is named
+"a skip here is not a pass", and a skip is exactly what happened — one test,
+`test_a_write_outside_the_workspace_is_refused`, with the reason line:
+
+```
+SKIPPED [1] tests/providers/test_namespace_sandbox.py:448: no namespace boundary on this host:
+the transport 'wsl' is missing, or it cannot create namespaces for this user (see `_probe_now`)
+```
+
+The file's docstring said the first Linux run would "confirm the reason line names the
+transport rather than the kernel" — it does, word for word. That is not a red build and not a
+silenced one: the test is hardcoded to the `wsl` transport, so on the production platform it
+still cannot run, and **the executing instrument remains the `--privileged` container test**
+(the `2 passed` above), which is what N1 already said it was. Whether some other transport
+would run there is **open, and it is not a matter of configuration**: `build_argv` builds
+mount/pid/net namespaces with **no user namespace**, so it needs root or `CAP_SYS_ADMIN` (N2).
+Making the native boundary reachable for an unprivileged runner is a change to
+`providers/sandbox/namespace.py` — the same size of change as finding 20's rule 1, and it needs
+its own milestone rather than a rider on the commit that switched CI on.
+
+⚠️ **One annotation on both jobs, dated and not fatal:** `actions/checkout@v4` and
+`actions/setup-python@v5` target Node.js 20 and are being forced onto Node.js 24. Nothing to
+change today; it is written down because a future red build caused by an action's runtime is
+exactly the "gate that fails for a reason unrelated to the change" this file argues against.
 
 ## What the first run of the linter found
 
