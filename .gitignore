@@ -14,6 +14,12 @@ dist/
 .env.local
 .env
 
+# `pytest --cov` writes this beside whatever directory it ran in, so the gate left an
+# untracked file in the repository root the first time it was run. Output, not source.
+.coverage
+.coverage.*
+htmlcov/
+
 # Generated knowledge-graph output (the /graphify skill). Build artefact: large,
 # derived, and regenerated on demand — it has no business in the history.
 graphify-out/
