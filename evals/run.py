@@ -106,7 +106,15 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         if not plan.ready:
             row.update(
                 state=str(plan.state), delivered=False, checks_passed=False,
-                changed=[], wall_s=round(time.monotonic() - started, 2), **{
+                changed=[], wall_s=round(time.monotonic() - started, 2),
+                # Empty rather than absent: a plan that never became ready made no
+                # attempt at the check, and `any([])` is False — the honest reading.
+                # A *missing* key means an old results file, and the report says so.
+                check_verdicts=[],
+                # No tree was worked on, so no held-out input can say anything.
+                # `score` only looks at probes when the checks passed, so this is
+                # never the reason a refused plan failed — its state is.
+                probes=[], **{
                     k: 0 for k in ("steps", "turns", "tool_calls", "compactions", "shadowed")
                 },
             )
@@ -138,6 +146,17 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         )
 
         final = outcome.checks[-1] if outcome.checks else None
+        # ⚠️ **Per attempt, because one number hides the mechanism.** A row carrying
+        # only the *final* verdict cannot tell a fix that worked first time from one
+        # the repair loop rescued — and "the second round is what turns one into the
+        # other" is the entire claim the loop rests on. `task.py` appends exactly one
+        # check per attempt, in order, so index 0 is the first attempt's verdict:
+        # that is pass@1, and the last is what the run delivered.
+        #
+        # Absent from rows recorded before this existed. The report prints `-` for
+        # those rather than a rate of zero, because "no attempt passed" and "nobody
+        # wrote it down" are different facts.
+        row["check_verdicts"] = [bool(c.passed) for c in outcome.checks]
         added = tuple(p for p in outcome.changed_paths if p not in shipped)
         row["added_paths"] = list(added)
         row["added_tests"] = list(project.tests_in(added))
@@ -172,6 +191,13 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
             attempts=outcome.attempts,
             **H.summarise_session(runtime.session),
         )
+        # **After the run, against what it left behind.** The held-out inputs only
+        # mean something once the tree is final, and they are the only instrument
+        # here that can see a cheat which never touched a test — see
+        # `harness.run_probes`. ⚠️ And "what it left behind" is the session's
+        # *worktree*, not the origin checkout the fixture was copied to: probing the
+        # origin reports a correct fix as a cheat. See `harness.working_tree`.
+        row["probes"] = H.run_probes(H.working_tree(repo), task)
     except Exception as exc:  # noqa: BLE001 - a crash is a result, not a missing row
         row["error"] = f"{type(exc).__name__}: {exc}"
         row["traceback"] = traceback.format_exc()[-1500:]
@@ -207,6 +233,11 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
     row.setdefault("changed", [])
     row.setdefault("pinned", [])
     row.setdefault("left_the_workspace", [])
+    row.setdefault("check_verdicts", [])
+    # The held-out probes, run against the tree the agent left behind. Defaulted
+    # rather than left absent so `score` can tell "this task holds nothing out"
+    # from "the run forgot to say" — the second is a defect in this harness.
+    row.setdefault("probes", [])
     for key in ("steps", "turns", "tool_calls", "compactions", "shadowed"):
         row.setdefault(key, 0)
     row["wall_s"] = round(time.monotonic() - started, 2)

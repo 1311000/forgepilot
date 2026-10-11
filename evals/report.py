@@ -41,22 +41,99 @@ def _median(values: list[float]) -> str:
     return f"{statistics.median(values):.0f}" if values else "-"
 
 
+def _pass_at(row: dict[str, Any], attempts: int) -> bool | None:
+    """Whether the check passed **on or before** attempt ``attempts``.
+
+    **Cumulative on purpose**: that is what makes the two numbers comparable, and
+    what Aider's leaderboard means by them. A run that passed on the first attempt
+    also passed within two, so ``pass@2 >= pass@1`` always, and the gap between the
+    two columns *is* the work the repair loop did — the only number that can justify
+    the loop's existence.
+
+    Three states, deliberately distinct:
+
+    - ``True`` / ``False`` from a recorded list — an attempt was made and that is
+      what it decided (an empty list is "attempts were made and none passed");
+    - ``None`` when the row predates the recording. **A missing number, not a
+      zero**: an old file has no opinion about whether the first attempt passed,
+      and counting it as a failure would invent a result.
+    """
+    verdicts = row.get("check_verdicts")
+    if verdicts is None:
+        return None
+    return any(verdicts[:attempts])
+
+
+def _attempt_columns(group: list[dict[str, Any]]) -> tuple[str, str, bool]:
+    """``(pass@1, pass@2, every row recorded)`` for one cell."""
+    ones = [_pass_at(row, 1) for row in group]
+    twos = [_pass_at(row, 2) for row in group]
+    if any(value is None for value in ones) or any(value is None for value in twos):
+        return "-", "-", False
+    return f"{sum(ones)}/{len(group)}", f"{sum(twos)}/{len(group)}", True
+
+
 def _print_grouped(rows: list[dict[str, Any]]) -> None:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[(row["task"], row["arm"])].append(row)
 
-    print(f"{'task':<14}{'arm':<14}{'mode':<10}{'n':>3}{'pass':>7}{'calls':>7}{'turns':>7}{'secs':>7}  states")
-    print("-" * 88)
+    print(
+        f"{'task':<14}{'arm':<14}{'mode':<10}{'n':>3}{'pass':>7}"
+        f"{'pass@1':>8}{'pass@2':>8}{'calls':>7}{'turns':>7}{'secs':>7}  states"
+    )
+    print("-" * 104)
     for (task, arm), group in sorted(groups.items()):
         passed = sum(1 for r in group if r.get("passed"))
+        first, second, _ = _attempt_columns(group)
         states = ",".join(sorted({str(r.get("state", "-")) for r in group}))
         print(
             f"{task:<14}{arm:<14}{group[0].get('mode', '-'):<10}"
             f"{len(group):>3}{passed:>4}/{len(group):<2}"
+            f"{first:>8}{second:>8}"
             f"{_median([r.get('tool_calls', 0) for r in group]):>7}"
             f"{_median([r.get('turns', 0) for r in group]):>7}"
             f"{_median([r.get('wall_s', 0) for r in group]):>7}  {states}"
+        )
+
+    if groups and not all(_attempt_columns(g)[2] for g in groups.values()):
+        print(
+            "\n⚠️  pass@1 / pass@2 read `-`: this file was written before the attempts\n"
+            "   were recorded per row. An old row is not a row that failed its first\n"
+            "   attempt — re-run to compare them."
+        )
+
+
+def _print_attempt_gap(rows: list[dict[str, Any]]) -> None:
+    """The repair loop's own number: how many runs it turned around.
+
+    Printed apart from the tables because it is a statement about a *mechanism*
+    rather than about a cell, and because it is the one figure an ablation of the
+    loop (`no-repair`) is supposed to move.
+    """
+    recorded = [r for r in rows if _pass_at(r, 1) is not None]
+    if not recorded:
+        return
+
+    first = sum(1 for r in recorded if _pass_at(r, 1))
+    within_two = sum(1 for r in recorded if _pass_at(r, 2))
+    final = sum(1 for r in recorded if r.get("passed"))
+    print(
+        f"\nThe repair loop, on {len(recorded)} row(s) that recorded their attempts:\n"
+        f"  passed on the first attempt : {first}/{len(recorded)}\n"
+        f"  passed within two attempts  : {within_two}/{len(recorded)}\n"
+        f"  passed the row's own test   : {final}/{len(recorded)}"
+    )
+    if within_two > first:
+        print(
+            f"  -> the second attempt converted {within_two - first} run(s) that the\n"
+            f"     first did not. Without this split that work is invisible: both\n"
+            f"     columns would have been the one `pass` rate."
+        )
+    else:
+        print(
+            "  -> the second attempt converted nothing here. That is a result too: on\n"
+            "     these tasks the loop is not earning its place (or nothing failed first)."
         )
 
 
@@ -439,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     modes = ",".join(sorted({str(r.get("mode")) for r in rows}))
     print(f"{len(rows)} row(s) from {len({r.get('run') for r in rows})} run(s) [{modes}]\n")
     _print_grouped(rows)
+    _print_attempt_gap(rows)
     _print_matrix(rows)
     _print_arms(rows)
     # ⚠️ **Outside `_print_arms`, which returns early on scripted rows.** The whole
