@@ -160,6 +160,33 @@ def _routed_away(row: dict[str, Any]) -> bool:
     )
 
 
+def _escaped(row: dict[str, Any]) -> bool:
+    """A row whose agent ran shell commands **outside the checkout**.
+
+    ⚠️ **`score` already says what such a row is worth**, in its own words: *"so nothing in this
+    row is evidence about the agent"*. Counting it as an agent failure therefore measures the
+    opposite of what the row shows — the row is evidence that the sandbox was **probed**, which is
+    worth reading on its own and worth not blending into a pass rate.
+
+    Found on `not-in-the-checkout`, the task whose answer is not on disk: with the retriever
+    removed the agent cannot reach the contract from its checkout, so it went looking on the host —
+    `dir /s /b …\\.forgepilot | findstr /i "contract index"`, and once into the session logs.
+    **Three of three `no-search` rows did it**, which is the behaviour, not a coincidental reason
+    string.
+    """
+    return bool(row.get("left_the_workspace"))
+
+
+def _aside(row: dict[str, Any]) -> bool:
+    """A row that is not evidence about the agent — two causes, and they read differently.
+
+    `routed away`: the classifier declined, so no work happened and the router is what failed.
+    `left the checkout`: work happened, and the agent went outside the workspace for something, so
+    the row says the sandbox was probed rather than that the task was solved or not.
+    """
+    return _routed_away(row) or _escaped(row)
+
+
 def _print_arms(rows: list[dict[str, Any]]) -> None:
     """The comparison the arms exist for: the same tasks, one mechanism off."""
     arms: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -177,16 +204,16 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
         return
 
     print(
-        f"\n{'arm':<16}{'n':>4}{'routed':>8}{'pass rate':>12}"
+        f"\n{'arm':<16}{'n':>4}{'aside':>7}{'pass rate':>12}"
         f"{'median calls':>14}{'median secs':>13}"
     )
     print("-" * 68)
-    base = [r for r in arms.get("full", []) if not _routed_away(r)]
-    routed_rows: list[dict[str, Any]] = []
+    base = [r for r in arms.get("full", []) if not _aside(r)]
+    aside_rows: list[dict[str, Any]] = []
     for arm, group in sorted(arms.items(), key=lambda kv: (kv[0] != "full", kv[0])):
-        routed = [r for r in group if _routed_away(r)]
-        ran = [r for r in group if not _routed_away(r)]
-        routed_rows += routed
+        aside = [r for r in group if _aside(r)]
+        ran = [r for r in group if not _aside(r)]
+        aside_rows += aside
         if ran:
             rate = sum(1 for r in ran if r.get("passed")) / len(ran)
             rate_text = f"{rate:>11.0%}"
@@ -197,18 +224,32 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
             base_rate = sum(1 for r in base if r.get("passed")) / len(base)
             delta = f"  ({rate - base_rate:+.0%} vs full)"
         print(
-            f"{arm:<16}{len(group):>4}{len(routed):>8}{rate_text}"
+            f"{arm:<16}{len(group):>4}{len(aside):>7}{rate_text}"
             f"{_median([r.get('tool_calls', 0) for r in ran]):>14}"
             f"{_median([r.get('wall_s', 0) for r in ran]):>13}{delta}"
         )
 
-    if routed_rows:
-        named = ", ".join(f"{r['task']}/{r['arm']}/rep{r['rep']}" for r in routed_rows)
+    if aside_rows:
+        routed = [r for r in aside_rows if _routed_away(r)]
+        escaped = [r for r in aside_rows if _escaped(r)]
         print(
-            f"\n⚠️ {len(routed_rows)} row(s) were routed away before any work — {named} —\n"
-            f"   and are out of the rates above. A live ticket is classified by the model, so a\n"
-            f"   decline ends the run whatever the agent would have done."
+            f"\n⚠️ {len(aside_rows)} row(s) are out of the rates above, because the harness says "
+            f"they are not\n   evidence about the agent:"
         )
+        if routed:
+            named = ", ".join(f"{r['task']}/{r['arm']}/rep{r['rep']}" for r in routed)
+            print(
+                f"   • {len(routed)} routed away before any work — {named}.\n"
+                f"     A live ticket is classified by the model, so a decline ends the run "
+                f"whatever the agent would have done."
+            )
+        if escaped:
+            named = ", ".join(f"{r['task']}/{r['arm']}/rep{r['rep']}" for r in escaped)
+            print(
+                f"   • {len(escaped)} left the checkout — {named}.\n"
+                f"     Shell commands reached outside the workspace, so the row measures the "
+                f"sandbox being probed."
+            )
 
 
 def _print_arm_changes(rows: list[dict[str, Any]]) -> None:

@@ -111,3 +111,43 @@ def test_a_sweep_with_no_declines_prints_no_such_column(capsys) -> None:
     out = capsys.readouterr().out
 
     assert "routed away" not in out
+
+
+# ---------------------------------------------------------------------------
+# And the second cause: a row whose commands reached outside the checkout
+# ---------------------------------------------------------------------------
+def a_row_that_escaped(*, arm: str, rep: int, passed: bool) -> dict:
+    row = a_row(arm=arm, rep=rep, passed=passed, state="failed", turns=3, tool_calls=22)
+    row["left_the_workspace"] = [
+        "seq 62: references 'D:\\\\work\\\\forge' :: cd /d D:\\\\work\\\\forge && dir /b"
+    ]
+    return row
+
+
+def test_escaping_the_checkout_is_the_second_cause() -> None:
+    """`score` calls such a row "not evidence about the agent", so the report must too.
+
+    Found on `not-in-the-checkout`: with the retriever removed the agent cannot reach the
+    contract from its checkout, so it went looking on the host. Three of three `no-search`
+    rows did it — a behaviour, not a coincidental reason string.
+    """
+    assert report._escaped(a_row_that_escaped(arm="no-search", rep=1, passed=False)) is True
+    assert report._escaped(a_row(arm="full", rep=1, passed=True)) is False
+    # Both causes are one concept for the arm table, and stay distinguishable in the footnote.
+    assert report._aside(a_row_that_escaped(arm="no-search", rep=1, passed=False)) is True
+
+
+def test_a_row_that_left_the_checkout_does_not_lower_the_arms_rate(capsys) -> None:
+    # Two arms, because the table is a comparison and `_print_arms` returns early on one.
+    report._print_arms(
+        [
+            a_row(arm="full", rep=1, passed=True),
+            a_row_that_escaped(arm="full", rep=2, passed=False),
+            a_row(arm="baseline", rep=1, passed=True),
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "100%" in out, "the rate is over the rows that are evidence about the agent"
+    assert "left the checkout" in out
+    assert "measures the sandbox being probed" in out
