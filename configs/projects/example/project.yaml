@@ -21,6 +21,14 @@ allowed_operations:
   - open_pr
 writable_paths:
   - src
+# `deny` is honoured by a backend that can honour it: the Linux namespace sandbox
+# runs the command in its own network namespace. It is **not** enforceable by
+# `providers/sandbox/local.py`, which contains nothing — and that backend now
+# *refuses* a policy asking it to restrict the network rather than accepting it and
+# ignoring it, because a boundary the model is told about and nobody applies is
+# worse than no boundary: the model reasons from it. A development deployment using
+# `bundles/local_exec` must say `allow` here *and* in the caller's grant (the two
+# are intersected); the refusal names both.
 network: deny
 
 # The repair loop's commands, and how far it may retry before giving up.

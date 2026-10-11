@@ -25,6 +25,7 @@ from forgepilot.seams.sandbox import (
     SandboxExecutionPolicy,
     SandboxMode,
 )
+from forgepilot.seams.security import NetworkAccess
 
 
 @pytest.fixture
@@ -52,12 +53,22 @@ def policy(tmp_path: Path) -> SandboxExecutionPolicy:
 
 
 async def run(sandbox, argv, tmp_path, *, timeout_s: float = 10.0, stdin=None):
+    """Run through the backend the way a deployment that accepted it would.
+
+    ``network=ALLOW`` is not a convenience — it is the *declaration* this backend
+    now requires. It provides no containment, so it refuses a policy that asks it
+    to restrict something (see the network tests below); a caller that wants to
+    execute here has to say out loud that it accepts an uncontained command. The
+    alternative to spelling it here would be a helper that quietly hands every test
+    a policy the backend is entitled to refuse.
+    """
     return await sandbox.run(
         argv,
         policy=SandboxExecutionPolicy(
             mode=SandboxMode.WORKSPACE_WRITE,
             workspace_root=tmp_path,
             session_id=SessionId("s-local"),
+            network=NetworkAccess.ALLOW,
         ),
         cwd=tmp_path,
         env={"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"},
@@ -161,6 +172,62 @@ async def test_a_read_only_policy_is_refused_rather_than_ignored(sandbox, tmp_pa
             env={},
             timeout_s=5.0,
         )
+
+
+async def test_a_network_deny_policy_is_refused_rather_than_ignored(sandbox, tmp_path) -> None:
+    """The field that was *still* accepted-and-ignored after ``mode`` was fixed.
+
+    ``network`` defaults to ``DENY``, every caller threads its constraints through
+    it, and this backend never read it — so a command ran with full network access
+    while the model's own scope section said ``Network: deny``. **A boundary that is
+    asserted to the model and not applied is worse than no boundary**, because the
+    model reasons from it: it will not try the forbidden route and will not report
+    one either. The prompt is not a place a lie can sit harmlessly.
+
+    And the difference from ``WORKSPACE_WRITE``, which *is* accepted, is the point
+    rather than an inconsistency: "runs the command, restricts nothing" is not less
+    than "may write in the workspace", so running it is honest. A requested ``DENY``
+    that is not applied is the opposite of what was asked.
+    """
+    with pytest.raises(PolicyNotEnforceable, match="network"):
+        await sandbox.run(
+            python("pass"),
+            policy=SandboxExecutionPolicy(
+                mode=SandboxMode.WORKSPACE_WRITE,
+                workspace_root=tmp_path,
+                session_id=SessionId("s-local"),
+                network=NetworkAccess.DENY,
+            ),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+
+async def test_nothing_runs_when_the_network_policy_is_refused(sandbox, tmp_path) -> None:
+    """Refused *before* the spawn, so the effect never happens.
+
+    A command that must not reach the network is refused precisely *because* this
+    backend would let it. Refusing afterwards would be worse than not refusing: the
+    effect would already have happened.
+    """
+    marker = tmp_path / "should-not-exist.txt"
+
+    with pytest.raises(PolicyNotEnforceable):
+        await sandbox.run(
+            python(f"open({str(marker)!r}, 'w').write('ran')"),
+            policy=SandboxExecutionPolicy(
+                mode=SandboxMode.WORKSPACE_WRITE,
+                workspace_root=tmp_path,
+                session_id=SessionId("s-local"),
+                network=NetworkAccess.DENY,
+            ),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert not marker.exists()
 
 
 async def test_nothing_was_spawned_when_a_policy_is_refused(sandbox, tmp_path) -> None:

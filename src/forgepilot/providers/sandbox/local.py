@@ -48,6 +48,7 @@ from forgepilot.seams.sandbox import (
     SandboxExecutionPolicy,
     SandboxMode,
 )
+from forgepilot.seams.security import NetworkAccess
 
 __all__ = ["LocalProcessSandboxPlugin", "PolicyNotEnforceable"]
 
@@ -107,6 +108,33 @@ class LocalProcessSandboxPlugin(PluginService):
                 f"Refusing rather than running something other than what was asked "
                 f"for. Use a backend that reports `full`, or ask for "
                 f"{SandboxMode.WORKSPACE_WRITE.value!r} and accept NONE enforcement."
+            )
+
+        # ⚠️ **Network was the field still accepted and ignored.** `mode` was fixed
+        # and `network` was not, so the same defect survived one branch over: the
+        # policy's default is `DENY`, every caller threads its constraints through
+        # (`builtin.run`, `repair.run_checks`), this backend never read it — and the
+        # model's own scope section said "Network: deny" while the command it was
+        # about to run could reach anything. **A boundary asserted to the model and
+        # not applied is worse than no boundary at all**, because the model reasons
+        # from it: it will not attempt the forbidden route and will not report one
+        # either.
+        #
+        # The distinction from `mode` is the whole argument for refusing here and
+        # accepting `WORKSPACE_WRITE`. `WORKSPACE_WRITE` is *not less* than what this
+        # backend does ("runs the command, restricts nothing" is a superset of
+        # "may write in the workspace"), so running it is honest. A requested `DENY`
+        # that is not applied is not a superset — it is the opposite of what was
+        # asked, and the seam states the rule outright: *a backend must refuse a
+        # policy it cannot enforce rather than accept it and ignore it.*
+        if policy.network is not NetworkAccess.ALLOW:
+            raise PolicyNotEnforceable(
+                f"this backend provides no containment, so it cannot honour "
+                f"network={policy.network.value!r} — a command run here can reach the "
+                f"network. Refusing rather than running something other than what was "
+                f"asked for. Use a backend that reports `full` (its network namespace "
+                f"is real), or grant `network: allow` in the project and the caller's "
+                f"grant and accept NONE enforcement."
             )
 
         def _spawn() -> subprocess.CompletedProcess:

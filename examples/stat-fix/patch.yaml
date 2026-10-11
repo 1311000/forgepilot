@@ -95,4 +95,9 @@
           - git.local/demo/*
         writable_paths:
           - "."
+        # The project says `network: allow` too, and the two are intersected — so
+        # both have to agree or the effective value is `deny`. This demo runs
+        # commands uncontained; the grant says so out loud instead of leaving the
+        # model to infer it from a scope section that used to be wrong.
+        network: allow
   tier: trusted

@@ -23,7 +23,7 @@ import pytest
 from forgepilot.runtime.repair import run_checks
 from forgepilot.seams.refs import PrincipalId, RepoRef, SessionId, TenantId, TurnId
 from forgepilot.seams.sandbox import SandboxEnforcement
-from forgepilot.seams.security import ExecutionConstraints, Operation, Principal
+from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 
 
 class _FixedClassifier:
@@ -81,10 +81,16 @@ class FakeSandbox:
 
 @pytest.fixture
 def constraints() -> ExecutionConstraints:
+    # ``network=ALLOW`` because this rig runs the *local* backend, which provides no
+    # containment and therefore refuses a policy it cannot enforce — including a
+    # requested network denial. Accepting an uncontained command means accepting
+    # that it can reach the network; the alternative was a test that handed the
+    # backend a policy it was right to refuse.
     return ExecutionConstraints.for_principal(
         Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
         permitted_operations=frozenset({Operation.RUN_TESTS}),
         writable_paths=("src",),
+        network=NetworkAccess.ALLOW,
     )
 
 
@@ -417,6 +423,7 @@ async def real_task_rig(tmp_path):
                     {Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR}
                 ),
                 writable_paths=("src", "tests"),
+                network=NetworkAccess.ALLOW,
             ),
         )
     finally:

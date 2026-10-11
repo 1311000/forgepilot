@@ -28,7 +28,11 @@ allowed_operations:
 writable_paths:
   - "."
 
-network: deny
+# `allow` for the same reason as `examples/stat-fix/project.yaml`: this deployment
+# runs checks through `bundles/local_exec`, which contains nothing, and a backend
+# that cannot deny the network refuses a policy that asks it to rather than
+# accepting it and ignoring it. A host with the namespace sandbox keeps `deny`.
+network: allow
 
 retry:
   max_attempts: 2

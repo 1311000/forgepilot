@@ -121,6 +121,7 @@ async def test_a_model_command_really_goes_through_a_shell(tmp_path) -> None:
     from forgepilot.runtime.commandline import shell_argv
     from forgepilot.runtime.sandbox_env import command_env
     from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
+    from forgepilot.seams.security import NetworkAccess
 
     plugin = LocalProcessSandboxPlugin.__new__(LocalProcessSandboxPlugin)
     plugin.max_output_bytes = 64_000
@@ -131,6 +132,10 @@ async def test_a_model_command_really_goes_through_a_shell(tmp_path) -> None:
             mode=SandboxMode.WORKSPACE_WRITE,
             workspace_root=tmp_path,
             session_id=SessionId("shell-probe"),
+            # The backend provides no containment, so it refuses a policy that asks
+            # it to restrict something. Reaching its execution path at all means
+            # having accepted an uncontained command.
+            network=NetworkAccess.ALLOW,
         ),
         cwd=tmp_path,
         env=command_env(),

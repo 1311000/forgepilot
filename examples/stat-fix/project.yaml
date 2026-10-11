@@ -38,7 +38,15 @@ allowed_operations:
 writable_paths:
   - "."
 
-network: deny
+# ⚠️ **`allow`, not `deny`, and the reason is the sandbox rather than the network.**
+# This example runs commands through `bundles/local_exec`, which contains nothing at
+# all. A backend that cannot deny the network now *refuses* a policy that asks it to
+# (see `providers/sandbox/local.py`), so `deny` here would refuse every check rather
+# than restrict one. `allow` is not a relaxation of a working boundary — it is the
+# honest description of a command this backend was always going to run uncontained,
+# and it is what the model's scope section now tells it. A real deployment on a host
+# with the namespace sandbox keeps `deny` and gets it enforced.
+network: allow
 
 retry:
   max_attempts: 2

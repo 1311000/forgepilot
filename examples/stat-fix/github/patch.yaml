@@ -117,4 +117,6 @@
           - github.com/1311000/*
         writable_paths:
           - "."
+        # Intersected with the project's own value, so both must say `allow`.
+        network: allow
   tier: trusted
