@@ -11,11 +11,12 @@
 
 **The write side now has a caller; the read side still has none.** M11b Phase C runs
 `memory.write`/`admit_provisional` from `runtime/distillation.py` and emits
-`memory/write` for the first time — but **nothing calls `recall(` yet**, so memories
-are recorded and never read back. The seam and its providers are contract-tested and
-correct; the retrieval half arrives with Phase E. That is worth saying plainly,
-because "the memory feature" reads as done when you see the tests pass, and half of it
-is still absent.
+`memory/write` for the first time — but **nothing in `src/` calls `recall(` yet**, so
+memories are recorded and never read back. The seam and its providers are
+contract-tested and correct; the retrieval half arrives with Phase E. That is worth
+saying plainly, because "the memory feature" reads as done when you see the tests
+pass, and half of it is still absent. Phase D adds a *durable* provider of that
+store, which changes where the records live and nothing about who reads them.
 
 **M11's stated acceptance row was already green while the property it named was
 false.** `write(MODEL_ASSERTED)` raising was real; "cross-repo recall returns
@@ -200,5 +201,82 @@ and there is no `--all` sweep; a run that produces only proposals reports
 hide which happened; and a *dropped* candidate still lets the watermark advance, since
 retrying a stretch whose citations were bad would fail identically forever — that is a
 stall, not safety.
+
+**Phase D — the durable store, and the rule that a second provider may not re-decide.**
+`providers/memory/sqlite.py` is the implementation the design doc left room for: one
+file, a `memories` table plus two indexes — `memories_content(content_hash)` for
+de-duplication and `memories_audience(tenant_id, scope, scope_ref, type, status,
+subject)` for recall — with the whole `MemoryRecord` stored as JSON in `record_json`
+and the columns used **only** for indexing and filtering. That split is deliberate: a
+column-per-field schema silently drops a field someone adds to the record later, which
+is the "looks persisted, isn't" version of the repeated defect.
+
+Adding the second store answered a question the first one had been hiding: **where the
+rules live**. Both stores decide "may this be believed" (the admission gates) and "may
+this caller see it" (the recall filter), and two copies of that decision is the defect
+shape this repository keeps meeting — with the twist that two copies *agree* until one
+of them is edited. So the decisions moved into `seams/memory.py` as pure functions over
+the value objects, and both stores became storage:
+
+- `require_recallable_provenance` / `require_provisional_provenance` / `require_tenant`
+  — the write gates, each raising the seam's own error (`UnprovenMemoryWrite`,
+  `UnattributableTenant`). The refusal messages are the ones the providers already had,
+  because they are the ones a test asserts on.
+- `new_recallable_record` / `new_provisional_record` / `new_quarantined_record` /
+  `promote_proposal` / `confirm_record` / `revoke_record` / `expire_record` /
+  `count_recall` — the field assignments that must not drift between stores.
+- `may_recall(query, constraints)` and `recall_verdict(record, query, constraints) ->
+  RecallVerdict` (`HIT`/`SKIP`/`EXPIRED`) — the audience check and the per-record
+  filter, in that order, with `now` a parameter rather than a clock read.
+
+The single-sourcing found one behaviour change on the way: `admit_provisional` used to
+drop `candidate.expires_at`, so a proposal's deadline was silently lost. `PROPOSED` is
+a recallable status, so the deadline is what retires a guess nobody endorsed —
+`tests/providers/test_sqlite_memory_store.py::test_an_expired_proposal_is_retired_rather_than_left_standing`
+is the regression test, and it is only observable because expiry is checked *before*
+the provenance kind.
+
+**The contract suite now asks both stores the same questions.**
+`tests/contract/conftest.py` gained `MEMORY_PROVIDERS` and a parametrised
+`memory_store` fixture (`ids=["in-memory", "sqlite"]`); `test_memory_model.py` keeps
+its 15 bodies and gains a one-line local `container` override, so **which provider am
+I talking to cannot change the answer to "may this be believed"** — 30 cases, measured.
+This is the pattern for the next provider of any seam: a second implementation passes
+the first one's tests, not its own.
+
+What only a file can be asked is in `tests/providers/test_sqlite_memory_store.py` (9
+tests): a memory survives the process that wrote it; **loading the store does not
+create the file** (the same rule `providers/distillation/watermark.py:48-50` keeps, so
+`--boot` stays side-effect free); the same sentence in two tenants is two memories and
+neither leaks; a memory scoped to another repository is served only to a caller who may
+read *that* repository; a revocation survives a restart; the same claim written in two
+processes is one row; and the milestone's actual claim,
+`test_a_second_process_recalls_what_the_first_process_distilled` — process 1 boots a
+root with the SQLite store and a `ReplayLLMPlugin`, distils one session, prints
+`written=1` and **exits**; the test process then opens the same file and recalls the
+memory. Without that test, "memory across sessions" is a claim made inside one
+interpreter, where an in-process dict passes every other case in the file.
+
+Two decisions inside the store that are easy to get wrong a second time:
+
+- **Ids are derived from the content hash** (`mem-<hash[:16]>`), not counted. A
+  per-process counter makes two processes distilling the same session both hand out
+  `mem-1`, and the second insert loses to the primary key — a lost memory whose
+  symptom is silence.
+- **A connection is opened per operation and held in a local**, never cached on the
+  instance. Half of that is the Cordis service proxy (see
+  `docs/notes/seams-and-providers.md`: a *callable* attribute read back through
+  `ctx.memory` comes out as a shadow method, and `sqlite3.Connection` is callable);
+  half is that a per-operation connection cannot hold a lock another process wants.
+
+**Phase D gaps, stated:** the schema has **no version or migration path** — the file is
+new, so this is a decision deferred, not solved, and the first change to `MemoryRecord`
+that the JSON codec cannot default is where it has to be faced; `revoke` is still the
+only forgetting mechanism with a caller (Phase F adds `purge`), and nothing prunes old
+rows; the file is a single SQLite database, so it belongs on a local filesystem, not on
+a network share (warned about in the bundle's comment). The default profile is
+unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only bundle**, applied with
+`--patch`, so `--boot` still resolves 20 rows and the in-memory store is still what a
+deployment gets unless it asks otherwise.
 
 

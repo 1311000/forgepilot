@@ -15,11 +15,18 @@ The reader named in each case:
 * ``tenant_id``     — the outermost audience, before the repository one
 * ``recall_count``  — "was this ever used", which nothing else can answer
 * ``expires_at``    — a plan stops being current; a convention does not
+
+Every case below runs against **every provider of the seam**, not just the in-memory
+one: a store that keeps these rules only while the process lives is a cache, and
+"which provider am I talking to" must not change the answer to "may this be
+believed". The ``container`` fixture at the bottom is what redirects the file; the
+parametrisation lives in ``tests/contract/conftest.py::memory_store``.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,6 +110,18 @@ async def recall_all(memory: MemoryStore, **overrides: object) -> tuple[object, 
             scope_ref=ACME.slug,
         )
     return tuple(await memory.recall(query, constraints(**overrides.get("constraints", {}))))
+
+
+@pytest.fixture
+def container(memory_store):
+    """The seam's store under test — a different provider for each parameter.
+
+    The bodies below ask ``container.memory`` (and ``container.memory.records``), so a
+    one-attribute stand-in is all it takes to put the same questions to every provider
+    of the seam. Overriding a conftest fixture inside one module is deliberate: the
+    other contract suites still run against the single shared container.
+    """
+    return SimpleNamespace(memory=memory_store)
 
 
 # ---------------------------------------------------------------------------

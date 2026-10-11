@@ -55,3 +55,36 @@ async def container():
     finally:
         for fiber in reversed(fibers):
             await dispose_fiber(fiber)
+
+
+#: Every provider of the ``memory`` seam, paired with the config it needs. The record
+#: suite runs against **all** of them, because a store that satisfies the rules only
+#: in process memory is a cache. ``container`` cannot carry both — one root provides
+#: one ``memory`` — so the suite asks for ``memory_store`` instead.
+MEMORY_PROVIDERS: tuple[tuple[str, dict], ...] = (
+    ("forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin", {}),
+    ("forgepilot.providers.memory.sqlite:SqliteMemoryStorePlugin", {}),
+)
+
+
+@pytest.fixture(params=MEMORY_PROVIDERS, ids=["in-memory", "sqlite"])
+async def memory_store(request, tmp_path):
+    """One provider of the ``memory`` seam, alone in a root, with a scratch file.
+
+    ``tmp_path`` is what makes the sqlite parameter honest: without it the second
+    parameter writes into the user's home directory, and a suite that touches that is
+    one nobody can run twice.
+    """
+    from forgepilot.config import resolve_plugin
+
+    spec, config = request.param
+    config = dict(config)
+    if "sqlite" in spec:
+        config["path"] = str(tmp_path / "memory.sqlite3")
+
+    root = create_root()
+    fiber = await root.plugin(resolve_plugin(spec), config)
+    try:
+        yield root.memory
+    finally:
+        await dispose_fiber(fiber)

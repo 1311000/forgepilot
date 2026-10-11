@@ -1,0 +1,18 @@
+# Memory that outlives the process: the same store, in a file.
+#
+#   forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/memory_sqlite/patch.yaml --chat
+#
+# `path: ""` means $FORGEPILOT_HOME/memory.sqlite3, else ~/.forgepilot/memory.sqlite3 —
+# the directory the session log (`sessions/`) and the distillation watermark already
+# use, so a deployment has one place to back up. Set `path:` to a real directory for
+# anything shared, and keep it off a network filesystem: SQLite's locking is a
+# filesystem feature and NFS is famously bad at it.
+#
+# The row overrides `base`'s in-memory store by id — the same seam, a different
+# lifetime — so nothing else in the profile changes.
+- id: memory
+  plugin: forgepilot.providers.memory.sqlite:SqliteMemoryStorePlugin
+  config:
+    path: ""
+  tier: trusted

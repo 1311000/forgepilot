@@ -41,7 +41,7 @@ import hashlib
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -71,6 +71,21 @@ __all__ = [
     "MemoryRecord",
     "RecallQuery",
     "MemoryStore",
+    "UnprovenMemoryWrite",
+    "RecallVerdict",
+    "require_tenant",
+    "require_recallable_provenance",
+    "require_provisional_provenance",
+    "new_recallable_record",
+    "new_provisional_record",
+    "new_quarantined_record",
+    "promote_proposal",
+    "confirm_record",
+    "revoke_record",
+    "expire_record",
+    "count_recall",
+    "may_recall",
+    "recall_verdict",
     "RECALLABLE_PROVENANCE",
     "CONFIDENCE_FOR_PROVENANCE",
     "LEGAL_TRANSITIONS",
@@ -525,6 +540,269 @@ class RecallQuery:
     scope: MemoryScope
     scope_ref: str
     limit: int = 10
+
+
+# -- the admission and recall rules, in one place -----------------------------
+#
+# There are two stores now — process memory and a SQLite file — and a second
+# implementation is exactly where "a rule that is usually respected" turns into two
+# different answers to "what may be believed". So the decisions live here, as
+# functions over the value objects above, and each store keeps only its storage: a
+# dict or a row, plus the lines that call these.
+#
+# Nothing here reads a clock: ``now`` is a parameter, so a store's expiry behaviour
+# is something a test can pin rather than something that depends on when it ran.
+
+
+class UnprovenMemoryWrite(ForgePilotError):
+    """A caller tried to admit something at a trust level its evidence cannot carry."""
+
+
+class RecallVerdict(StrEnum):
+    """What one record means to one query."""
+
+    #: It answers the query: count it and return it.
+    HIT = "hit"
+    #: Not this query's business, or not recallable at all.
+    SKIP = "skip"
+    #: The deadline has passed — mark it ``EXPIRED`` and do not return it.
+    EXPIRED = "expired"
+
+
+def require_tenant(candidate: MemoryCandidate) -> TenantId:
+    """The tenant a candidate names, or a refusal to guess one."""
+    if candidate.tenant_id is None:
+        raise UnattributableTenant(
+            "refusing to admit a memory whose candidate names no tenant. The "
+            "recall filter compares the caller's tenant with the record's, so a "
+            "record without one is not merely under-classified: it passes every "
+            "comparison. Set MemoryCandidate.tenant_id from the session that "
+            "evidenced the memory."
+        )
+    return candidate.tenant_id
+
+
+def require_recallable_provenance(provenance: Provenance) -> None:
+    """Refuse a write whose evidence cannot carry the trust it claims."""
+    if not provenance.is_recallable:
+        allowed = sorted(kind.value for kind in RECALLABLE_PROVENANCE)
+        raise UnprovenMemoryWrite(
+            f"refusing to admit a {provenance.kind.value!r} candidate as recallable "
+            f"memory. Only {allowed} may be written; use admit_provisional() or "
+            f"quarantine() for anything else. Promoting a model's guess to fact is "
+            f"the failure this check exists to prevent."
+        )
+    if not provenance.evidence_refs:
+        # A trust level is a claim *about evidence*. With none cited, the level is
+        # decoration — and decoration is worse than an untrusted record, because
+        # everything downstream believes the label. The same argument as refusing an
+        # unsigned ExecutionConstraints: omitting the evidence must not be the cheap
+        # way past the evidence requirement.
+        raise UnprovenMemoryWrite(
+            f"refusing to admit a {provenance.kind.value!r} candidate that cites no "
+            f"evidence. A record with no evidence is an assertion, not a memory — "
+            f"cite the session event that supports it, or use admit_provisional() "
+            f"to keep it without believing it."
+        )
+
+
+def require_provisional_provenance(provenance: Provenance) -> None:
+    """Refuse to file an endorsed claim as a mere proposal."""
+    if provenance.is_recallable:
+        raise UnprovenMemoryWrite(
+            f"refusing to file a {provenance.kind.value!r} candidate as a mere "
+            f"proposal. That kind claims an endorsement, whether or not it cites "
+            f"one — write() is the path that decides what an endorsement is worth, "
+            f"and filing it here would lose it while looking like it was kept."
+        )
+
+
+def new_recallable_record(
+    memory_id: MemoryId,
+    candidate: MemoryCandidate,
+    provenance: Provenance,
+    *,
+    now: datetime,
+) -> MemoryRecord:
+    """A record admitted by ``write()``."""
+    return MemoryRecord(
+        id=memory_id,
+        candidate=candidate,
+        provenance=provenance,
+        confidence=confidence_for(provenance.kind, provenance.evidence_refs),
+        status=MemoryStatus.ACTIVE,
+        tenant_id=candidate.tenant_id,
+        subject=candidate.normalized_subject,
+        content_hash=content_hash_of(candidate),
+        created_at=now,
+        updated_at=now,
+        expires_at=candidate.expires_at,
+    )
+
+
+def new_provisional_record(
+    memory_id: MemoryId,
+    candidate: MemoryCandidate,
+    provenance: Provenance,
+    *,
+    now: datetime,
+) -> MemoryRecord:
+    """A record filed by ``admit_provisional()``.
+
+    ``PROPOSED`` and ``LOW`` are forced rather than defaulted: there is no argument
+    to anything on the write path that raises them. ``expires_at`` is carried like
+    any other admission, because a proposal is in ``RECALLABLE_STATUSES`` and its
+    deadline is observed by a recall.
+    """
+    return MemoryRecord(
+        id=memory_id,
+        candidate=candidate,
+        provenance=provenance,
+        confidence=Confidence.LOW,
+        status=MemoryStatus.PROPOSED,
+        tenant_id=candidate.tenant_id,
+        subject=candidate.normalized_subject,
+        content_hash=content_hash_of(candidate),
+        created_at=now,
+        updated_at=now,
+        expires_at=candidate.expires_at,
+    )
+
+
+def new_quarantined_record(
+    memory_id: MemoryId,
+    candidate: MemoryCandidate,
+    provenance: Provenance,
+    *,
+    now: datetime,
+) -> MemoryRecord:
+    """A record filed by ``quarantine()``.
+
+    No tenant is required, deliberately: a quarantined record is never returned by
+    recall, so there is no audience for it to leak to. Demanding one would refuse
+    the single path whose whole purpose is to keep something without believing it.
+    """
+    return MemoryRecord(
+        id=memory_id,
+        candidate=candidate,
+        provenance=provenance,
+        confidence=confidence_for(provenance.kind, provenance.evidence_refs),
+        status=MemoryStatus.PROPOSED,
+        tenant_id=candidate.tenant_id,
+        subject=candidate.normalized_subject,
+        content_hash=content_hash_of(candidate),
+        created_at=now,
+    )
+
+
+def promote_proposal(
+    record: MemoryRecord, provenance: Provenance, *, now: datetime
+) -> MemoryRecord:
+    """A proposal that the same claim has now arrived with an endorsement for.
+
+    The claim is already stored, so a second record would be a duplicate — but a
+    *better* provenance must not be silently dropped either, so the proposal is
+    promoted in place. Either way the caller is answered with the id of the record
+    that stands: it is the answer to "where is this memory now", not "what did I
+    just create".
+    """
+    promoted = replace(
+        record,
+        status=MemoryStatus.ACTIVE,
+        confidence=confidence_for(provenance.kind, provenance.evidence_refs),
+        provenance=provenance,
+        updated_at=now,
+    )
+    assert_transition(record.status, promoted.status)
+    return promoted
+
+
+def confirm_record(record: MemoryRecord, evidence: EventRef, *, now: datetime) -> MemoryRecord:
+    """A person answered, which is the strongest evidence there is.
+
+    It is still *evidence*: the ref is kept alongside whatever was cited before, so
+    the record's history does not shrink when it is upgraded.
+    """
+    confirmed = replace(
+        record,
+        status=MemoryStatus.ACTIVE,
+        confidence=Confidence.HIGH,
+        provenance=Provenance(
+            kind=ProvenanceKind.HUMAN_VERIFIED,
+            session_id=evidence.session_id,
+            repo=record.provenance.repo,
+            evidence_refs=(*record.provenance.evidence_refs, evidence),
+        ),
+        updated_at=now,
+    )
+    assert_transition(record.status, confirmed.status)
+    return confirmed
+
+
+def revoke_record(record: MemoryRecord, *, now: datetime) -> MemoryRecord:
+    """Forgetting is a status, not a deletion: the audit trail survives it."""
+    revoked = replace(record, status=MemoryStatus.REVOKED, updated_at=now)
+    assert_transition(record.status, revoked.status)
+    return revoked
+
+
+def expire_record(record: MemoryRecord, *, now: datetime) -> MemoryRecord:
+    expired = replace(record, status=MemoryStatus.EXPIRED, updated_at=now)
+    assert_transition(record.status, expired.status)
+    return expired
+
+
+def count_recall(record: MemoryRecord, *, now: datetime) -> MemoryRecord:
+    """Counting a recall is the only way to answer "was this ever used" later.
+
+    Only the counter and the timestamp move.
+    """
+    return replace(record, recall_count=record.recall_count + 1, last_recalled_at=now)
+
+
+def may_recall(query: RecallQuery, constraints: ExecutionConstraints) -> bool:
+    """The audience check — once per query, and before anything is read.
+
+    Every record that can match a query shares its scope and scope_ref, so this is
+    the audience for the whole result set. An undefined audience raises (inside
+    :func:`audience_repo`) rather than returning nothing: "no memories" and "nobody
+    has said who may read these" are different answers and must not look alike.
+    """
+    return constraints.allows_repo(audience_repo(query.scope, query.scope_ref))
+
+
+def recall_verdict(
+    record: MemoryRecord,
+    query: RecallQuery,
+    constraints: ExecutionConstraints,
+    *,
+    now: datetime,
+) -> RecallVerdict:
+    """What one stored record means to one query: the whole per-record rule."""
+    if record.status not in RECALLABLE_STATUSES:
+        return RecallVerdict.SKIP
+    # Fail-closed on a missing tenant: `None` must not compare equal to anything,
+    # and a record that somehow has no tenant is not shown to a caller who happens
+    # to also have no tenant.
+    if not record.tenant_id or record.tenant_id != constraints.tenant_id:
+        return RecallVerdict.SKIP
+    if record.expires_at is not None and record.expires_at <= now:
+        # The deadline is observed here rather than swept by a timer nobody runs,
+        # which is also why the field is not a decoration. Expiry is not deletion:
+        # the record is kept and marked, so the audit trail survives.
+        return RecallVerdict.EXPIRED
+    if not record.provenance.is_recallable:
+        return RecallVerdict.SKIP  # belt and braces: write() should have refused it
+    if record.candidate.scope != query.scope or record.candidate.scope_ref != query.scope_ref:
+        return RecallVerdict.SKIP
+    # Where it was learned is a second, independent limit on who may see it. It can
+    # only ever narrow the result — never substitute for the audience check.
+    learned_in = record.provenance.repo
+    if learned_in is not None and not constraints.allows_repo(learned_in):
+        return RecallVerdict.SKIP
+    if query.text and query.text.lower() not in record.candidate.text.lower():
+        return RecallVerdict.SKIP
+    return RecallVerdict.HIT
 
 
 @runtime_checkable
