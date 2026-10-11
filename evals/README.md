@@ -612,6 +612,32 @@ two-attempts full 2/3   baseline 3/3      -> the one failure was NOT the agent's
   have been a no-op that looked like a fix. What settled it was an isolation run — three
   `awaiting_info` runs, sequentially, no concurrency, 0.2s each — rather than the pattern.
 
+**16. The plan to make `no-search` fail by growing the haystack is dead, and this file already
+said why.** The proposal was 8 rule modules → ~24, so that reading every file would exceed
+`find-the-rule`'s `max_tool_calls: 40` while a searching agent stayed under it. It cannot work:
+
+- **A shell's search cost is O(1) in the number of modules.** `findstr /s "must not repeat a
+  character 3 times"` locates `runs.py` in **one** call whether there are 8 modules or 800.
+  Only the *read-everything* strategy scales with module count, and no agent has to choose it.
+- **The task's own docstring recorded this limit before the proposal existed**: *"`no-search`
+  removes `code_search`, not the ability to search: `run` is still there and `findstr /s` does
+  the same job for about the same number of calls."* That sentence is the answer, and the
+  proposal was made without re-reading the file it was about.
+- ⚠️ **And the measurement that seemed to justify it did not.** Three `no-search` rows on this
+  task used `run` 4–8 times with **zero** recognised search commands, which showed that *those*
+  agents did not reach for the shell — **not** that they could not. Reading "the agents didn't
+  grep" as "grep is not available" is the error, and it is the same shape as the other two this
+  session: a plausible mechanism confirmed by pattern rather than by the code that decides it.
+
+**Consequence, and it is the useful part.** The only task shape that prices the *retriever* is
+one where **the code is not in the local checkout** — which is precisely the target
+deployment's premise (GVFS metadata-only checkout, global search behind a remote index, "no
+shell can reach it"). So the scale task is cancelled, and `no-search` stays a **cost**
+measurement on a local checkout, exactly as its docstring says, until there is a `Retriever`
+provider backed by an index rather than by a directory. That is P7-2's fake enterprise provider,
+which is already the recorded next step for that seam — the eval needs it before it can price
+retrieval at all.
+
 ## Reading the output
 
 ```
