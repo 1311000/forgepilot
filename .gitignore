@@ -26,3 +26,14 @@ evals/results/
 # and created a nested git repository per worktree. Kept so an old checkout that
 # still writes here cannot commit it.
 evals/scratch/
+
+# A writable temp root *inside* the workspace. Needed on a host whose spawned
+# process tree cannot write to `%TEMP%` — this development box confines a command
+# to the session workspace, so `tempfile.gettempdir()` falls back to the current
+# directory and every `pytest` run drops its `tmp_path` tree (thousands of files)
+# into the repository root. ForgePilot's own `mkdtemp(prefix="forgepilot-s-")`
+# workspaces land in the same place. Point `TEMP`/`TMP` here to keep them out.
+.tmp/
+# And the same fallback when `$TEMP` is not set at all: ignored so that one
+# forgotten variable cannot commit a few thousand generated files.
+pytest-of-*/

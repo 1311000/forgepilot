@@ -270,9 +270,33 @@ async def test_the_ref_is_read_from_the_checkout_not_copied_from_the_query(
         await dispose_fiber(fiber)
 
 
-async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(retriever) -> None:
-    """No revision exists, so none may be invented."""
+async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(
+    retriever, roots
+) -> None:
+    """No revision is invented — and a revision that *does* exist is named.
+
+    ⚠️ **Both branches are asserted rather than one, because which of them runs is
+    a fact about the machine.** pytest builds ``tmp_path`` under ``%TEMP%``, and
+    this development host confines a spawned process tree to its workspace: every
+    writable directory is inside the checkout, so ``tmp_path`` sits inside *this*
+    repository and a bare ``WORKTREE`` assertion could never pass here. Asserting
+    only the friendly branch would leave the test green in name while measuring
+    nothing; asserting only the hostile one would make it a lie everywhere else.
+
+    The expected ref is computed here with git rather than borrowed from the
+    provider, so the assertion does not share the assumption it is checking.
+    """
+    import subprocess
+
     from forgepilot.providers.retrieve.grep import WORKTREE
+
+    root = Path(roots[REPO.slug])
+    enclosing = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     hits = await retriever.search(
         SearchQuery(pattern="MAX_ATTEMPTS", repos=(REPO,), ref="main"),
@@ -280,8 +304,26 @@ async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(retriever
     )
 
     assert hits
-    assert hits[0].location.ref == WORKTREE, (
-        "a plain directory was reported as being at the requested revision"
+    ref = hits[0].location.ref
+
+    if enclosing.returncode != 0:
+        assert ref == WORKTREE, (
+            "a directory that is in no repository was reported as being at a revision"
+        )
+        return
+
+    # Inside a repository: the enclosing commit is the revision the bytes came
+    # from, and `+dirty` is what says the file is not what that commit contains.
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    assert head, "rev-parse --show-toplevel succeeded but HEAD did not resolve"
+    assert ref in (head, f"{head}+dirty"), (
+        f"a directory inside a repository reported {ref!r}, which is neither that "
+        f"repository's commit ({head}) nor its dirty form"
     )
 
 
