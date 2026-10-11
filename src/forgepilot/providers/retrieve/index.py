@@ -49,6 +49,7 @@ from forgepilot.seams.retriever import (
     SymbolHit,
     SymbolKind,
     SymbolQuery,
+    ref_to_serve,
 )
 from forgepilot.seams.security import ExecutionConstraints
 
@@ -214,7 +215,7 @@ class CodeIndexRetrieverPlugin(PluginService):
 
         served: set[tuple[RepoRef, str]] = set()
         for repo, refs in available.items():
-            served.add((repo, requested if requested in refs else sorted(refs)[0]))
+            served.add((repo, ref_to_serve(refs, requested)))
         return served
 
     async def search(

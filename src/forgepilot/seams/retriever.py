@@ -14,7 +14,7 @@ Two things about this seam are load-bearing rather than incidental:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -33,6 +33,7 @@ __all__ = [
     "FileSlice",
     "RetrieverCapabilities",
     "Retriever",
+    "ref_to_serve",
 ]
 
 SERVICE_NAME = "retriever"
@@ -45,6 +46,35 @@ SERVICE_NAME = "retriever"
 #: edits. A provider that honours this reports in each hit the commit it really
 #: read — including ``+dirty`` when the tree is not clean.
 WORKING_TREE = "<worktree>"
+
+
+def ref_to_serve(held: Iterable[str], requested: str) -> str:
+    """Which revision to serve when the one asked for is not held.
+
+    ⚠️ **A preference, not a filter — and this is the seam's own sentence, not a
+    convenience.** The docstring above says a hit "may come from a remote index at trunk while
+    the developer is on a branch; a location that does not name its revision is not safe to
+    edit". That is a *labelling* rule: the provider serves what it has and every hit reports
+    the revision it really came from, so the caller can notice the substitution.
+
+    ⚠️ **The filter reading is a structural failure, not a strict one.** `code_search` asks for
+    ``WORKING_TREE`` — the agent is editing a checkout — while an index holds committed
+    revisions. A provider that dropped every entry whose ref differed would answer "no hits"
+    for a file it is holding, and a caller can never tell that from "it is not there".
+
+    It still **prefers** what was asked for, so one result set never mixes revisions, and the
+    fallback is deterministic (the lexicographically first ref held) so two runs of one task
+    serve the same revision rather than whichever the corpus happened to list first.
+
+    ⚠️ **It lives in the seam because two providers must agree about it and may not import
+    each other.** The rule had already drifted once — the index provider was given the
+    labelling behaviour while the mock kept the filter — and no test pinned either, so nothing
+    would have caught the next divergence.
+    """
+    revisions = set(held)
+    if not revisions:
+        raise ValueError("no revisions are held, so there is nothing to serve")
+    return requested if requested in revisions else sorted(revisions)[0]
 
 
 @dataclass(frozen=True, slots=True)

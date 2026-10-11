@@ -169,6 +169,9 @@ __all__ = [
     # unused import, correctly: an import nothing can reach is either a mistake or an
     # unfinished re-export, and only one of those is worth keeping.
     "WORKING_TREE",
+    # The labelling rule both providers must agree about, and may not import each
+    # other to share. In the seam for the same reason `WORKING_TREE` is.
+    "ref_to_serve",
     # sandbox
     "ExecResult", "Sandbox", "SandboxEnforcement", "SandboxExecutionPolicy", "SandboxMode",
     # security

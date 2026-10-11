@@ -30,6 +30,7 @@ from forgepilot.seams.retriever import (
     SymbolHit,
     SymbolKind,
     SymbolQuery,
+    ref_to_serve,
 )
 from forgepilot.seams.security import ExecutionConstraints
 
@@ -97,6 +98,19 @@ class MockRetrieverPlugin(PluginService):
                 self.denied_repo_requests += 1
         return permitted
 
+    @staticmethod
+    def _refs_by_repo(entries: Sequence[Any], permitted: set[RepoRef]) -> dict[RepoRef, set[str]]:
+        """The revisions held per repo. Shared by `search` and `symbols` so the two cannot
+        disagree about which ref they serve — the divergence this class was just fixed for."""
+        held: dict[RepoRef, set[str]] = {}
+        for entry in entries:
+            location = getattr(entry, "location", None)
+            repo = location.repo if location is not None else entry.repo
+            ref = location.ref if location is not None else entry.ref
+            if repo in permitted:
+                held.setdefault(repo, set()).add(ref)
+        return held
+
     # -- Retriever ---------------------------------------------------------
     def capabilities(self) -> RetrieverCapabilities:
         return RetrieverCapabilities(
@@ -125,10 +139,20 @@ class MockRetrieverPlugin(PluginService):
         except re.error as exc:
             raise ValueError(f"invalid search pattern {query.pattern!r}: {exc}") from exc
 
+        # ⚠️ The seam's labelling rule, not a filter — `seams.retriever.ref_to_serve`. This
+        # used to be `entry.ref != query.ref: continue`, which is the same structural
+        # zero-hits failure the index provider had: `code_search` asks for `WORKING_TREE`
+        # while this corpus holds `main`, so every tool query would have come back empty and
+        # looked like "the file is not there".
+        served = {
+            (repo, ref_to_serve(refs, query.ref))
+            for repo, refs in self._refs_by_repo(self._files, permitted).items()
+        }
+
         limit = min(query.max_hits, self.max_hits)
         hits: list[CodeHit] = []
         for entry in self._files:
-            if entry.repo not in permitted or entry.ref != query.ref:
+            if entry.repo not in permitted or (entry.repo, entry.ref) not in served:
                 continue
             if query.globs and not any(
                 entry.path.endswith(g.lstrip("*")) for g in query.globs
@@ -159,11 +183,15 @@ class MockRetrieverPlugin(PluginService):
             return ()
 
         needle = query.name.lower()
+        served = {
+            (repo, ref_to_serve(refs, query.ref))
+            for repo, refs in self._refs_by_repo(self._symbols, permitted).items()
+        }
         found = [
             hit
             for hit in self._symbols
             if hit.location.repo in permitted
-            and hit.location.ref == query.ref
+            and (hit.location.repo, hit.location.ref) in served
             and needle in hit.name.lower()
             and (not query.kinds or hit.kind in query.kinds)
         ]
