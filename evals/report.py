@@ -310,7 +310,7 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
     print(f"\n{'task':<16}" + "".join(f"{a:>{width}}" for a in arms))
     print("-" * (16 + width * len(arms)))
     for task in tasks:
-        baseline = [r for r in counts.get((task, "full"), []) if not _routed_away(r)]
+        baseline = [r for r in counts.get((task, "full"), []) if not _aside(r)]
         base_pass = sum(1 for r in baseline if r.get("passed"))
         cells = []
         for arm in arms:
@@ -318,13 +318,26 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
             if not group:
                 cells.append(f"{'-':>{width}}")
                 continue
-            # The fraction is over the rows that actually ran. A routed-away row is not one
-            # more failure in the numerator, it is a row that never became evidence — and it
-            # is marked rather than dropped, so the cell accounts for every row in the file.
-            ran = [r for r in group if not _routed_away(r)]
-            routed = len(group) - len(ran)
+            # The fraction is over the rows that are evidence about the agent — **both**
+            # causes, not just the first. A routed-away row never became a run; a row that
+            # left the checkout says the boundary was probed rather than that the task was
+            # solved or not.
+            #
+            # ⚠️ Excluding only the routed-away rows printed `0/3*` for a cell whose every row
+            # had escaped, four lines above an arm table printing `-` and "aside 3" for the
+            # same three rows. Two tables in one report disagreeing, and the one a reader is
+            # likelier to quote was the one computing a rate over rows the harness had already
+            # declared are not evidence. A cell with nothing to rate says so instead of
+            # printing a zero: the marks are kept, so the cell still accounts for every row in
+            # the file.
+            ran = [r for r in group if not _aside(r)]
+            routed = sum(1 for r in group if _routed_away(r))
+            escaped = sum(1 for r in group if _escaped(r))
+            mark = ("r" if routed else "") + ("e" if escaped else "")
+            if not ran:
+                cells.append(f"{f'-{mark}':>{width}}")
+                continue
             passed = sum(1 for r in ran if r.get("passed"))
-            mark = "r" if routed else ""
             if arm != "full" and baseline and passed < base_pass:
                 # ⚠️ The cell the ablation exists to find. `*` rather than a colour
                 # because this has to survive being pasted into a message.
@@ -343,10 +356,11 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
         arm != "full" and len(counts.get((task, arm), []))
         for task in tasks
         for arm in arms
-    ) or any(_routed_away(r) for r in rows):
+    ) or any(_aside(r) for r in rows):
         print("\n* = fewer passes than `full` on that task — the cell to read")
         print("! = fewer passes, and every one of them a crash — the arm is not why")
         print("r = a row was routed away before any work — it is not in that fraction")
+        print("e = the row left the checkout, so it is not evidence about the arm either")
 
 
 def _is_crash(row: dict[str, Any]) -> bool:

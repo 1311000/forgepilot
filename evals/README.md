@@ -34,6 +34,39 @@ python evals/run.py --live --arm no-search --reps 3
 python evals/report.py --latest
 ```
 
+### Containment — the switch that makes `no-search` mean something
+
+`no-search` removes the `code_search` **tool**. It does not remove the ability to search: `run` is
+still there, a shell command reads the same tree, and on a host whose sandbox reports only
+`partial` it can read *more* than the checkout. That is measured, and recorded as finding 18 — a
+`no-search` rep on `not-in-the-checkout` solved the task, held-out probe included, and its only
+failure reason was `7 shell command(s) reached outside the checkout`.
+
+That is not an arm misbehaving; it is this harness's declared default. `evals/run.py` lowers
+`minimum_enforcement_for_exec` to `NONE`, because an eval measures the *agent* and a boundary that
+depends on the host would make two machines' numbers incomparable. To ask the other question —
+*can the agent still reach the answer when the host says no* — set one variable:
+
+```bash
+FORGEPILOT_EVAL_CONTAIN=1 python evals/run.py --live --arm no-search --reps 3
+```
+
+It swaps the `sandbox` row for the kernel one (`NamespaceSandboxPlugin`, the row
+`src/forgepilot/bundles/kernel_sandbox/patch.yaml` ships) and raises the requirement back to
+`FULL`, so `arm` **refuses** `exec` rather than granting it without a boundary. Three things a
+reader has to know:
+
+- **On a host that cannot create namespaces** — this Windows box, whose sandbox is `partial`, or
+  any machine without `CAP_SYS_ADMIN` in the current user namespace (that is N2) — every check
+  becomes `could_not_run` and every row fails for that reason. That is the switch working, not a
+  bug: a row that ran its commands anyway would be reporting containment it did not have.
+- **It is layered above the arm**, in `run_layers`, and deliberately: whether commands are confined
+  is a fact about the host, not a variable under comparison, so an arm must not be able to switch
+  it off.
+- **Every row carries `contained: true|false`.** "The agent could not find it" and "the agent was
+  not allowed to go and look" are different measurements of the same cell, and a results file that
+  does not say which one it holds cannot be read afterwards.
+
 ### Re-checking one cell instead of the whole sweep
 
 A sweep is the wrong instrument for a follow-up question. Ninety live runs cost ten
@@ -726,6 +759,36 @@ third read what it needed. That reading is sound on any host, and it is the one 
 repository that is evaluating it — `evals/tasks/*/task.yaml` is exactly as reachable as
 `.forgepilot` was — so an inline corpus removes the file without removing the route. The route
 closes when the shell cannot leave the worktree, and nowhere else.
+
+**19. The report rated rows it had already declared were not evidence — two tables, one file,
+opposite answers.** A dedicated re-measurement of `not-in-the-checkout` (`--arm full --arm
+no-search --reps 3`) reproduced finding 18 and then exposed something in the **report** rather than
+in the run: three `no-search` rows, three escapes, and
+
+```
+task                   full  no-search
+not-in-the-checkout        3/3       0/3*
+```
+
+while four lines below, the arm table for those same three rows printed `no-search  3  3  -` and the
+footnote said *"3 row(s) are out of the rates above, because the harness says they are not evidence
+about the agent"*. `_print_matrix` excluded **routed-away** rows only; `_aside` — both causes — is
+what `_print_arms` used. So the cell a reader is likelier to quote was a pass rate computed over
+rows the harness itself refuses to rate.
+
+Fixed: both tables and the `*` baseline (an escaped `full` row is not a bar) now exclude `_aside`, a
+cell with nothing to rate prints `-e`/`-r` rather than `0/3`, and `e` joined the legend. Pinned by
+`test_the_matrix_does_not_rate_a_cell_whose_rows_all_left_the_checkout` and
+`test_the_matrix_counts_only_the_rows_that_ran` in
+`tests/evals/test_a_routed_away_row_is_not_an_agent_failure.py`. **This is this file's own defect
+shape, appearing inside its own reporting**: not a missing check, but a calculation that looks like
+a measurement.
+
+What the sweep said, unchanged from finding 18: `full` **3/3** (median 13 calls, 18 s); `no-search`
+**3 rows, 3 aside, no rate** — and two of the three still ended `ready` with the held-out probe
+satisfied, i.e. they reached the answer by reading the host. On this machine the `no-search` column
+for this task still does not exist. It is measured under `FORGEPILOT_EVAL_CONTAIN=1` on a host with
+real namespaces — see "Containment" above for the one-variable command.
 
 ## Reading the output
 

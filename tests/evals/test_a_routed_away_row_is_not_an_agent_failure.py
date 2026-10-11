@@ -151,3 +151,41 @@ def test_a_row_that_left_the_checkout_does_not_lower_the_arms_rate(capsys) -> No
     assert "100%" in out, "the rate is over the rows that are evidence about the agent"
     assert "left the checkout" in out
     assert "measures the sandbox being probed" in out
+
+
+def test_the_matrix_does_not_rate_a_cell_whose_rows_all_left_the_checkout(capsys) -> None:
+    """The arm table refused to rate these rows; the matrix rated them `0/3`.
+
+    Seen on the `not-in-the-checkout` sweep: three `no-search` rows, three escapes, the matrix
+    printing `0/3*` four lines above an arm table printing `-` and "aside 3" for the same three
+    rows. The number a reader is likelier to quote was the one computed over rows the harness had
+    already declared are not evidence about the agent — a rate that looks measured and is not.
+    """
+    report._print_matrix(
+        [
+            a_row(arm="full", rep=1, passed=True),
+            a_row(arm="full", rep=2, passed=True),
+            a_row_that_escaped(arm="no-search", rep=1, passed=False),
+            a_row_that_escaped(arm="no-search", rep=2, passed=False),
+            a_row_that_escaped(arm="no-search", rep=3, passed=False),
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "0/3" not in out, "there is no fraction over rows that are not evidence"
+    assert "-e" in out, "an empty cell says so, and says which cause emptied it"
+    assert "e = the row left the checkout" in out, "a mark nobody can decode is not a mark"
+
+
+def test_the_matrix_counts_only_the_rows_that_ran(capsys) -> None:
+    """One clean row plus one escape is `1/1e`, not `1/2` — and not `0/2` either."""
+    report._print_matrix(
+        [
+            a_row(arm="full", rep=1, passed=True),
+            a_row(arm="no-search", rep=1, passed=True),
+            a_row_that_escaped(arm="no-search", rep=2, passed=False),
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "1/1e" in out
