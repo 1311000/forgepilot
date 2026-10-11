@@ -9,11 +9,13 @@
 
 ## Memory notes (read before touching `memory` or building distillation)
 
-**Nothing in the runtime calls memory yet.** No `recall(`, no `write(`, and the
-`memory/write` event kind is declared but never emitted. The seam and its
-in-memory provider are contract-tested and correct; they have **no consumers**.
-That is worth saying plainly, because "the memory feature" reads as done when you
-see the tests pass, and it is not.
+**The write side now has a caller; the read side still has none.** M11b Phase C runs
+`memory.write`/`admit_provisional` from `runtime/distillation.py` and emits
+`memory/write` for the first time — but **nothing calls `recall(` yet**, so memories
+are recorded and never read back. The seam and its providers are contract-tested and
+correct; the retrieval half arrives with Phase E. That is worth saying plainly,
+because "the memory feature" reads as done when you see the tests pass, and half of it
+is still absent.
 
 **M11's stated acceptance row was already green while the property it named was
 false.** `write(MODEL_ASSERTED)` raising was real; "cross-repo recall returns
@@ -73,14 +75,17 @@ Rules now enforced, and where:
   moved `revoke` off a side-set of ids onto the status machine (with
   `superseded_by`/`supersedes` waiting for Phase F), so at least the state it
   produces is now the same one recall filters on.
-- **Distillation is gated on an unanswered question.** The design doc's R7 says
-  the privacy question — session logs becoming a training/data source — must be
-  answered *before* M11. Distillation is what turns those logs into something that
-  crosses sessions and people, so building it first would be building the channel
-  before deciding what may flow through it. ⚠️ **Still open**, and Phase A/B did
-  not answer it: redaction decides what may be *written down*, not who may read
-  what was written. Phase C is where this has to be settled, and the honest state
-  is that it is not.
+- **Distillation's gate is answered, and the answer is D1.** The design doc's R7
+  ("session logs will become a training-data source; the privacy question must be
+  answered before M11") is settled by the plan's **D1**, which the user accepted:
+  memory is produced only from this repository's and this tenant's sessions, always
+  `MemoryScope.REPO`; the raw log is never used to train anything and never leaves
+  the tenant; model text reaches only the proposal layer unless an *event* endorses
+  it; and **reading content is not evidence that content is true**. What that does
+  not settle — and the plan says so — is that the model behind the `llm` seam may be
+  a commercial endpoint, so "what leaves the machine" is a deployment choice, not a
+  property of this code. Redaction decides what may be *written down*; D1 decides
+  who may *read* it back.
 
 ## What M11b has actually built so far
 
@@ -127,15 +132,73 @@ Two decisions inside that are worth not re-litigating:
 `tests/contract/test_seam_contracts.py` were updated to the typed refs and the
 tenant requirement rather than worked around.
 
-**Who assigns `provenance` is the load-bearing design question for M11b**, and it
-is not obviously the model. If the distiller both selects content *and* labels
-its trust, then `MODEL_ASSERTED` is defeated by relabelling. The rule to keep:
-**the harness reads provenance off the event that evidences it** — a passing
-`task/check` is `TEST_VERIFIED` by construction, a successful write `tool/result`
-is `TOOL_OBSERVED` by construction — and the model may only propose candidate
-*text*, never its own trust level. Related: `TOOL_OBSERVED` must not conflate
-*"a tool did this"* with *"a tool saw this"*. A `read_file` result is evidence
-that someone wrote those bytes, not that they are true; if distillation records
-both as `TOOL_OBSERVED`, reading a malicious file launders it into memory.
+**Phase C — distillation.** `runtime/distillation.py::distill()` reads one stretch of
+session log and proposes memories; `seams/distillation.py::witness_for()` decides what
+may be believed. The split is the point: the model's answer is a list of
+`{type, subject, text, evidence_seqs, model_confidence_hint}` and **nothing else** —
+`status`, `confidence`, `provenance`, `tenant_id` and `id` are not fields it can set,
+and `parse_candidates` *refuses* an answer that carries one rather than quietly
+ignoring it.
+
+The load-bearing rule, now executable: **the harness reads provenance off the event
+that evidences it.** `witness_for(log, cited)` resolves a candidate's citations in
+order — a cited `user_message` is `HUMAN_VERIFIED`, a cited `task/check` with `passed`
+and not `couldNotRun` is `TEST_VERIFIED`, a cited non-error `tool/result` whose
+`callId` names an **effect** tool (`run`, `write_file`, `edit_file`) is
+`TOOL_OBSERVED`, and nothing else is `MODEL_ASSERTED`. A cited `read_file` /
+`code_search` result confers **no** trust, and `READ_ONLY_TOOL_NAMES` is a declared
+list rather than a fall-through so a new tool is *unclassified* rather than silently
+trusted. Reading a malicious file therefore cannot launder it into memory — and the
+read is quoted in the reason the candidate was not believed, because "never trusted"
+and "trusted and then found wanting" are different facts about a model's answer, and
+only the second is a conversation worth continuing.
+
+Three mechanisms keep the run honest, in the order they bite:
+
+- **The window.** Only closed turns after the watermark are distilled — `window_for`
+  stops at the last `turn/end`, so an open turn stays for the next pass, and the
+  prompt's evidence digest (`evidence_digest`, capped at `EVIDENCE_DIGEST_CHARS`)
+  lists exactly the seqs that may be cited, as a *second system section* rather than
+  fabricated conversation.
+- **The citation check.** Every `evidence_seqs` entry must be a model-visible event of
+  that window. A candidate citing anything else is dropped, and the drop is recorded
+  with its subject and the offending seqs — **never its text**.
+- **The watermark**, one per session, moved to the last closed turn **only when a run
+  finishes**. It is what makes distillation idempotent; the store's content hash is a
+  backstop, not the mechanism.
+
+**Phase C measured.** `tools/check.py` → `1189 passed, 230 skipped in 66.98s`,
+8752 statements, 1026 missed, **88.28%**, `All gates passed.` (Phase B was
+`1142 passed, 225 skipped`, 8261 statements, 955 missed, 88.44% — the percentage dips
+because the CLI surface and the failure paths are only partly reachable from a test.)
+The two counterfactuals
+the plan names, measured by patching `src/` and re-running
+`tests/memory/test_distillation.py` (24 cases): **citation check removed → `2 failed,
+22 passed`** — an invented `9999` lands `HUMAN_VERIFIED`/`ACTIVE`/`HIGH`, because
+`witness_for` ignores a seq that is not in the log — and **watermark never persisted →
+`3 failed, 21 passed`**. Supporting files: `tests/providers/test_watermark_store.py`
+(a torn last line is skipped so the watermark stays *lower* than reality, a watermark
+never moves backwards, loading a profile writes nothing) and
+`tests/cli/test_distill_cli.py` (refusals, and exit 4 for a session that is gone).
+
+**A failed run writes nothing and does not advance the watermark** — the `budget` path
+exists so a retry with a larger cap sees the same stretch again. `distillation/start`
+is flushed on its own (the unmatched-start pattern compaction already uses), the raw
+model answer is recorded in `distillation/summary` *before* it is parsed so a schema
+failure is auditable, and `memory/write` — declared since M3, emitted by nothing until
+now — carries the memory id, subject, witness kind, status (verified vs provisional,
+as a *pair of disjoint counts* rather than one number) and the reason. `distillation/
+failed` carries codes `llm`, `schema`, `budget`, `no-scope`, `no-tenant`, `no-model`;
+the last three are pre-flight refusals that emit no events at all, because a run that
+never started has nothing to audit.
+
+**Known Phase C gaps, stated rather than hidden:** there is **no scheduler** — the
+plan's "periodic + session end" is an operator's `forgepilot --distill <session>
+--repo host/namespace/name`, plus `--since`, `--dry-run` and `--distill-token-cap`,
+and there is no `--all` sweep; a run that produces only proposals reports
+`written=0, provisional=10`, and the CLI prints both because a single number would
+hide which happened; and a *dropped* candidate still lets the watermark advance, since
+retrying a stretch whose citations were bad would fail identically forever — that is a
+stall, not safety.
 
 

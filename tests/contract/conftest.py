@@ -22,6 +22,9 @@ MOCK_PROVIDERS: tuple[tuple[str, dict], ...] = (
     ("forgepilot.providers.sandbox.recording:RecordingSandboxPlugin", {"enforcement": "none"}),
     ("forgepilot.providers.session_store.memory:InMemorySessionStorePlugin", {}),
     ("forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin", {}),
+    # No `path`: the watermark file is created on the first `set`, so loading this
+    # row in a test writes nothing anywhere (see providers/distillation/watermark.py).
+    ("forgepilot.providers.distillation.watermark:JsonlWatermarkPlugin", {}),
     ("forgepilot.providers.approval.scripted:ScriptedApprovalPlugin", {"policy": "ask"}),
     (
         "forgepilot.providers.credentials.env:EnvCredentialPlugin",

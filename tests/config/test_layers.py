@@ -291,6 +291,14 @@ def test_shipped_default_profile_composes_and_user_layer_wins() -> None:
     assert cfg.row("httpapi").disabled is False
     assert cfg.row("httpapi").plugin.endswith("HttpApiPlugin")
 
+    # M11b's two rows, in `bundle:base`. Both are here because a row that silently
+    # stopped composing shows up only as `--boot` counting one service fewer, which
+    # reads as a number, not as a failure — the `retriever-remote` lesson.
+    assert cfg.row("credentials").sources == ("bundle:base",)
+    assert cfg.row("credentials").plugin.endswith("EnvCredentialPlugin")
+    assert cfg.row("distillation").sources == ("bundle:base",)
+    assert cfg.row("distillation").plugin.endswith("JsonlWatermarkPlugin")
+
 
 def test_shipped_default_profile_dump_names_every_layer() -> None:
     profile = load_profile(SHIPPED_CONFIGS, "default")

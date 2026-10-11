@@ -10,6 +10,8 @@ Commands available now::
     forgepilot --sandbox-check               can this host contain what the profile needs?
     forgepilot --chat                        interactive session against the model
     forgepilot --task T-1                    run one ticket end to end
+    forgepilot --distill <session-id> --repo host/ns/name
+                                             turn one stored session into memories
     forgepilot --serve                       serve the HTTP/SSE API the UI talks to
 
 ``--dump-config`` never imports anything; ``--boot``, ``--chat``, ``--task`` and
@@ -23,10 +25,13 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from forgepilot import __version__
 from forgepilot.console import use_utf8_output
+
+if TYPE_CHECKING:  # pragma: no cover — annotations only, so `--dump-config` stays import-free
+    from forgepilot.seams.refs import RepoRef
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -112,6 +117,52 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "the project.yaml describing repos, checks and writable paths; "
             "defaults to the nearest one at or above the workspace"
+        ),
+    )
+
+    memory = parser.add_argument_group("memory")
+    memory.add_argument(
+        "--distill",
+        default=None,
+        metavar="SESSION_ID",
+        help=(
+            "read one stored session log, extract memories from it, and exit; "
+            "the value is the session id"
+        ),
+    )
+    memory.add_argument(
+        "--repo",
+        default=None,
+        metavar="HOST/NAMESPACE/NAME",
+        help=(
+            "the repository a distilled memory belongs to. Required by --distill: "
+            "a memory's audience is a repository, and one with no audience cannot "
+            "be recalled safely"
+        ),
+    )
+    memory.add_argument(
+        "--since",
+        default=None,
+        metavar="ISO8601",
+        help="with --distill: only consider events at or after this timestamp",
+    )
+    memory.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "with --distill: really call the model and record the run, but write "
+            "no memory and do not advance the watermark"
+        ),
+    )
+    memory.add_argument(
+        "--distill-token-cap",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "with --distill: stop without writing when one extraction exceeds N "
+            "tokens. Checked after the call — a model call's cost is not knowable "
+            "before it is made"
         ),
     )
 
@@ -678,6 +729,134 @@ def _print_capped(text: str, limit: int) -> None:
     )
 
 
+def _parse_repo_slug(text: str | None) -> RepoRef | None:
+    """`host/namespace/name` → :class:`RepoRef`, or None when it is not that.
+
+    Host-qualified, like every other repository reference in this tree: the same
+    `namespace/name` exists on two hosts, and a memory filed under the wrong one is
+    a memory recalled by the wrong people.
+    """
+    from forgepilot.seams.refs import RepoRef
+
+    parts = [part for part in str(text or "").split("/") if part]
+    if len(parts) != 3:
+        return None
+    return RepoRef(host=parts[0], namespace=parts[1], name=parts[2])
+
+
+def _print_distillation(report: Any, *, dry_run: bool) -> None:
+    """Print what one distillation run did, in the shape a log line would have."""
+    print(f"session       {report.session_id}")
+    before, after = report.watermark_before, report.watermark_after
+    print(f"watermark     {before} -> {after}{' (dry run: not advanced)' if dry_run else ''}")
+    print(f"stretch       {report.events} events, {report.turns} closed turns")
+    print(
+        f"candidates    {report.candidates} extracted, {report.written} verified, "
+        f"{report.provisional} provisional, {report.duplicated} duplicate, "
+        f"{report.dropped} dropped"
+    )
+    if report.memories:
+        print(f"memories      {', '.join(report.memories)}")
+    print(
+        f"tokens        {report.input_tokens} in / {report.output_tokens} out"
+        f"   ${report.cost_usd:.4f}"
+    )
+    for note in report.notes:
+        print(f"note          {note}")
+    if report.failed:
+        print(f"failed        {report.failed}: {report.detail}")
+
+
+def _distill(args: argparse.Namespace) -> int:
+    """Distil one stored session log into memories.
+
+    **The one command that needs no identity.** Distilling writes memories, and a
+    write is gated by the evidence a candidate cites rather than by a principal —
+    the authority check happens when a memory is *recalled*, which is
+    :func:`_chat`'s and :func:`_task`'s problem. That is also what makes this the
+    command a scheduled job can run: it opens a log, and it cannot act on the
+    host.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.kernel import create_root
+    from forgepilot.runtime.distillation import distill
+    from forgepilot.runtime.session import Session
+    from forgepilot.seams.refs import SessionId
+    from forgepilot.seams.security import Budget
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    repo = _parse_repo_slug(args.repo)
+    if repo is None:
+        print(
+            "error: --distill needs --repo host/namespace/name. A memory's audience "
+            "is a repository; a memory with no audience cannot be kept out of "
+            "another team's recall, so there is nothing safe to default it to.",
+            file=sys.stderr,
+        )
+        return 2
+
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
+        except ValueError as exc:
+            print(f"error: --since is not an ISO-8601 timestamp: {exc}", file=sys.stderr)
+            return 2
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+
+    budget = Budget(max_tokens=args.distill_token_cap) if args.distill_token_cap else None
+    session_id = SessionId(args.distill)
+
+    async def run() -> int:
+        root = create_root()
+        try:
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            session = await Session.open(root.sessionPersistence, session_id)
+        except FileNotFoundError:
+            print(
+                f"error: no stored session {session_id!r}. A chat prints its id at "
+                f"startup and `--dump-config` shows where sessions are kept.",
+                file=sys.stderr,
+            )
+            return 4
+
+        report = await distill(
+            session,
+            llm=root.llm,
+            memory=root.memory,
+            watermarks=root.distillationWatermarks,
+            scope_ref=repo.slug,
+            repo=repo,
+            model=getattr(root.llm, "model", "") or "",
+            budget=budget,
+            since=since,
+            dry_run=args.dry_run,
+        )
+        _print_distillation(report, dry_run=args.dry_run)
+        return 0 if report.ok else 1
+
+    try:
+        return asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
 def _task(args: argparse.Namespace) -> int:
     """Run one ticket end to end: plan, branch, work, check, repair, deliver.
 
@@ -890,6 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("--sandbox-check", args.sandbox_check),
             ("--chat", args.chat),
             ("--task", bool(args.task)),
+            ("--distill", bool(args.distill)),
             ("--serve", args.serve),
         )
         if on
@@ -909,6 +1089,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _chat(args)
     if args.task:
         return _task(args)
+    if args.distill:
+        return _distill(args)
     if args.serve:
         return _serve(args)
 

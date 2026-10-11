@@ -30,6 +30,7 @@ __all__ = [
     "derive_messages",
     "build_request",
     "build_compaction_request",
+    "build_distillation_request",
     "unsupported_event_kinds",
 ]
 
@@ -343,6 +344,59 @@ async def build_compaction_request(
         model=model,
         system=(instruction,),
         messages=derive_messages(region_events),
+        max_tokens=max_tokens,
+        temperature=0.0,
+    )
+
+
+async def build_distillation_request(
+    session: Any,
+    *,
+    events: Sequence[SessionEvent],
+    model: str,
+    instruction: str,
+    extra_system: Sequence[str] = (),
+    limits: tuple[int, int] = (0, 0),
+    max_tokens: int = 4096,
+) -> ChatRequest:
+    """The request that asks a model to extract memories from a stretch of log.
+
+    For the same reason as :func:`build_compaction_request`, the request is built
+    here and not in `runtime/distillation.py`: the messages must be
+    `derive_messages(events)` over events the log already holds, so the call is
+    guardable — every message carries a `source_event_seq` that is already durable.
+    A distiller that assembled its own prompt could show the model something the
+    log never held, which is precisely the invariant this module exists to keep.
+
+    `extra_system` carries the citation digest: a map of the seq numbers the model
+    is allowed to cite. It is a *second* system section rather than part of the
+    transcript, because it is an instruction about the answer, not evidence —
+    putting it among the messages would invite citing it.
+
+    `distillation/request` is written first and log-only, like `request/header` and
+    `compaction/request`, which is what makes the extraction reconstructable: the
+    prompt, the model, the stretch `[watermark, upto]` and the token cap are all in
+    the log before the call is made.
+    """
+    await session.append(
+        EventKind.DISTILLATION_REQUEST,
+        {
+            "model": model,
+            "instruction": instruction,
+            "watermark": limits[0],
+            "upto": limits[1],
+            "region": [events[0].seq, events[-1].seq] if events else [],
+            "events": len(events),
+            "systemSections": 1 + len(extra_system),
+            "maxTokens": max_tokens,
+        },
+        surface=SurfaceOp.LOG_ONLY,
+    )
+
+    return ChatRequest(
+        model=model,
+        system=(instruction, *extra_system),
+        messages=derive_messages(events),
         max_tokens=max_tokens,
         temperature=0.0,
     )

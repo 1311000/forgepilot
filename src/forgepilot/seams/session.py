@@ -175,6 +175,24 @@ class EventKind:
     COMPACTION_FAILED = "compaction/failed"
     COMPACTION_END = "compaction/end"
 
+    # --- distillation -----------------------------------------------------
+    # Same five-step shape as compaction, for the same reason: the one model
+    # call distillation makes has to be reconstructable from the log afterwards,
+    # and the run has to be resumable *after* a crash rather than repeating a
+    # paid call whose result nobody kept. **None of these is model-visible.**
+    # Distillation happens between sessions, about a session; the conversation it
+    # reads is over, and nothing here belongs in a model's context.
+    #
+    # `DISTILLATION_REQUEST` records the instruction and the model but not the
+    # prompt's message list (that is `derive_messages` of the region, already in
+    # the log); `DISTILLATION_SUMMARY` records the model's **raw** output, which
+    # is what makes a bad extraction diagnosable after the fact.
+    DISTILLATION_START = "distillation/start"
+    DISTILLATION_REQUEST = "distillation/request"
+    DISTILLATION_SUMMARY = "distillation/summary"
+    DISTILLATION_FAILED = "distillation/failed"
+    DISTILLATION_END = "distillation/end"
+
 
 #: Closed set. ``interrupted`` is appended by the recovery sweep for any log that
 #: ends inside an open turn, so the projection always sees balanced turns.

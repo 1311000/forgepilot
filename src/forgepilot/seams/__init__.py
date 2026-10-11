@@ -42,6 +42,14 @@ from forgepilot.seams.credentials import (
     placeholder,
     placeholders,
 )
+from forgepilot.seams.distillation import (
+    DistillationReport,
+    DistillationSchemaError,
+    DistillCandidate,
+    WatermarkStore,
+    parse_candidates,
+    witness_for,
+)
 from forgepilot.seams.llm import (
     ChatMessage,
     ChatRequest,
@@ -177,6 +185,12 @@ __all__ = [
     # the rest of the seams so a consumer imports one module, not a path.
     "CredentialChannel", "CredentialRef", "UnknownCredential", "placeholder",
     "placeholders",
+    # distillation — the seam is the *watermark*, not the procedure: what a
+    # deployment must configure is how far each session has been distilled, and
+    # the trust rule is one function in `runtime/distillation.py` rather than two
+    # answers to "what may be believed".
+    "DistillCandidate", "DistillationReport", "DistillationSchemaError",
+    "WatermarkStore", "parse_candidates", "witness_for",
     # llm
     "ChatMessage", "ChatRequest", "ChatResponse", "LLMCapabilities", "LLMService",
     "Role", "StreamChunk", "ToolCallRequest", "ToolSchema", "Usage", "drain_stream",

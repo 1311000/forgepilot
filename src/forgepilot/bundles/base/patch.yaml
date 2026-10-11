@@ -162,6 +162,18 @@
   plugin: forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin
   tier: trusted
 
+# How far each session's log has been distilled (M11b Phase C). Durable on
+# purpose: the process that distils a session is rarely the process that ran it,
+# and never the next one. Without it a periodic distillation would re-extract —
+# and re-pay for — every session it has already seen.
+- id: distillation
+  plugin: forgepilot.providers.distillation.watermark:JsonlWatermarkPlugin
+  config:
+    # Empty means `$FORGEPILOT_HOME/watermarks.jsonl`. The file is created on the
+    # first watermark written, so booting a profile writes nothing.
+    path: ""
+  tier: trusted
+
 # The credential channel: a command writes `${NAME}`, `arm` confirms the name is
 # declared, and the value is substituted into the argv at the last moment — so the
 # value never enters the conversation, the log or an event. Empty by default, and
