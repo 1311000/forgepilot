@@ -1,0 +1,22 @@
+{
+  "files": [
+    {
+      "repo": "git.local/demo/contracts",
+      "path": "paging/contract.py",
+      "ref": "main",
+      "text": "\"\"\"The reporting service's paging contract.\n\nThis repository is not checked out where the listing is developed. The reporting service\npages its own fan-out at this value, and a listing that pages at a different one produces\npage numbers that never line up with the report that quotes them.\n\"\"\"\n\n#: How many rows the reporting service asks for per page.\nMAX_PER_PAGE = 250\n\n#: It was 100 until the Q3 report rewrite, and 500 in the draft that never shipped.\n"
+    }
+  ],
+  "symbols": [
+    {
+      "repo": "git.local/demo/contracts",
+      "path": "paging/contract.py",
+      "ref": "main",
+      "name": "MAX_PER_PAGE",
+      "kind": "constant",
+      "start": 8,
+      "end": 9,
+      "signature": "MAX_PER_PAGE = 250"
+    }
+  ]
+}

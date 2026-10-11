@@ -352,6 +352,15 @@ def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: b
     from forgepilot.config import compose_layers, load_profile
     from forgepilot.config.patch import patch_layer_from_mapping
 
+    # ⚠️ **The task's own directory, exported so a patch row can name a file outside the
+    # checkout.** An index a task wants the agent to *reach* must not sit in the working tree:
+    # anything in the tree is greppable, and a task that measures retrieval cannot have its
+    # answer findable by `findstr`. A relative `index_path` resolves against the run's cwd, so
+    # the patch needs an absolute one — and an absolute path must not be written into a
+    # committed task file. `${FORGEPILOT_EVAL_TASK_DIR}` is that seam, and patch layers already
+    # expand `${VAR}`.
+    os.environ["FORGEPILOT_EVAL_TASK_DIR"] = str(task.directory)
+
     profile = load_profile(FORGE / "configs", "default")
     layers = list(
         compose_layers(profile, [FORGE / "examples" / "stat-fix" / "patch.yaml"])

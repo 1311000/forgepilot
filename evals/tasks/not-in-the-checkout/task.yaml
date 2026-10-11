@@ -1,0 +1,101 @@
+# **The only task whose answer is not in the checkout.**
+#
+# Every other task in the set can be solved by reading the tree, or by grepping it. Here the
+# value the fix needs is published by another repository — `git.local/demo/contracts` — which
+# is **not checked out**: `findstr /s` and `grep -r` have nothing to find, and the only route is
+# the retriever. That is what makes removing `code_search` a *structural* failure rather than an
+# expensive one, and it is the reading `find-the-rule`'s docstring says its own task cannot give:
+# there, "`findstr /s` does the same job for about the same number of calls".
+#
+# ⚠️ **The visible test is deliberately coarse** (a band, not the value). Anything sharper would
+# have to name the number, and a number named in a file the agent can read is a number it can
+# copy without consulting the index — the task would then measure arithmetic. The exact contract
+# is the probe's job.
+name: not-in-the-checkout
+fixture: fixture
+
+# ⚠️ **The index lives beside this file, outside the working tree**, and the patch is what
+# points `retriever` at it. Anything inside the tree is greppable, so an index there would hand
+# the agent the answer through `findstr` and the task would measure nothing.
+# `${FORGEPILOT_EVAL_TASK_DIR}` is exported by `harness.run_layers`; a committed task file cannot
+# carry a machine's absolute path.
+patches:
+  - id: retriever
+    plugin: forgepilot.providers.retrieve.index:CodeIndexRetrieverPlugin
+    config:
+      index_path: ${FORGEPILOT_EVAL_TASK_DIR}/index.json
+    tier: trusted
+
+probes:
+  - name: the_contract_from_the_index
+    file: probes/the_contract_from_the_index.py
+
+ticket:
+  id: BUG-7
+  title: 每页条数和 reporting 服务对不上
+  description: |
+    复现步骤：
+    1. 打开 limits.py，看 MAX_PER_PAGE 是多少
+    2. 用 code_search 到索引里查 reporting 服务发布的分页契约
+       （git.local/demo/contracts:paging/contract.py，那个仓库不在这个 checkout 里）
+
+    预期结果：取契约里发布的上限值，报表和列表的页码才能对上
+    实际结果：本地是一个猜的 500，和契约不一致
+
+    受影响仓库：git.local/demo/stats
+    相关文件：limits.py
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  # The fix belongs in the file the ticket names.
+  changed_paths_include: [limits.py]
+  max_changed_paths: 2
+  max_tool_calls: 40
+  max_turns: 4
+  # The exact contract, which the visible band deliberately does not pin.
+  probes: pass
+
+understanding:
+  category: bug
+  symptom: MAX_PER_PAGE is a guess that disagrees with the published contract
+  expected: the value the reporting service pages at, 250
+  actual: 500
+  confidence: 0.95
+
+# --- offline: what a correct agent does -------------------------------------
+#
+# `search` is the script action added for exactly this shape: the offline vocabulary was
+# `write`/`say`, and neither can ask a question. Then the write, because the answer has to end
+# up in the tree.
+script:
+  - search: {pattern: "MAX_PER_PAGE"}
+  - write: {path: limits.py, from: solution/limits.py}
+  - say: "从索引查到 reporting 的契约是 250，本地那个 500 是猜的，已按契约改"
+
+# --- the plausible wrong answer ----------------------------------------------
+#
+# A number inside the band the visible test asserts. It passes every check the agent can run and
+# is not the contract — which is the case the probe exists for.
+#
+#   evals/run.py --scripted --task not-in-the-checkout \
+#       --variant picks-a-plausible-number                -> FAIL, on the probe
+#
+# ⚠️ **`no-search` cannot be shown offline, and that is not a gap in this file.** The scripted
+# model writes the answer directly, so removing the tool changes nothing about what it produces;
+# the structural failure this task is designed for is only visible in a live run, where the agent
+# has to *find* the value. Same limitation `find-the-rule`'s docstring records about its own
+# offline path.
+variants:
+  picks-a-plausible-number:
+    script:
+      - write: {path: limits.py, from: solution/limits_plausible.py}
+      - say: "把上限调到了 200，列表能渲染、请求也划算"
+    expect:
+      states: [ready, delivered]
+      checks: pass
+      changed_paths_include: [limits.py]
+      # This is what the row actually fails on.
+      probes: pass
+      max_changed_paths: null
+

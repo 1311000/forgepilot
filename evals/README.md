@@ -147,6 +147,7 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | `find-the-rule` | **localisation at scale** — eight rule modules behind an engine that returns *sentences*, so the failing assertion is one string with no frame inside `policy/rules/` |
 | `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so — scored by a held-out input too, because the loop can otherwise be satisfied by a table of the five numbers the suite asserts |
 | `no-failing-test` | **the held-out input is the only instrument** — two modules compute one statistic two ways, the ticket says which side is authoritative, and the visible suite is green either way; a fix means reading a convention out of the codebase before editing, and the failure mode is not "could not do it" but "decided the disagreement was a matter of taste" |
+| `not-in-the-checkout` | **the answer is not on disk** — the value the fix needs is published by a repository that is not checked out, so the retriever is the only route to it and the exact contract is checked by a held-out input; removing `code_search` is a *structural* failure here, not an expensive one |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
 **a task whose own correct answer does not score is a broken task** — and finding
