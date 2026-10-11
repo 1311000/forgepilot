@@ -241,6 +241,7 @@ def _serve(args: argparse.Namespace) -> int:
     port = args.port or int(row.config.get("port", 8000))
     timeout = float(row.config.get("approval_timeout", 300.0))
     workspace = (args.workspace or Path.cwd()).resolve()
+    _warn_if_the_binding_is_not_loopback(host, port)
 
     async def run() -> int:
         import uvicorn
@@ -405,6 +406,50 @@ def _minimum_enforcement(root: Any, args: argparse.Namespace) -> Any:
             file=sys.stderr,
         )
     return SandboxEnforcement.NONE
+
+
+def _warn_if_the_binding_is_not_loopback(host: str, port: int) -> None:
+    """Say so when the API becomes reachable from somewhere other than this machine.
+
+    The API authenticates with a bearer header over **plain HTTP**, and the
+    credential it accepts may be a static entry from `FORGEPILOT_DEV_TOKENS`. On
+    loopback that is a reasonable design — nothing else can reach it, so there is
+    nothing to defend against; the workbench was even built to refuse a
+    query-string token so the credential could not leak through a `Referer`. None
+    of that reasoning survives `--host 0.0.0.0`, where the credential and the
+    session log — which holds proprietary source — cross the network in clear text.
+
+    ⚠️ **A warning rather than a refusal, deliberately, and for the same reason
+    `--allow-uncontained-exec` warns.** A deployment that fronts this with a TLS
+    proxy on a trusted network is a legitimate configuration, and a check that
+    refused it would be this function inventing a policy nobody has decided. What
+    is *not* acceptable is doing it silently: *a permissive default nobody is told
+    about is how a demo configuration reaches production.*
+
+    `localhost` and any loopback address are silent; a **name** that is not
+    `localhost` is treated as exposed, because this cannot resolve it and guessing
+    in the reassuring direction is the wrong way to be wrong.
+    """
+    from ipaddress import ip_address
+
+    if host == "localhost":
+        return
+    try:
+        if ip_address(host).is_loopback:
+            return
+    except ValueError:
+        pass  # a hostname, or an empty bind: cannot prove it is loopback
+
+    print(
+        f"⚠  binding {host}:{port}, which is not loopback — this API is reachable "
+        f"from other machines.\n"
+        f"   It authenticates with a bearer token over plain HTTP, has no TLS, and "
+        f"validates neither `Origin` nor `Host`: on an untrusted network the "
+        f"credential and the session log (which contains proprietary source) are "
+        f"readable in transit.\n"
+        f"   Put it behind TLS on a trusted network, or bind 127.0.0.1.\n",
+        file=sys.stderr,
+    )
 
 
 def _print_plan(plan: Any, gateway: Any) -> None:
