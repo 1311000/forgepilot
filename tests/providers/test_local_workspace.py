@@ -9,6 +9,7 @@ back a sha it made up.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,19 @@ import pytest
 from forgepilot.seams.refs import CommitAuthor, RepoRef, SessionId
 
 REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
+
+
+async def _load(config: dict) -> object:
+    """The plugin, through the kernel, the way a profile loads it."""
+    from forgepilot.config import resolve_plugin
+    from forgepilot.kernel import create_root
+
+    root = create_root()
+    await root.plugin(
+        resolve_plugin("forgepilot.providers.workspace.local:LocalTempWorkspacePlugin"),
+        config,
+    )
+    return root.workspace
 
 
 @pytest.fixture
@@ -79,3 +93,48 @@ async def test_a_commit_is_refused_rather_than_invented(workspace, writer) -> No
         await workspace.commit(
             handle, "fix: something", CommitAuthor(name="n", email="n@e.test"), writer
         )
+
+
+async def test_a_workspace_is_not_created_where_the_caller_happened_to_stand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tempfile``'s last resort is refused rather than turned into a checkout.
+
+    On a host whose sandbox denies every real temp directory, ``gettempdir()`` is the
+    working directory — measured on this development box, where the repository root was
+    the only creatable candidate and 14 ``forgepilot-*`` checkouts had accumulated in
+    it. A provider that accepts that fallback creates a workspace inside whatever tree
+    the caller stood in; the failure has to be a named refusal, because the alternative
+    is silent and looks like a successful run.
+    """
+    monkeypatch.delenv("FORGEPILOT_TMP", raising=False)
+    monkeypatch.setattr(tempfile, "tempdir", str(Path.cwd()))
+
+    with pytest.raises(RuntimeError, match="FORGEPILOT_TMP"):
+        await _load({})
+
+
+async def test_the_temporary_root_can_be_named_by_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The refusal is a question with an answer, not a dead end."""
+    monkeypatch.setattr(tempfile, "tempdir", str(Path.cwd()))
+    monkeypatch.setenv("FORGEPILOT_TMP", str(tmp_path))
+
+    workspace = await _load({})
+    handle = await workspace.prepare(REPO, "main", SessionId("s-env"))
+
+    assert handle.root.parent == tmp_path.resolve()
+
+
+async def test_the_configured_base_dir_outranks_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A profile that names a directory gets that directory."""
+    chosen, other = tmp_path / "chosen", tmp_path / "other"
+    monkeypatch.setenv("FORGEPILOT_TMP", str(other))
+
+    workspace = await _load({"base_dir": str(chosen)})
+    handle = await workspace.prepare(REPO, "main", SessionId("s-base"))
+
+    assert handle.root.parent == chosen.resolve()

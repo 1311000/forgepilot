@@ -13,11 +13,16 @@ which is the difference between a test and a decoration.
 The root is **resolved** before it is returned. A workspace root becomes the
 ``workspace_root`` of the sandbox policy, so an unresolved path containing a
 symlink or ``..`` would silently widen the boundary the sandbox enforces.
+
+The temporary root is resolved once, at construction, and ``tempfile``'s last resort
+is refused rather than accepted — see ``_resolve_base`` for why the fallback is a real
+configuration on a confined host and not a curiosity.
 """
 
 from __future__ import annotations
 
 import difflib
+import os
 import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -37,6 +42,41 @@ from forgepilot.seams.workspace import (
 __all__ = ["LocalTempWorkspacePlugin"]
 
 
+def _resolve_base(configured: str | None) -> Path:
+    """Where a throwaway checkout goes: ``base_dir``, then ``FORGEPILOT_TMP``, then temp.
+
+    ⚠️ **The last of those can be the current directory, and that is a real
+    configuration rather than a curiosity.** ``tempfile`` tries ``TMPDIR``, ``TEMP``,
+    ``TMP``, ``/tmp``, ``/var/tmp``, ``/usr/tmp`` and finally ``os.getcwd()``. On a host
+    whose sandbox denies all of them — measured on this development box: every real
+    candidate raises ``PermissionError: [Errno 13] Permission denied`` on ``mkstemp``
+    and the only creatable one is the repository root — the fallback is what actually
+    happens, and this provider turned it into a checkout inside the project.
+
+    That is worse than untidy. A workspace root is the boundary the sandbox enforces
+    and the tree the retriever searches, so one created in an arbitrary working
+    directory is a checkout that ``git status``, a whole-tree search and a
+    ``--workspace .`` run all see as part of the project. Refusing to guess — and naming
+    the two ways to say where it should go — is the honest failure.
+    """
+    for value in (configured, os.environ.get("FORGEPILOT_TMP")):
+        if value:
+            resolved = Path(value).resolve()
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
+
+    fallback = Path(tempfile.gettempdir()).resolve()
+    if fallback == Path.cwd().resolve():
+        raise RuntimeError(
+            "no writable temporary directory: `tempfile` fell back to the current "
+            f"directory ({fallback}), and a workspace created there would sit inside "
+            "whatever tree the caller happens to be standing in. Set `base_dir` on this "
+            "provider's row, or the FORGEPILOT_TMP environment variable, to a directory "
+            "a workspace may use."
+        )
+    return fallback
+
+
 class LocalTempWorkspacePlugin(PluginService):
     """Serves ``workspace`` using one temp directory per session."""
 
@@ -45,10 +85,9 @@ class LocalTempWorkspacePlugin(PluginService):
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx)
         cfg = dict(config or {})
-        base = cfg.get("base_dir")
-        self._base = Path(base).resolve() if base else None
-        if self._base is not None:
-            self._base.mkdir(parents=True, exist_ok=True)
+        #: Where a fresh checkout goes. Resolved eagerly so a profile that cannot say
+        #: where workspaces belong fails at boot rather than mid-task.
+        self._base = _resolve_base(cfg.get("base_dir"))
 
         #: Files written into a fresh workspace, standing in for a checkout.
         self._seed: dict[str, str] = dict(cfg.get("seed") or {})
@@ -72,7 +111,7 @@ class LocalTempWorkspacePlugin(PluginService):
         root = Path(
             tempfile.mkdtemp(
                 prefix=f"forgepilot-{session_id}-",
-                dir=str(self._base) if self._base else None,
+                dir=str(self._base),
             )
         ).resolve()
 

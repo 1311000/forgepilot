@@ -8,6 +8,8 @@ approximation of it.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,35 @@ from forgepilot.runtime.tools.pipeline import ToolPipeline
 from forgepilot.seams.refs import PrincipalId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 from forgepilot.seams.session import SessionHeader
+
+# ---------------------------------------------------------------------------
+# A temp root inside the checkout, decided rather than inherited.
+#
+# ⚠️ **Python's last-resort temp directory is the current directory, and on this
+# development host that resort is what happens.** Measured
+# (`tempfile._candidate_tempdir_list()` walked one candidate at a time):
+# `TMPDIR`/`TEMP`/`TMP` name `C:\Users\<user>\AppData\Local\Temp`, and every real
+# candidate answers `PermissionError: [Errno 13] Permission denied` on `mkstemp` —
+# that path, `C:\Windows\Temp`, `c:\tmp` — while the rest (`c:\temp`, `\temp`,
+# `\tmp`) do not exist. The only creatable candidate is the repository root, so
+# `tempfile.gettempdir()` returns it, and a bare `pytest` run then drops its
+# `tmp_path` trees (thousands of files) and ForgePilot's own `forgepilot-*`
+# checkouts into the front door of the project. `.gitignore` already ignores both;
+# an ignore rule is the belt, not the fix.
+#
+# Deciding it here rather than in a shell profile is deliberate: this is the one
+# place a test run cannot forget, and it is imported before pytest builds its
+# basetemp. The directory stays *inside* the checkout on purpose —
+# `tests/providers/test_grep_retriever.py` records that this host's temporary files
+# are inside the repository, and moving them outside would silently change which
+# branch of that test runs.
+# ---------------------------------------------------------------------------
+if Path(tempfile.gettempdir()).resolve() == Path(__file__).resolve().parents[1]:
+    _TMP_ROOT = Path(__file__).resolve().parents[1] / ".tmp" / "tmp"
+    _TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(_TMP_ROOT)
+    for _variable in ("TMPDIR", "TEMP", "TMP"):
+        os.environ[_variable] = str(_TMP_ROOT)
 
 #: The caller every rig builds its pipeline for. A pipeline now requires one:
 #: `tools/pre-execute` asks the policy service *who is calling*, and a permission

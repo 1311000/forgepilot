@@ -38,8 +38,12 @@ evals/scratch/
 # to the session workspace, so `tempfile.gettempdir()` falls back to the current
 # directory and every `pytest` run drops its `tmp_path` tree (thousands of files)
 # into the repository root. ForgePilot's own `mkdtemp(prefix="forgepilot-s-")`
-# workspaces land in the same place. Point `TEMP`/`TMP` here to keep them out.
+# workspaces land in the same place.
+#
+# Nothing has to be exported any more: `tests/conftest.py` pins the temp root here when
+# it would otherwise be the repository, and `LocalTempWorkspacePlugin` refuses the
+# fallback outright unless its row names a `base_dir` or `FORGEPILOT_TMP` does.
 .tmp/
-# And the same fallback when `$TEMP` is not set at all: ignored so that one
-# forgotten variable cannot commit a few thousand generated files.
+# The belt for that first case, kept for a run that does not load that conftest:
+# ignored so one forgotten variable cannot commit a few thousand generated files.
 pytest-of-*/
