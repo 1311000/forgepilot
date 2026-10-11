@@ -420,6 +420,15 @@ model", not as "the mechanisms do nothing"**, and the per-cell detail says why:
   live runs** and only discriminates in `--scripted` mode. A task set whose discriminating
   cells only work with a replay model cannot support a claim about a real one.
 
+⚠️ **Decision, recorded so nobody re-opens it: the task set will not be contorted into
+making a live model fail a first attempt.** The reason is structural, not laziness — as long
+as the agent has a `run` tool and can read the suite, a competent model converges *inside*
+the first attempt, and one that needs a second is a model that chose not to verify. A trap
+built to manufacture a wrong first attempt would measure the trap, not the repair loop. So
+this arm stays priced offline in `--scripted`, where it is falsifiable and verified in both
+directions, and live it is a hint. What was worth spending the effort on instead is the task
+that has no failing test at all — finding 13.
+
 ⚠️ **`pass@1` / `pass@2` track the *check*, not the row's expectation.** On `incomplete`,
 whose correct outcome is to stop *before* the model, they read `0/3` while `pass` is `3/3`;
 on a variant whose expectation is `failed` the same inversion appears. The columns answer
