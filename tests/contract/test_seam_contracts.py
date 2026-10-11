@@ -16,6 +16,7 @@ from forgepilot.seams import (
     ApprovalOutcome,
     ApprovalService,
     CodeRef,
+    CredentialChannel,
     ExecutionConstraints,
     LineSpan,
     LLMService,
@@ -44,6 +45,7 @@ from forgepilot.seams import (
     TicketSource,
     TicketStatus,
     UnattributableScope,
+    UnknownCredential,
     Vcs,
     Workspace,
 )
@@ -501,3 +503,42 @@ async def test_approval_is_one_shot(container) -> None:
     assert await approval.request(request) == ApprovalOutcome.ALLOWED_ONCE
     # The grant is consumed: there is no "always allow".
     assert await approval.request(request) == ApprovalOutcome.UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# credentials
+# ---------------------------------------------------------------------------
+async def test_credentials_resolve_a_declared_name_at_resolve_time(container, monkeypatch) -> None:
+    """Two guarantees, and the second is the one that is easy to get wrong.
+
+    A channel serves names, not values, and it reads the value **when asked** —
+    a deployment loads `.env.local` *after* the container is up, so a snapshot
+    taken at boot would resolve to the empty string it saw first and every
+    command would run with an empty secret.
+    """
+    channel = container.credentials
+    assert isinstance(channel, CredentialChannel)
+
+    monkeypatch.setenv("FORGEPILOT_TEST_TOKEN", "s3cret-value")
+    assert [ref.name for ref in await channel.refs()] == ["demo_token"]
+    assert await channel.resolve("demo_token") == "s3cret-value"
+
+    monkeypatch.setenv("FORGEPILOT_TEST_TOKEN", "rotated")
+    assert await channel.resolve("demo_token") == "rotated"
+
+
+async def test_credentials_refuse_a_name_nobody_declared(container) -> None:
+    """Refused, and the message lists what *is* declared.
+
+    An empty string here would be worse than an error: it would run the command
+    with no credential and fail somewhere else, looking like something else.
+    """
+    with pytest.raises(UnknownCredential, match="no secret is declared"):
+        await container.credentials.resolve("nope")
+
+
+async def test_credentials_refuse_a_declared_name_that_is_empty(container, monkeypatch) -> None:
+    monkeypatch.delenv("FORGEPILOT_TEST_TOKEN", raising=False)
+
+    with pytest.raises(UnknownCredential, match="empty"):
+        await container.credentials.resolve("demo_token")

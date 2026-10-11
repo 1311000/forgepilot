@@ -22,6 +22,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from forgepilot.seams.credentials import CredentialChannel
 from forgepilot.seams.llm import ToolSchema
 from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.security import ExecutionConstraints
@@ -145,6 +146,12 @@ class ToolContext:
     workspace_root: Path | None = None
     #: Wall-clock ceiling for this one call, derived from the remaining budget.
     timeout_s: float = 120.0
+    #: Where ``${NAME}`` is resolved. Handed over **only** because a tool that
+    #: builds a command has to substitute it at the last moment — the pipeline
+    #: validates the names first, so by the time a tool sees this, every name in
+    #: the arguments is known to resolve. A tool must never put a resolved value
+    #: anywhere but the process it is about to start.
+    credentials: CredentialChannel | None = None
 
 
 ToolBody = Callable[[ToolCall, ToolContext], Awaitable[ToolOutcome]]

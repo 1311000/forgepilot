@@ -151,6 +151,11 @@ async def assemble_session(
         enforcement=root.sandbox.probe,
         workspace_root=workspace_root,
         principal=principal,
+        # Read off the root, so a profile with no `credentials` row yields `None`
+        # — and `None` here is a **refusal, not a bypass**: a command that asks for
+        # `${NAME}` with no channel is denied in `arm`, because running it with the
+        # placeholder left in it fails somewhere else and looks like something else.
+        credentials=root.credentials,
         minimum_enforcement_for_exec=(
             minimum_enforcement_for_exec
             if minimum_enforcement_for_exec is not None

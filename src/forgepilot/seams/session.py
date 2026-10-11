@@ -135,6 +135,25 @@ class EventKind:
     TASK_CHECK = "task/check"
     MEMORY_WRITE = "memory/write"
 
+    # --- redaction --------------------------------------------------------
+    # Emitted by the write path, never by a caller: they describe what the gate
+    # did to the event they follow. Log-only by construction — the model never
+    # needs to be told its input was filtered, and telling it would put the
+    # *existence* of a secret into the conversation.
+    #: A rule fired. Carries kinds, counts and salted fingerprints, never a value.
+    REDACTION_APPLIED = "redaction/applied"
+    #: A detector raised, so the text became its degraded stub. The failure is
+    #: recorded because a rule that silently stopped matching is exactly the
+    #: "field that looks enforced and is not" shape this codebase keeps finding.
+    REDACTION_FAILED = "redaction/failed"
+
+    # --- credentials ------------------------------------------------------
+    #: A command asked for a credential **by name**, and the arm phase confirmed
+    #: the name resolves. **Names only**: the value exists in the argv of a
+    #: process, and writing it here would undo the channel in the one place that
+    #: outlives the process.
+    CREDENTIAL_CLAIMED = "credential/claimed"
+
     # --- compaction -------------------------------------------------------
     # `COMPACTION_SUMMARY` is the **only** one of these that is model-visible,
     # and it is a `SurfaceOp.REPLACE`: it takes the place of the span it covers.

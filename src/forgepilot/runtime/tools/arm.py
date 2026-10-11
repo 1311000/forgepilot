@@ -17,12 +17,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from forgepilot.errors import ForgePilotError
+from forgepilot.runtime.redaction import RedactionMark
 from forgepilot.seams.refs import SessionId
 from forgepilot.seams.sandbox import SandboxEnforcement
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess
 from forgepilot.seams.tools import Capabilities, ToolEffect
 
-__all__ = ["ArmRefused", "ArmScope", "mint_capabilities", "enforcement_rank"]
+__all__ = [
+    "ArmRefused",
+    "ArmScope",
+    "LiteralSecretRefused",
+    "enforcement_rank",
+    "literal_secret_refusal",
+    "mint_capabilities",
+]
 
 
 class ArmRefused(ForgePilotError):
@@ -32,6 +40,42 @@ class ArmRefused(ForgePilotError):
     environment being unable to support what the call needs. Failing here is
     fail-closed — an unenforceable sandbox is not a sandbox.
     """
+
+
+class LiteralSecretRefused(ArmRefused):
+    """The command carries a secret-shaped *literal* instead of a ``${NAME}``.
+
+    A subclass of :class:`ArmRefused` because the handling is identical — refuse
+    in the privileged phase, before anything runs — and the distinct type is what
+    makes the boundary testable and greppable. This is the hard edge of the
+    credential channel: without it, a model that types the token into the command
+    bypasses the entire channel, and typing the token in is exactly what the
+    token's shape encourages.
+    """
+
+
+def literal_secret_refusal(
+    mark: RedactionMark, *, where: str = "this command"
+) -> LiteralSecretRefused:
+    """The refusal, worded so the model can act on it.
+
+    It deliberately does **not** echo the value — repeating a live credential into
+    a result that the model then reasons about is the leak this is preventing —
+    but it does name the rule, because "I noticed something that looks like a
+    GitHub token" is a diagnosis, and "invalid input" is not.
+
+    The example (``${github_token}``) is the mechanism rather than politeness: a
+    refusal that does not say what to do instead is one the model works around,
+    usually by trying to reach the secret another way.
+    """
+    kind = str(getattr(mark, "kind", "secret")).replace("-", " ")
+    return LiteralSecretRefused(
+        f"{where} contains what looks like a literal {kind}, and secrets are not read "
+        f"from the command — they are read from the credential channel. Write the name "
+        f"instead: ${{name}}, for example ${{github_token}}. The value is substituted "
+        f"after approval, so it never enters the conversation or the log. The literal "
+        f"itself is not repeated here."
+    )
 
 
 _ORDER = {

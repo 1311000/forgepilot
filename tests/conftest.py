@@ -75,6 +75,7 @@ class Rig:
     tracker: UsageTracker
     guards: GuardRegistry
     workspace: Path
+    credentials: object = None
 
 
 # ⚠️ A second `constraints_for` used to live here, taking a `workspace` plus
@@ -215,6 +216,20 @@ async def rig(tmp_path: Path):
         {"roots": {REPO.slug: str(tmp_path / "checkout")}},
     )
     await load("forgepilot.runtime.tools.builtin:CodeSearchToolPlugin")
+    # The credential channel, with one declarable name. The *value* is read from
+    # the environment at resolve time and is set by the test that needs it, so no
+    # secret ever lives in this file.
+    await load(
+        "forgepilot.providers.credentials.env:EnvCredentialPlugin",
+        {
+            "entries": {
+                "demo_token": {
+                    "env": "FORGEPILOT_TEST_TOKEN",
+                    "description": "the token a credential test asks for by name",
+                }
+            }
+        },
+    )
 
     tracker = UsageTracker()
     guards = GuardRegistry()
@@ -232,6 +247,7 @@ async def rig(tmp_path: Path):
         enforcement=root.sandbox.probe,
         principal=RIG_PRINCIPAL,
         workspace_root=workspace,
+        credentials=root.credentials,
     )
     root.tools.attach_pipeline(pipeline)
 
@@ -258,6 +274,7 @@ async def rig(tmp_path: Path):
             tracker=tracker,
             guards=guards,
             workspace=workspace,
+            credentials=root.credentials,
         )
     finally:
         for fiber in reversed(fibers):

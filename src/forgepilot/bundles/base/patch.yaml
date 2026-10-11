@@ -162,6 +162,17 @@
   plugin: forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin
   tier: trusted
 
+# The credential channel: a command writes `${NAME}`, `arm` confirms the name is
+# declared, and the value is substituted into the argv at the last moment — so the
+# value never enters the conversation, the log or an event. Empty by default, and
+# an undeclared name is **refused in `arm`** rather than run with an empty secret
+# in it. Declare the names a deployment needs, e.g. `github_token: FORGEPILOT_GITHUB_TOKEN`.
+- id: credentials
+  plugin: forgepilot.providers.credentials.env:EnvCredentialPlugin
+  config:
+    entries: {}
+  tier: trusted
+
 # --- execution and safety --------------------------------------------------
 # Reports `none` enforcement and records calls without executing them. A real
 # host-backed provider must replace this before anything runs a command, and

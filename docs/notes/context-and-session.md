@@ -225,3 +225,185 @@ Rules that are easy to get wrong:
 - ⚠️ **A `REPLACE` takes the place of the range it supersedes — it is not appended.** The first version removed the superseded events and appended the replacement to the end of the visible list. For a whole-span summary that is nearly harmless, which is why it survived; for masking a single tool result it is fatal, and it was measured. See "Compaction notes".
 - **`seams/` must not depend on `kernel/`, even transitively.** That is why `ForgePilotError` lives at `forgepilot/errors.py` and not inside `kernel/`: importing `forgepilot.kernel.errors` would execute `kernel/__init__`, which imports `cordis_port`.
 
+
+## Redaction: the gate in front of the log
+
+Every event that enters the log passes `runtime/redaction.py` first. The gate lives in
+`Session.append` — the one function that may write an event — and nowhere else.
+
+**Why there, and not somewhere more obvious.** Decided against two alternatives that
+each look tidier:
+
+- **Not in the projection (read time).** Model-visible ⇒ logged, and the log is what
+  the projection reads, so gating the write covers *both* the log and the model with
+  one code path. Gating the read instead would leave the plaintext on disk — the
+  failure the whole exercise is about — and would make every future reader of the
+  log (the distiller, an export, a replay) responsible for remembering to redact.
+- **Not in the JSONL store.** `providers/session_store/jsonl.py` spills any payload
+  over `DEFAULT_INLINE_LIMIT` (64 KiB) into `blobs/<tenant>/<event>.json` and *clears
+  the event's `data`*. A store-level gate would therefore miss every large tool
+  result — exactly the payload most likely to contain a credential or an intranet
+  URL. There is a test for that, and it is one of the two that only pass because the
+  blob is written from an already-redacted payload.
+
+**Rules are ordered, and the order is load-bearing.** `private-key, token, jwt,
+auth-header, auth-scheme, assigned-secret, url-userinfo, internal-url, high-entropy`:
+
+- The PEM rule runs first; a private key body must be consumed whole rather than
+  shredded into token-looking fragments.
+- The two auth rules run **before** `assigned-secret`. With them after, the text
+  `authorization: Bearer <token>` matched the assignment rule with `Bearer` as the
+  "value" — so the placeholder replaced the *word* and left the token in the log.
+  The payload-walk test caught it; the ordering comment records it because the next
+  person to add a rule will reorder the tuple without thinking.
+- `high-entropy` runs last so it only sees what no named rule claimed.
+
+**Two rules exist because of false positives, not false negatives.** `_ASSIGNMENT`
+requires `(?![A-Za-z0-9])` after the credential word, or `max_tokens=200000` matches
+(it contains `token`) and a budget number becomes a placeholder. `_SENSITIVE_KEY`, the
+dict-key test, matches a whole `_`/`-`-delimited segment, so `max_tokens` is not a
+token but `api_key` is. A detector that fires on ordinary identifiers is switched off
+within a week, and then everything leaks — the same lesson `..` and the eval arms were
+chosen for.
+
+**Failure degrades; it never refuses the write.** There is no `RedactionFailed`, and
+that is deliberate: a gate that can stop a run becomes a gate that gets bypassed. A
+rule that raises turns *that string* into `«redaction-failed:bytes=N,fp=…»` and emits
+`redaction/failed`; the event still lands, the next event still lands, and the run
+continues. The stub's digest is a **salted HMAC, not a bare sha256** — a bare digest
+lets anyone confirm a guessed payload against the log, which is a secret-disclosure
+oracle built out of the safety feature.
+
+**At `SECRET`, the payload is withheld, not minimised.** A match classified
+`Sensitivity.SECRET` collapses the *whole* payload to `«redacted:secret-event:bytes=N»`
+rather than leaving a typed placeholder inside it. The reason is that a pasted
+credential is evidence about the rest of the payload: the words around a token — a
+hostname, a project name, an internal path — are exactly what a minimised redaction
+would have preserved, and the doctrine this was built from says the highest level
+degrades to metadata. Three properties are deliberate:
+
+- **Keys and non-string fields survive.** Everything downstream looks payloads up by
+  name (`data["text"]`, `data["callId"]`), so a payload that lost its shape would break
+  the conversation instead of protecting it — and would break it one turn later, when
+  the projection next runs.
+- **The stub carries the size; the fingerprint is in the audit event.**
+  `redaction/applied` records `withheld: true`, so a reader can tell "this turn happened
+  and its text is here" from "this turn happened and everything it carried was
+  withheld". Without that flag the two look identical in the log.
+- **The cost is real and is not hidden: a user message that contains a pasted key
+  reaches the model as a stub**, so the agent cannot act on it. That is the intended
+  direction of the trade — the alternative keeps text a `SECRET` classification says
+  not to keep — and the escape hatch is the credential channel, not an exemption here.
+
+One consequence is worth recording because it nearly cost a test its meaning: the blob
+test (`test_a_payload_that_spills_to_a_blob_leaves_no_secret_in_the_blob`) had to switch
+from a token to an `INTERNAL`-classified URL. A token-bearing payload now collapses, so it
+never grows past the inline limit and never spills — the test would have been *skipped*
+on the jsonl store and silently stopped covering the one path it exists for.
+
+**Fingerprints are salted HMAC-SHA256, truncated to 16 hex.** Salt comes from
+`FORGEPILOT_REDACTION_SALT`, else it is random per process — so without a configured
+salt, fingerprints are comparable only *within* one process. That is the honest
+behaviour; a stable cross-run digest would be the oracle above.
+
+**There is no kill switch.** `Redactor()` compiles every rule; only `high-entropy` has
+an `enabled` flag, and it is off by default because its false-positive rate is
+unmeasured. A configuration key that turns the gate off is a key that is off in
+production, so it does not exist.
+
+Deployment-specific knowledge enters through the environment — `FORGEPILOT_INTERNAL_HOSTS`
+(a comma-separated list of the company's own domains) and `FORGEPILOT_REDACTION_HIGH_ENTROPY`.
+Not through a profile row, and not as a `Session` parameter: the only `Session.open`
+call sites are `runtime/assembly.py:110` and `:121`, `assemble_session` has no profile
+in scope, and a list threaded through every entry point would be forgotten by exactly
+the caller that writes the intranet URL. The environment is the same channel the salt
+and every other deployment secret already arrives through (`config/env_file.py`).
+
+**Measured, not declared.** `tests/security/test_redaction_never_writes_a_secret.py`
+runs each case against both stores. With the gate line in `append` replaced by
+`redacted, report = dict(data or {}), RedactionReport()`, **11 of its 14 cases fail** —
+the three that survive are the one asserting an ordinary event passes through
+untouched, and the in-memory store's missing-blob skip. Restored, the full gate is
+`1092 passed, 220 skipped`, 88.04%, `All gates passed.`
+
+⚠️ **What the gate does not do.** No field-level encryption and no vault, so the
+*placeholder* is the only thing protecting the shape of the original; the original is
+not recoverable for a replay, and `docs/notes/memory.md`'s Phase A loses nothing by
+that because a redacted log is what the distiller is supposed to read. No NER or
+schema-aware detection, so a secret with no recognisable shape survives. And the read
+side — a memory record refusing to be recalled above a reader's `Sensitivity` ceiling —
+is Phase E work; `Sensitivity` is already in `seams/security.py` for it.
+
+
+## The credential channel: `${NAME}` instead of a secret
+
+The redaction gate keeps secrets *out*, and a key the user pastes into a message reaches
+the model as a stub — which is the intended direction of that trade, but it means the
+agent cannot use it. The credential channel is the other half: the model names a secret
+it never sees, and the value is substituted after the human has approved the call.
+
+```
+model writes:  git push https://x-access-token:${github_token}@github.com/acme/repo
+arm phase:     claims the name — declared? non-empty? — logs `credential/claimed`
+execute:       provider resolves it, the sandbox argv carries the value
+log / model:   the placeholder, everywhere, always
+```
+
+**The seam** is `seams/credentials.py`: `CredentialChannel.refs()` / `.resolve(name)`,
+plus `placeholder(name)` and `placeholders(text)`. The shipped provider
+(`providers/credentials/env.py`) maps a declared name to an environment variable and
+reads `os.environ` **at resolve time**, so a `.env.local` loaded after boot still works;
+rotating the variable between two resolves changes the answer, and there is a contract
+test for exactly that. It is deliberately not an environment dump: an undeclared name
+raises `UnknownCredential` ("no secret is declared under the name …"), as does a declared
+name whose variable is empty.
+
+**It is claimed in `arm`, before capabilities are minted.** `arm` is the only phase
+allowed to touch host state, so it is the only place a name may be resolved at all — and
+the claim runs *before* `mint_capabilities` on purpose: a command needing both a rewrite
+(unknown credential) and a stronger sandbox would otherwise be told about the sandbox
+first, and the model would "fix" the wrong thing. The claim appends `credential/claimed`
+carrying the **names** and nothing else — a name is not a secret, and an audit that hides
+which credential a command asked for is useless.
+
+**A secret-shaped literal is refused, not redacted.** `literal_secret()` runs the
+redaction rules over the command `arm` is about to authorise; any *named* rule match
+(`high-entropy` excluded, even when a deployment enables it — "looks random" is not a
+defensible thing to refuse) raises `LiteralSecretRefused`. Its message names the rule
+kind, says secrets come from the credential channel, shows the form to write
+(`${github_token}`), and deliberately does not echo the literal. Redacting instead would
+leave the model holding a secret it typed, having silently converted it — the channel is
+worth nothing if a model can bypass it by being literal. `LiteralSecretRefused` subclasses
+`ArmRefused`, so the phase's existing failure handling covers it and a refusal is a
+refusal. When no channel is configured at all, `${NAME}` is refused too: running the
+command with the placeholder left in it fails somewhere else and looks like something
+else.
+
+**Three places a value surfaced that no rule could ever catch.** All three are now
+scrubbed, and the first two were found by tests rather than by review:
+
+1. **The not-executed diagnostics.** The refusal-ish path builds its message from
+   `not_executed_reason(result)`, which prints `argv: list(result.argv)` — the
+   *substituted* argv. The value reached the tool result, and from there the durable
+   log, through the diagnostics rather than through the command.
+2. **The command's own output.** `echo`, `set -x`, a traceback: whatever the sandbox
+   prints is part of the tool result. This is precisely where a rule set cannot help,
+   because the whole premise of the channel is that a secret need not *look* like one;
+   the fix is value-aware (`scrub_values(body, secrets)`), not pattern-aware.
+3. **The recorded argv in the outcome meta.** Now scrubbed element by element, with
+   `"secrets": sorted(names)` beside it — names, not values.
+
+**Absence is a refusal, not a bypass.** `ToolPipeline.credentials` defaults to `None` and
+`assemble_session` reads it off the root, so a profile with no `credentials` row refuses
+every `${NAME}` in `arm`. The default profile ships the row with `entries: {}`, which is
+why `--boot` now reports **19 rows ACTIVE**.
+
+**Measured.** `tests/security/test_credentials_are_never_literals.py` is the D2-4
+acceptance row: a literal `ghp_…` is refused with `phase == "arm"` and the recording
+sandbox sees no call at all; `${demo_token}` reaches the sandbox with the real value in
+its argv while the outcome meta, the tool result and the whole log hold the placeholder;
+an unclaimed name is refused. `tests/contract/test_seam_contracts.py` covers the seam.
+Full gate at this point: `1125 passed, 225 skipped`, 8104 statements, 88.25%,
+`All gates passed.`
+
+

@@ -23,6 +23,10 @@ MOCK_PROVIDERS: tuple[tuple[str, dict], ...] = (
     ("forgepilot.providers.session_store.memory:InMemorySessionStorePlugin", {}),
     ("forgepilot.providers.memory.memory:InMemoryMemoryStorePlugin", {}),
     ("forgepilot.providers.approval.scripted:ScriptedApprovalPlugin", {"policy": "ask"}),
+    (
+        "forgepilot.providers.credentials.env:EnvCredentialPlugin",
+        {"entries": {"demo_token": {"env": "FORGEPILOT_TEST_TOKEN"}}},
+    ),
 )
 
 

@@ -24,6 +24,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forgepilot.runtime.events import open_turn, pending_tool_calls
+from forgepilot.runtime.redaction import (
+    RedactionReport,
+    Redactor,
+    collapse_payload,
+    default_redactor,
+)
 from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.session import (
@@ -46,6 +52,7 @@ class Session:
         store: SessionStore,
         header: SessionHeader,
         committed: Sequence[SessionEvent] = (),
+        redactor: Redactor | None = None,
     ) -> None:
         self._store = store
         self.header = header
@@ -53,6 +60,10 @@ class Session:
         self._pending: list[SessionEvent] = []
         self._next_seq = (self._committed[-1].seq + 1) if self._committed else 1
         self._listeners: list[Callable[[SessionEvent], None]] = []
+        #: The gate on everything written below. Injected rather than reached for
+        #: globally, so a test can prove what the default does and a deployment can
+        #: widen the internal-host list without editing this module.
+        self._redactor = redactor or default_redactor()
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -64,6 +75,7 @@ class Session:
         tenant: str = "",
         principal: str = "",
         cwd: str = "",
+        redactor: Redactor | None = None,
     ) -> Session:
         header = SessionHeader(
             session_id=session_id,
@@ -73,7 +85,7 @@ class Session:
             cwd=cwd,
         )
         await store.create(header)
-        return cls(store, header)
+        return cls(store, header, redactor=redactor)
 
     @classmethod
     async def open(
@@ -82,6 +94,7 @@ class Session:
         session_id: SessionId,
         *,
         recover: bool = True,
+        redactor: Redactor | None = None,
     ) -> Session:
         """Load a session, repairing a torn tail and balancing open turns.
 
@@ -93,7 +106,7 @@ class Session:
         """
         recovery = await store.recover_tail(session_id) if recover else TailRecovery()
         committed = [event async for event in store.read(session_id)]
-        session = cls(store, await store.header(session_id), committed)
+        session = cls(store, await store.header(session_id), committed, redactor=redactor)
         session._last_recovery = recovery
         await session._rebalance()
         return session
@@ -107,12 +120,13 @@ class Session:
         boundary: int | None = None,
         tenant: str = "",
         principal: str = "",
+        redactor: Redactor | None = None,
     ) -> Session:
         header = await store.fork(
             source, boundary=boundary, tenant=tenant, principal=principal
         )
         committed = [event async for event in store.read(header.session_id)]
-        return cls(store, header, committed)
+        return cls(store, header, committed, redactor=redactor)
 
     # -- recovery ----------------------------------------------------------
     last_recovery: TailRecovery = TailRecovery()
@@ -159,7 +173,63 @@ class Session:
         turn: TurnId | None = None,
         step: int | None = None,
     ) -> SessionEvent:
-        """Buffer an event. The only way anything enters the log."""
+        """Buffer an event. The only way anything enters the log.
+
+        **The redaction gate is here, and that placement is load-bearing.** Because
+        whatever the model sees must be in the log (``runtime/log_guard.py``), one
+        gate at this single door protects the conversation *and* the storage at
+        once: there is no path where the log stays clean and the model still saw
+        the secret. It has to sit here rather than at the store, because a payload
+        over the store's inline limit spills to a blob file — redacting later
+        would miss every large tool result, which is where a stray credential is
+        most likely to be.
+
+        A detector that fails does **not** fail the write: the text becomes a
+        metadata stub and ``redaction/failed`` names the broken rule. The
+        fail-closed property of this gate is about the *value* never landing, not
+        about the agent stopping.
+
+        A match classified ``Sensitivity.SECRET`` goes further and collapses the
+        whole payload to a stub, because at that level the payload is presumed
+        sensitive as a whole rather than only at the span the rule matched.
+        """
+        redacted, report = self._redactor.redact_payload(dict(data or {}))
+        if report.is_secret:
+            redacted = collapse_payload(redacted)
+        event = self._append_raw(kind, redacted, surface=surface, turn=turn, step=step)
+        if report.applied:
+            self._audit_redaction(EventKind.REDACTION_APPLIED, report, event.seq, turn, step)
+        if report.degraded:
+            self._audit_redaction(EventKind.REDACTION_FAILED, report, event.seq, turn, step)
+        return event
+
+    def _audit_redaction(
+        self,
+        kind: str,
+        report: RedactionReport,
+        seq: int,
+        turn: TurnId | None,
+        step: int | None,
+    ) -> None:
+        """Record what the gate did, through a path that does not re-enter it.
+
+        The payload holds kinds, counts and fingerprints and so would survive a
+        second pass unchanged — but "it would be a no-op" is how a recursion into
+        the gate gets written one day, and the record of a redaction should not
+        itself be a redaction decision.
+        """
+        self._append_raw(kind, report.to_event_data(seq=seq), turn=turn, step=step)
+
+    def _append_raw(
+        self,
+        kind: str,
+        data: Mapping[str, Any] | None = None,
+        *,
+        surface: SurfaceOp = SurfaceOp.LOG_ONLY,
+        turn: TurnId | None = None,
+        step: int | None = None,
+    ) -> SessionEvent:
+        """Build, buffer and announce an event. No gate, no judgement."""
         event = SessionEvent(
             seq=self._next_seq,
             kind=kind,

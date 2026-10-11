@@ -24,6 +24,7 @@ from typing import Any
 
 from forgepilot.kernel.errors import CapabilityNotGranted
 from forgepilot.runtime.commandline import shell_argv
+from forgepilot.runtime.credentials import resolve_placeholders, scrub_values
 from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
@@ -611,6 +612,13 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
         # backslashes out of `C:\…\python.exe`, nothing was spawned, and the
         # model was told the *sandbox* had refused. Hence `shell_argv` — the one
         # place that knows how this platform starts a shell.
+        # ``${NAME}`` is resolved here — the last moment before a process sees the
+        # command, and nowhere earlier. The arm phase has already refused the call
+        # if a name could not be resolved or if the line carried a literal secret,
+        # so what is left is the substitution and the obligation that comes with
+        # it: put the placeholder back into anything that will be recorded.
+        command, secrets = await resolve_placeholders(command, ctx.credentials)
+
         argv = shell_argv(command)
 
         result = await sandbox.run(
@@ -637,17 +645,27 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             # Never dress this up as a result, either: a model handed "(exit 0)"
             # for a command that never ran will summarise its output confidently.
             return ToolOutcome(
-                content=(
+                content=scrub_values(
                     "the command was NOT executed, so there is no output, and anything "
                     "inferred from this call would be invented.\n"
-                    + not_executed_reason(result)
+                    # `not_executed_reason` prints the argv it was handed — which is
+                    # the *substituted* one. Without this scrub the value lands in a
+                    # tool result and then in the log, through the diagnostics rather
+                    # than through the command.
+                    + not_executed_reason(result),
+                    secrets,
                 ),
                 is_error=True,
                 meta={
                     "executed": False,
                     "exit_code": result.exit_code,
                     "enforcement": str(result.enforcement),
-                    "argv": list(result.argv),
+                    # Scrubbed, not raw. This `argv` is the *substituted* one, and
+                    # it lands in a durable event — the one place a resolved value
+                    # must never appear, and the reason `resolve_placeholders`
+                    # returns what it substituted.
+                    "argv": [scrub_values(part, secrets) for part in result.argv],
+                    "secrets": sorted(secrets),
                 },
             )
 
@@ -669,6 +687,13 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
                 f"output above is the command's own. If the command needs access the "
                 f"boundary does not grant, say so rather than trying a different route.]"
             ).strip()
+
+        # The command's own output is the third place a value can surface: an
+        # `echo`, a `set -x`, a stack trace that prints the argv. Scrubbed for the
+        # same reason as the argv meta — and this is where a rule set would *not*
+        # help, because the whole point of the channel is that a secret need not
+        # look like one for a rule to catch it.
+        body = scrub_values(body, secrets)
 
         return ToolOutcome(
             content=body or f"(exit {result.exit_code})",

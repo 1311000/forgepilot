@@ -31,8 +31,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from forgepilot.runtime.credentials import literal_secret
 from forgepilot.runtime.guards.registry import GuardRegistry, make_view
-from forgepilot.runtime.tools.arm import ArmRefused, ArmScope, mint_capabilities
+from forgepilot.runtime.redaction import Redactor
+from forgepilot.runtime.tools.arm import (
+    ArmRefused,
+    ArmScope,
+    literal_secret_refusal,
+    mint_capabilities,
+)
 from forgepilot.runtime.tools.pre_execute import (
     CallPreview,
     PreDecision,
@@ -42,6 +49,7 @@ from forgepilot.runtime.tools.pre_execute import (
     resolve_decision,
 )
 from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
+from forgepilot.seams.credentials import CredentialChannel, CredentialError, placeholders
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.sandbox import SandboxEnforcement
 from forgepilot.seams.security import ExecutionConstraints, Principal
@@ -104,6 +112,14 @@ class ToolPipeline:
     #: Exposed for tests and diagnostics; this is how the ordering guarantee is
     #: asserted rather than assumed.
     trace: list[str] = field(default_factory=list)
+    #: Where ``${NAME}`` is resolved. **Optional, and its absence is a refusal,
+    #: not a bypass**: a call that asks for a credential with no channel configured
+    #: fails in ``arm`` rather than running the command with the placeholder left
+    #: in it (which would fail somewhere else, looking like something else).
+    credentials: CredentialChannel | None = None
+    #: The gate ``arm`` uses to recognise a literal secret. ``None`` means the
+    #: process default — see `runtime.redaction.default_redactor`.
+    redactor: Redactor | None = None
 
     def on_pre_execute(self, listener: PreExecuteListener) -> None:
         self.pre_execute_listeners.append(listener)
@@ -258,6 +274,11 @@ class ToolPipeline:
         # --- phase: arm (the only privileged one) ---------------------------
         self.trace.append(Phase.ARM)
         try:
+            # Scanned **before** capabilities are minted. Both are refusals, and the
+            # literal is the more specific one: a model told "the sandbox is too
+            # weak here" for a command it must rewrite anyway learns the wrong
+            # lesson from the wrong sentence.
+            await self._claim_credentials(session, targets, turn, step)
             capabilities = mint_capabilities(
                 effects=definition.effects,
                 scope=ArmScope(
@@ -283,6 +304,7 @@ class ToolPipeline:
             step=step,
             capabilities=capabilities,
             workspace_root=root,
+            credentials=self.credentials,
         )
         try:
             outcome = await definition.execute(call, context)
@@ -332,6 +354,62 @@ class ToolPipeline:
             is_error=True,
             meta={"phase": str(phase), "refused": True, **extra},
         )
+
+    async def _claim_credentials(
+        self, session: Any, targets: ResourceTargets, turn: TurnId, step: int
+    ) -> tuple[str, ...]:
+        """Refuse a secret-shaped literal; check the names a command will need.
+
+        **This is what makes the credential channel a mechanism.** Everything else
+        about it is a convention a model can ignore by typing the value where it
+        belongs; here the value is recognised and the call is refused.
+
+        Two deliberate choices:
+
+        - **A literal is refused, not redacted.** Redacting it would run the
+          command with a placeholder in it and fail somewhere else, while the
+          model went on believing the credential was in play — a wrong diagnosis
+          is worse than no run.
+        - **Names are validated here, substituted later.** The substitution needs
+          the final command text, which belongs to the tool that builds it; this
+          phase's job is to be the last word on whether the call proceeds at all.
+          When there is no channel, or the name is not declared, that is a refusal
+          too: the alternative is a shell line with an empty secret in it.
+
+        The audit event carries the names and never a value.
+        """
+        names: dict[str, None] = {}
+        for command in targets.commands:
+            text = str(command)
+            mark = literal_secret(text, self.redactor)
+            if mark is not None:
+                raise literal_secret_refusal(mark)
+            for name in placeholders(text):
+                names.setdefault(name, None)
+        for name in names:
+            await self._resolve_credential(name)
+        if names:
+            await session.append(
+                EventKind.CREDENTIAL_CLAIMED,
+                {"names": sorted(names)},
+                turn=turn,
+                step=step,
+            )
+        return tuple(names)
+
+    async def _resolve_credential(self, name: str) -> None:
+        """Confirm the name resolves, and turn a failure into an arm refusal."""
+        if self.credentials is None:
+            raise ArmRefused(
+                f"this command uses ${{{name}}} but no credential channel is configured "
+                f"for this session, so there is nothing to substitute. Ask whoever runs "
+                f"the deployment to declare the name, or run the command without the "
+                f"secret."
+            )
+        try:
+            await self.credentials.resolve(name)
+        except CredentialError as exc:
+            raise ArmRefused(str(exc)) from exc
 
     async def _ask(
         self,

@@ -26,6 +26,7 @@ __all__ = [
     "Principal",
     "Budget",
     "NetworkAccess",
+    "Sensitivity",
     "ExecutionConstraints",
     "normalise_relative",
 ]
@@ -50,6 +51,38 @@ class Operation(StrEnum):
 class NetworkAccess(StrEnum):
     DENY = "deny"
     ALLOW = "allow"
+
+
+#: Least to most restricted. A tuple rather than ``Enum`` comparison because
+#: ``StrEnum`` members do not order themselves, and ordering is the whole point.
+_SENSITIVITY_ORDER = ("public", "internal", "confidential", "secret")
+
+
+class Sensitivity(StrEnum):
+    """How far one piece of data is allowed to travel.
+
+    Deliberately an ordered enum and not a number: a level is a *policy*
+    decision, and a float invites "0.7 of a secret" — a value nobody can act on.
+
+    The redaction gate stamps one of these on everything it recognises, the log
+    records it, and a memory record carries it so that a recall can refuse to
+    show a reader something above their clearance. That last use is why it lives
+    in the seam rather than in the gate: the same vocabulary has to be readable
+    by the memory seam, the session log and the tools, and a type defined inside
+    ``runtime/`` could not be named by ``seams/`` without inverting the layering.
+    """
+
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    CONFIDENTIAL = "confidential"
+    SECRET = "secret"
+
+    def rank(self) -> int:
+        return _SENSITIVITY_ORDER.index(self.value)
+
+    def exceeds(self, ceiling: Sensitivity) -> bool:
+        """True when data at this level may not be shown to a holder of ``ceiling``."""
+        return self.rank() > ceiling.rank()
 
 
 @dataclass(frozen=True, slots=True)

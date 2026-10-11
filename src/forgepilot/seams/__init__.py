@@ -35,6 +35,13 @@ from forgepilot.seams.approval import (
     ApprovalRequest,
     ApprovalService,
 )
+from forgepilot.seams.credentials import (
+    CredentialChannel,
+    CredentialRef,
+    UnknownCredential,
+    placeholder,
+    placeholders,
+)
 from forgepilot.seams.llm import (
     ChatMessage,
     ChatRequest,
@@ -151,6 +158,11 @@ __all__ = [
     "TurnResult", "UserInput", "AGENTS_SERVICE_NAME",
     # approval
     "ApprovalOutcome", "ApprovalPolicy", "ApprovalRequest", "ApprovalService",
+    # credentials
+    # The channel a command names instead of carrying a secret. Re-exported with
+    # the rest of the seams so a consumer imports one module, not a path.
+    "CredentialChannel", "CredentialRef", "UnknownCredential", "placeholder",
+    "placeholders",
     # llm
     "ChatMessage", "ChatRequest", "ChatResponse", "LLMCapabilities", "LLMService",
     "Role", "StreamChunk", "ToolCallRequest", "ToolSchema", "Usage", "drain_stream",
