@@ -330,7 +330,27 @@ def write_project(task: EvalTask, into: Path, *, arm: Any = None):
     return load_project(path)
 
 
-def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: bool):
+#: The kernel sandbox as a patch layer — the same row
+#: `src/forgepilot/bundles/kernel_sandbox/patch.yaml` ships, inline for the same reason an arm is
+#: inline: whether a *run's* commands are confined is a property of that run, not a deployment's
+#: configuration. It is the row that makes `no-search` mean something.
+CONTAINMENT_ROWS: list[dict[str, Any]] = [
+    {
+        "id": "sandbox",
+        "plugin": "forgepilot.providers.sandbox.namespace:NamespaceSandboxPlugin",
+        "config": {"enter": ["unshare"], "max_output_bytes": 64000},
+        "tier": "trusted",
+    }
+]
+
+
+def run_layers(
+    task: EvalTask,
+    arm_patches: list[dict[str, Any]],
+    *,
+    scripted: bool,
+    contain: bool = False,
+):
     """Every layer this run composes, in order. Pure, so the *order* is testable.
 
     ⚠️ **The order is the point, not a detail.** Later layers win, and each position is a
@@ -342,7 +362,11 @@ def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: b
        `project.yaml` value, e.g. pointing `retriever` at an index instead of a checkout;
     4. the arm's rows, so **an arm can still override a task**. The arm is the thing under
        comparison: a task quietly winning over it would make an ablation measure the task;
-    5. the scripted overrides, which must beat everything — a scripted run has to put the replay
+    5. **the containment layer**, when the run asked for it (`FORGEPILOT_EVAL_CONTAIN`) — the kernel
+       sandbox in place of the executing-but-uncontained one. It sits *above* the arm deliberately:
+       whether commands are confined is a fact about the host, not a variable under comparison, and
+       an arm that could switch containment off would be measuring containment rather than itself;
+    6. the scripted overrides, which must beat everything — a scripted run has to put the replay
        model back whatever else configured, or it is not offline.
 
     ⚠️ **Split out of `boot` so this can be asserted without booting anything.** The ordering
@@ -372,6 +396,9 @@ def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: b
     if arm_patches:
         layers.append(patch_layer_from_mapping(f"--arm:{task.name}", list(arm_patches)))
 
+    if contain:
+        layers.append(patch_layer_from_mapping("--contain", list(CONTAINMENT_ROWS)))
+
     if scripted:
         # Two rows, and both are needed. `user.patch.yaml` swaps in the real model, so the
         # replay row puts the scripted one back; and the classifier *also* runs on the model,
@@ -399,22 +426,30 @@ def run_layers(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: b
     return profile, layers
 
 
-async def boot(task: EvalTask, arm_patches: list[dict[str, Any]], *, scripted: bool):
+async def boot(
+    task: EvalTask,
+    arm_patches: list[dict[str, Any]],
+    *,
+    scripted: bool,
+    contain: bool = False,
+):
     """Resolve the profile plus the example patch plus the arm, and load it.
 
-    Three layers, in this order, and each one is a different kind of statement:
+    Four layers, in this order, and each one is a different kind of statement:
 
     1. the profile as shipped — bundles, then the user layer;
     2. `examples/stat-fix/patch.yaml`, by **path**, so the eval runs the same file
        the README tells a person to run;
     3. the arm, inline, because an arm is a thing this harness invents for
        comparison and does not deserve a committed file that looks like
-       deployment config.
+       deployment config;
+    4. the containment layer, only when the run asked for it — the one layer that is
+       about the *host* rather than about the experiment.
     """
     from forgepilot.config import apply_layers
     from forgepilot.kernel import create_root
 
-    profile, layers = run_layers(task, arm_patches, scripted=scripted)
+    profile, layers = run_layers(task, arm_patches, scripted=scripted, contain=contain)
     resolved = apply_layers(tuple(layers), profile=profile.name)
     root = create_root()
     await resolved.materialize_async(root)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import traceback
@@ -37,8 +38,21 @@ import harness as H  # noqa: E402
 
 RESULTS = H.HERE / "results"
 
+#: **Whether this run confines the model's commands.** Off by default, and that default is this
+#: harness's own documented choice: an eval measures the *agent*, and a boundary that depends on the
+#: host would make two machines' numbers incomparable. On is for the question the default cannot
+#: answer — `no-search` only means "the answer is out of reach" if the shell cannot walk over to it,
+#: and on a dev box whose sandbox reports only `partial` it can.
+#:
+#: `FORGEPILOT_EVAL_CONTAIN=1` is the whole switch. It swaps the sandbox row for the kernel one and
+#: raises `minimum_enforcement_for_exec` to `FULL` — the same deliberate pair the CLI makes, except
+#: that here the *run* is the thing being declared rather than the operator.
+CONTAIN = os.environ.get("FORGEPILOT_EVAL_CONTAIN", "") not in ("", "0", "false", "False")
 
-async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: bool) -> dict:
+
+async def run_one(
+    task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: bool, contain: bool = False
+) -> dict:
     """Prepare, boot, plan, run, and reduce to a row. Never raises.
 
     A crashing run is a *result* — "the harness fell over on this task" is
@@ -60,6 +74,10 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         "arm": arm.name,
         "rep": rep,
         "mode": "scripted" if scripted else "live",
+        # A row that does not say whether a boundary was in force cannot be read later: the whole
+        # difference between "the agent could not find it" and "the agent was not allowed to go and
+        # look" is this boolean.
+        "contained": contain,
         "started": datetime.now(UTC).isoformat(),
         # The mapping from an opaque directory back to what it was. It lives here
         # rather than in the path because the path is inside the agent's own
@@ -72,7 +90,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         repo = H.prepare_repo(task, scratch / "repo")
         shipped = H.base_paths(repo)
         H.export_environment(repo, scratch / "worktrees")
-        root, _ = await H.boot(task, list(arm.patches), scripted=scripted)
+        root, _ = await H.boot(task, list(arm.patches), scripted=scripted, contain=contain)
         if scripted and task.script:
             root.llm.script(*H.script_turns(task))
 
@@ -88,7 +106,9 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
             constraints,
             workspace_root=repo,
             principal=record.principal,
-            minimum_enforcement_for_exec=SandboxEnforcement.NONE,
+            minimum_enforcement_for_exec=(
+                SandboxEnforcement.FULL if contain else SandboxEnforcement.NONE
+            ),
         )
 
         gateway = ClassifierGateway(root.classifier)
@@ -318,13 +338,21 @@ async def main_async(args: argparse.Namespace) -> int:
     out = RESULTS / f"{run_id}.jsonl"
 
     total = len(cells) * args.reps
+    print(
+        f"{run_id}: {len(cells)} cell(s) x {args.reps} rep(s) = {total} row(s) -> {out.name}"
+        + (
+            "  ** contained: the kernel sandbox, and `exec` is refused without it **"
+            if CONTAIN
+            else ""
+        )
+    )
     done = 0
     with out.open("w", encoding="utf-8") as handle:
         for name, arm_name, variant in cells:
             task = H.with_variant(tasks_by_name[name], variant)
             arm = arm_module.arm(arm_name)
             for rep in range(1, args.reps + 1):
-                row = await run_one(task, arm, rep, scripted=args.scripted)
+                row = await run_one(task, arm, rep, scripted=args.scripted, contain=CONTAIN)
                 row["run"] = run_id
                 # ⚠️ **What this row's arm actually changed**, recorded per row so a
                 # results file carries its own evidence. An arm that switched nothing
