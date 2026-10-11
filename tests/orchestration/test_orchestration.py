@@ -194,6 +194,68 @@ async def test_an_incomplete_ticket_never_reaches_the_classifier() -> None:
     assert "reproduction steps" in plan.reason
 
 
+async def test_a_ticket_naming_two_repositories_is_refused_rather_than_half_done() -> None:
+    """One worktree, one commit, one pull request — so two targets cannot be honoured.
+
+    ⚠️ The failure this rules out is not a crash. It is a run that fixes one
+    repository, leaves the other alone, and reports `READY` — **a cross-repository
+    change whose other half nobody went to look at**, presented as complete. The
+    plan named both repositories the whole time; only the execution quietly used
+    the first, which is why a rate or a terminal state could never show it.
+
+    Refused before the classifier, like an incomplete ticket: the answer is a rule,
+    and asking a model which half of a change to make would be asking it to decide
+    where to write.
+    """
+    gateway = ClassifierGateway(UnreachableClassifier())
+
+    plan = await plan_task(
+        ticket=a_ticket(
+            COMPLETE + f"\n\n调用方在 {REPO_A.slug}，实现落在 {REPO_B.slug}。\n"
+        ),
+        project=a_project(repos=(REPO_A, REPO_B)),
+        constraints=constraints_with(
+            Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS
+        ),
+        registry=REGISTRY,
+        classifier=gateway,
+    )
+
+    assert plan.state is TaskState.AWAITING_INFO
+    assert plan.needs_human
+    assert gateway.calls == 0, (
+        "a ticket that cannot be honoured must be refused by rules alone; reaching "
+        "the model would spend a call asking it to choose where to write"
+    )
+    assert REPO_A.slug in plan.reason and REPO_B.slug in plan.reason, (
+        "the refusal has to name the repositories, or a person cannot split the ticket"
+    )
+
+
+async def test_the_projects_own_repository_list_is_not_a_licence_to_pick_the_first() -> None:
+    """The fallback when a ticket names no repository is the project's list — and a
+    list of two is still two.
+
+    Choosing `repos[0]` here would be the same silent half-delivery, reached by a
+    different route: the ticket is silent, so *the configuration* decides, and a
+    project that declares several repositories would be worked on one of them at
+    random.
+    """
+    gateway = ClassifierGateway(UnreachableClassifier())
+
+    plan = await plan_task(
+        ticket=a_ticket(COMPLETE),
+        project=a_project(repos=(REPO_A, REPO_B)),
+        constraints=constraints_with(Operation.READ_CODE),
+        registry=REGISTRY,
+        classifier=gateway,
+    )
+
+    assert plan.state is TaskState.AWAITING_INFO
+    assert gateway.calls == 0
+    assert REPO_A.slug in plan.reason and REPO_B.slug in plan.reason
+
+
 async def test_a_complete_ticket_reaches_the_classifier_exactly_once() -> None:
     gateway = ClassifierGateway(ScriptedClassifier(CONFIDENT_BUG))
 

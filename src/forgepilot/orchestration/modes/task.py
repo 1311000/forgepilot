@@ -153,6 +153,40 @@ async def plan_task(
             transitions=tuple(machine.history),
         )
 
+    # ⚠️ **One repository per task — and saying so beats choosing one.**
+    #
+    # `preprocess` returns *every* repository the ticket names, because that is
+    # what the ticket says; the project's own list is the fallback when it names
+    # none. Execution, though, prepares **one** worktree, makes **one** commit and
+    # opens **one** pull request, so it took `plan.repos[0]` and discarded the
+    # rest without a word: a ticket naming two authorised repositories was fixed in
+    # one of them and reported `READY` / `DELIVERED`. A plan that names two targets
+    # and an execution that honours one is the shape of defect this codebase keeps
+    # recording, and for a *cross-repository* change it is the worst instance of it
+    # — the untouched half is exactly what nobody went to look at.
+    #
+    # Refused here rather than picked, because that is the honest state: delivering
+    # to several repositories is a milestone (one worktree, one commit and one pull
+    # request *per* repository, plus a body that explains the split), not a line of
+    # code. Refused **before** the classifier, for the same reason an incomplete
+    # ticket is: asking a model which half of a change to make would be asking it to
+    # decide where to write, and the answer is a rule.
+    if len(target_repos) > 1:
+        reason = (
+            f"this ticket targets {len(target_repos)} repositories "
+            f"({', '.join(r.slug for r in target_repos)}), and this deployment "
+            f"delivers to one at a time: one worktree, one commit, one pull request. "
+            f"Split the ticket, or name the single repository the change belongs in"
+        )
+        machine.to(TaskState.AWAITING_INFO, reason)
+        return TaskPlan(
+            state=TaskState.AWAITING_INFO,
+            ticket=ticket,
+            preprocessed=preprocessed,
+            reason=reason,
+            transitions=tuple(machine.history),
+        )
+
     understanding = await classifier.classify(
         ClassificationRequest(
             ticket_id=ticket.id,
@@ -309,6 +343,14 @@ async def run_task(
         {"state": str(TaskState.RUNNING), "ticket": str(plan.ticket.id), "toolSet": plan.selection.tool_set},
     )
 
+    # The invariant `plan_task` establishes, asserted where it is relied on: it
+    # refuses a ticket naming more than one repository, so a ready plan has exactly
+    # one. Without this, a future change that lets a two-repository plan through
+    # would silently go back to delivering half the change — the failure mode is a
+    # discarded repository, which nothing downstream can notice.
+    assert len(plan.repos) == 1, (  # noqa: S101 - invariant of a ready plan
+        f"a ready plan must name exactly one repository, not {len(plan.repos)}"
+    )
     repo = plan.repos[0]
     session_id = session.header.session_id
 
