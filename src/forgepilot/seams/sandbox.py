@@ -48,6 +48,39 @@ class PolicyNotEnforceable(ForgePilotError):
     """
 
 
+class ReadScope(StrEnum):
+    """What a boundary claims about **reads** — which is not what "read-only" says.
+
+    Every backend here confines *writes*; that is what a read-only root is for,
+    and it is not the same property. A root bound read-only is still **visible**:
+    a sandboxed command can read every file the filesystem will hand it,
+    including the corpus an evaluation is measuring and the checkout of a project
+    the agent was never asked to touch.
+
+    Measured on Linux against the shipped rules: inside the boundary,
+    ``cat /eval/evals/tasks/not-in-the-checkout/index.json`` **succeeded and
+    printed the task**, in the same namespace where writing to that directory
+    returned ``Read-only file system`` (``docs/notes/evals.md``, finding 20).
+
+    So the scope states the claim, and the default is the smaller one:
+
+    - ``HOST`` — writes are confined; reads reach the whole filesystem. This is
+      what a read-only root actually buys, and claiming more would be the defect
+      this vocabulary exists to prevent.
+    - ``WORKSPACE`` — reads outside the workspace and a named toolchain set fail
+      as well.
+
+    **It belongs to the boundary, not to the call.** A call site knows what it is
+    about to run; it does not know how a deployment built its sandbox, so this is
+    provider configuration. :meth:`Sandbox.probe` is where the claim is checked
+    against the machine, and a backend configured for ``WORKSPACE`` that cannot
+    meet it reports :attr:`SandboxEnforcement.PARTIAL`, never ``FULL``.
+    """
+
+    HOST = "host"
+    WORKSPACE = "workspace"
+
+
 class SandboxMode(StrEnum):
     READ_ONLY = "read-only"
     WORKSPACE_WRITE = "workspace-write"
@@ -60,7 +93,8 @@ class SandboxEnforcement(StrEnum):
     FULL = "full"
     #: Some boundary exists but is known not to be complete (e.g. Windows ACL
     #: restricted token) — or the platform reports nothing about network/process
-    #: visibility, which this vocabulary does not cover at all.
+    #: visibility, which this vocabulary does not cover at all, or the boundary
+    #: confines writes but not reads while claiming :attr:`ReadScope.WORKSPACE`.
     PARTIAL = "partial"
     NONE = "none"
 

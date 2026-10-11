@@ -20,6 +20,7 @@ specificity.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +28,12 @@ from pathlib import Path
 import pytest
 
 from forgepilot.seams.refs import SessionId
-from forgepilot.seams.sandbox import SandboxEnforcement, SandboxExecutionPolicy, SandboxMode
+from forgepilot.seams.sandbox import (
+    ReadScope,
+    SandboxEnforcement,
+    SandboxExecutionPolicy,
+    SandboxMode,
+)
 from forgepilot.seams.security import NetworkAccess
 
 WORKSPACE = Path("/srv/checkouts/svc-a")
@@ -185,20 +191,27 @@ async def _load(config: dict):
         await dispose_fiber(fiber)
 
 
-def a_launcher(tmp_path: Path, *, exit_code: int) -> list[str]:
+def a_launcher(tmp_path: Path, *, exit_code: int, stdout: str = "") -> list[str]:
     """A stand-in for `unshare`, so the probe can be observed without patching.
 
     `enter` is a command line, not a binary name, precisely so this is possible:
     the sandbox flags are appended to it, so a script here receives exactly what
     `unshare` would.
+
+    `stdout` is how the *read* probe is simulated. A real launcher runs the
+    command it was handed; this one does not, so whatever that command would have
+    printed appears here instead. Empty means "it ran and said nothing", which is
+    deliberately **not** the same answer as "it hid the canary".
     """
-    script = tmp_path / f"launcher-{exit_code}.py"
-    log = tmp_path / f"argv-{exit_code}.txt"
+    stamp = hashlib.sha256(stdout.encode("utf-8")).hexdigest()[:8]
+    script = tmp_path / f"launcher-{exit_code}-{stamp}.py"
+    log = tmp_path / f"argv-{exit_code}-{stamp}.txt"
     script.write_text(
         "\n".join(
             [
                 "import sys, pathlib",
                 f"pathlib.Path({str(log)!r}).write_text(chr(10).join(sys.argv[1:]))",
+                f"sys.stdout.write({stdout!r})",
                 f"sys.exit({exit_code})",
                 "",
             ]
@@ -241,6 +254,118 @@ async def test_a_launcher_that_runs_but_cannot_isolate_is_not_full(tmp_path: Pat
 
     async for plugin in _load({"enter": enter}):
         assert plugin.probe() is SandboxEnforcement.NONE
+
+
+# ---------------------------------------------------------------------------
+# The read claim: `host` is verified by a write, `workspace` by a read
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("exit_code", "stdout", "expected"),
+    [
+        (1, "", SandboxEnforcement.NONE),
+        (0, "", SandboxEnforcement.PARTIAL),
+        (0, "FORGEPILOT-READ-PROBE-OK", SandboxEnforcement.FULL),
+        (0, "FORGEPILOT-READ-PROBE-LEAKED\nFORGEPILOT-READ-PROBE-OK", SandboxEnforcement.PARTIAL),
+    ],
+)
+def test_the_read_verdict_has_an_answer_for_every_way_the_probe_can_end(
+    exit_code: int, stdout: str, expected: SandboxEnforcement
+) -> None:
+    """A table, because two of these four rows are the ones that were wrong.
+
+    Row 2 — it ran and printed nothing — must not be `FULL`: no canary came back
+    and no marker said the command ran, so nothing was verified, and "unverified"
+    is the one answer that must never round up. Row 4 is finding 20: the boundary
+    ran the command and handed the canary over. That is a claim *not met*, which
+    is `PARTIAL`, not the absence of a boundary.
+    """
+    from forgepilot.providers.sandbox.namespace import _read_probe_verdict
+
+    assert _read_probe_verdict(exit_code, stdout) is expected
+
+
+async def test_a_workspace_claim_is_verified_by_a_read_and_not_a_write(tmp_path: Path) -> None:
+    """The probe must ask the question the claim makes, not the easy one.
+
+    A write-based probe is what reported `FULL` for a boundary that leaked every
+    read (finding 20), so with `read_scope: workspace` the command has to be the
+    read of a file outside the workspace — visible in the recorded argv, which is
+    the whole reason `enter` is a command line.
+    """
+    enter, log = a_launcher(tmp_path, exit_code=0, stdout="FORGEPILOT-READ-PROBE-OK")
+
+    async for plugin in _load({"enter": enter, "read_scope": "workspace"}):
+        assert plugin.probe() is SandboxEnforcement.FULL
+
+    recorded = log.read_text(encoding="utf-8")
+    assert "cat" in recorded and "canary" in recorded, (
+        "the workspace claim was verified without reading anything outside it"
+    )
+
+
+async def test_confining_writes_and_not_reads_is_partial_for_workspace_and_full_for_host(
+    tmp_path: Path,
+) -> None:
+    """The same launcher, two claims, two answers — which is the point.
+
+    This is finding 20 in one test: `/` is bound read-only, so a write-based
+    probe reports `FULL` while the canary is handed over. `host` claims only what
+    that boundary actually does, and keeps its `FULL`; `workspace` claims more,
+    and must answer `PARTIAL` rather than borrow the write probe's confidence.
+    """
+    enter, _ = a_launcher(
+        tmp_path,
+        exit_code=0,
+        stdout="FORGEPILOT-READ-PROBE-LEAKED\nFORGEPILOT-READ-PROBE-OK",
+    )
+
+    async for plugin in _load({"enter": enter}):
+        assert plugin.probe() is SandboxEnforcement.FULL
+
+    async for plugin in _load({"enter": enter, "read_scope": "workspace"}):
+        assert plugin.probe() is SandboxEnforcement.PARTIAL
+
+
+async def test_run_refuses_when_the_read_claim_could_not_be_verified(tmp_path) -> None:
+    """`PARTIAL` is reported rather than flattened to `NONE`, and the message says
+    which of the two failures happened — an unavailable sandbox and a boundary
+    that keeps half its promise need different fixes, and both are exit 126."""
+    enter, _ = a_launcher(
+        tmp_path,
+        exit_code=0,
+        stdout="FORGEPILOT-READ-PROBE-LEAKED\nFORGEPILOT-READ-PROBE-OK",
+    )
+
+    async for plugin in _load({"enter": enter, "read_scope": "workspace"}):
+        result = await plugin.run(
+            ["echo", "hello"],
+            policy=policy(SandboxMode.WORKSPACE_WRITE),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert result.executed is False
+    assert result.enforcement is SandboxEnforcement.PARTIAL
+    assert "read_scope='workspace'" in result.stderr
+    assert "finding 20" in result.stderr
+    assert "hello" not in result.stdout
+
+
+def test_read_scope_does_not_silently_fall_back_to_host() -> None:
+    """A typo in the profile must not turn into a weaker claim that reports FULL.
+
+    `read_scope: workspce` on a deployment that meant to confine reads would
+    otherwise be accepted, resolve to `host`, and be verified — by the write
+    probe — as fully enforced.
+    """
+    from forgepilot.providers.sandbox.namespace import read_scope_from
+
+    assert read_scope_from("workspace") is ReadScope.WORKSPACE
+    assert read_scope_from("host") is ReadScope.HOST
+
+    with pytest.raises(ValueError, match="workspce"):
+        read_scope_from("workspce")
 
 
 # ---------------------------------------------------------------------------
@@ -422,9 +547,10 @@ def test_the_generated_script_is_pure_ascii() -> None:
     from forgepilot.providers.sandbox.namespace import build_argv
 
     for mode in (SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE):
-        argv = build_argv(["true"], policy=policy(mode), cwd=WORKSPACE)
-        script = argv[argv.index("-c") + 1]
-        assert script.isascii(), [c for c in script if not c.isascii()]
+        for scope in (ReadScope.HOST, ReadScope.WORKSPACE):
+            argv = build_argv(["true"], policy=policy(mode), cwd=WORKSPACE, read_scope=scope)
+            script = argv[argv.index("-c") + 1]
+            assert script.isascii(), [c for c in script if not c.isascii()]
 
 
 def test_a_protected_subpath_that_does_not_exist_is_skipped_not_bound() -> None:
@@ -445,3 +571,126 @@ def test_a_protected_subpath_that_does_not_exist_is_skipped_not_bound() -> None:
     for name in (".git", ".codex", ".claude", ".agents"):
         target = f"{WORKSPACE.as_posix()}/{name}"
         assert f"[ -e {target} ]" in script, f"{name} is bound unconditionally"
+
+
+# ---------------------------------------------------------------------------
+# read_scope: workspace — the masks that make the read claim true
+# ---------------------------------------------------------------------------
+def test_a_host_read_claim_generates_no_masks() -> None:
+    """`host` says reads are not confined. A mask there would be a boundary
+    nobody asked for, and one the probe is not checking."""
+    from forgepilot.providers.sandbox.namespace import mount_rules
+
+    for mode in (SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE):
+        assert not any(
+            rule.kind.name == "MASK_UNNAMED" for rule in mount_rules(policy(mode))
+        ), f"{mode} grew a mask without a read claim"
+
+
+def test_a_workspace_read_claim_masks_before_it_binds_the_workspace() -> None:
+    """Order again: the mask goes over `/`, and the workspace is bound back on
+    top of it. Reversed, the mask would hide the workspace it just restored."""
+    from forgepilot.providers.sandbox.namespace import MountKind, mount_rules
+
+    rules = mount_rules(policy(SandboxMode.WORKSPACE_WRITE), read_scope=ReadScope.WORKSPACE)
+
+    mask = next(r for r in rules if r.kind is MountKind.MASK_UNNAMED)
+    workspace = next(r for r in rules if r.target == WORKSPACE)
+
+    assert mask.target == Path("/")
+    assert mask.keep == (WORKSPACE,), "a mask that does not keep the workspace hides it"
+    assert workspace.kind is MountKind.BIND_FROM_CWD
+    assert rules.index(mask) < rules.index(workspace)
+
+
+def test_the_mask_cannot_hide_the_workspace_from_its_own_bind() -> None:
+    """⚠️ The trap that decides the implementation.
+
+    `mount(8)` canonicalises its source argument, so once an ancestor of the
+    workspace is a mask, `mount --bind . <workspace>` resolves `.` to the *masked*
+    path and silently binds an empty directory over the workspace. Taking the cwd
+    **before** the masks is what leaves `.` naming the real dentry, and the inode
+    comparison is the belt for the same failure — because it is silent: the
+    workspace comes back empty, which reads as a broken checkout rather than as a
+    boundary bug.
+    """
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(
+        ["true"],
+        policy=policy(SandboxMode.WORKSPACE_WRITE),
+        cwd=WORKSPACE,
+        read_scope=ReadScope.WORKSPACE,
+    )
+    script = argv[argv.index("-c") + 1]
+
+    assert script.index(f"cd {WORKSPACE.as_posix()}") < script.index("for entry in /*")
+    assert "mount -c --bind . " in script, "without --no-canonicalize `.` is a path, not a dentry"
+    assert "stat -c %d:%i ." in script
+    assert script.index("stat -c %d:%i .") < script.index('exec "$@"')
+
+
+def test_the_mask_leaves_symlinks_alone() -> None:
+    """`/bin -> usr/bin` is the usual layout: masking `/bin` would replace
+    `/usr/bin`, and the shell running the script would lose `mount` itself."""
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    argv = build_argv(
+        ["true"],
+        policy=policy(SandboxMode.WORKSPACE_WRITE),
+        cwd=WORKSPACE,
+        read_scope=ReadScope.WORKSPACE,
+    )
+    script = argv[argv.index("-c") + 1]
+
+    assert 'if [ -L "$entry" ]; then continue; fi' in script
+    assert script.index('if [ -L "$entry" ]') < script.index("mount -t tmpfs none")
+
+
+def test_the_named_toolchain_stays_visible_under_a_read_claim() -> None:
+    """`ReadScope.WORKSPACE` is "the workspace **and a named toolchain set**".
+
+    A boundary that hid `/usr` would stop the interpreter from starting, which
+    fails loudly; one that hid `/etc` would take the resolver and the user
+    database with it. Both are named, checked, and therefore a promise the
+    provider can keep — rather than an accident of what the mask loop skipped.
+    """
+    from forgepilot.providers.sandbox.namespace import TOOLCHAIN_ROOTS, build_argv
+
+    argv = build_argv(
+        ["true"],
+        policy=policy(SandboxMode.WORKSPACE_WRITE),
+        cwd=WORKSPACE,
+        read_scope=ReadScope.WORKSPACE,
+    )
+    script = argv[argv.index("-c") + 1]
+    case_line = next(line for line in script.splitlines() if line.strip().startswith("case "))
+
+    for root in TOOLCHAIN_ROOTS:
+        assert root in case_line, f"{root} would be masked away"
+
+
+def test_a_read_only_claim_still_lets_the_workspace_be_read() -> None:
+    """The near-miss this test exists for: in `read-only` mode there is no
+    writable workspace to bind, so the mask loop would have hidden the workspace
+    along with everything else — a boundary that refuses the read it claims to
+    allow. The rebind happens in both modes for that reason."""
+    from forgepilot.providers.sandbox.namespace import MountKind, mount_rules
+
+    rules = mount_rules(policy(SandboxMode.READ_ONLY), read_scope=ReadScope.WORKSPACE)
+
+    workspace = next(r for r in rules if r.target == WORKSPACE)
+    assert workspace.kind is MountKind.BIND_FROM_CWD
+    assert workspace.read_only is True
+
+
+def test_danger_full_access_is_not_masked() -> None:
+    """That mode asks for no boundary at all — `run()` never sends it here, and
+    dressing it in masks would make `probe()`'s answer about a different thing."""
+    from forgepilot.providers.sandbox.namespace import MountKind, mount_rules
+
+    rules = mount_rules(
+        policy(SandboxMode.DANGER_FULL_ACCESS), read_scope=ReadScope.WORKSPACE
+    )
+
+    assert not any(rule.kind is MountKind.MASK_UNNAMED for rule in rules)

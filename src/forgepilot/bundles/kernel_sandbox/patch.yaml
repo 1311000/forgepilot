@@ -21,6 +21,25 @@
 #   private pid/ipc/uts namespaces · the network namespace cut unless the policy
 #   allows it.
 #
+# ⚠️ **Writes, not reads — which is why this row says `read_scope: host`.** `/` is
+# bound read-only, so it is *visible*: a sandboxed command can read every file the
+# filesystem hands it, including a checkout it was never asked to touch. Measured,
+# not inferred (finding 20, `docs/notes/evals.md`): inside this boundary
+# `cat /eval/evals/tasks/not-in-the-checkout/index.json` succeeds and prints the
+# task. `host` claims exactly that much and `probe()` verifies it with a write the
+# boundary must refuse.
+#
+# **`workspace` is now enforceable, and is opt-in because it costs something.** With
+# it, the launcher replaces every top-level entry the boundary does not name with an
+# empty tmpfs (`/dev/null` over a file), keeping the workspace and a named toolchain
+# set (`/usr /bin /sbin /lib /lib64 /lib32 /libx32 /etc /dev /proc`) — so a read
+# outside the workspace fails, and `/etc` and `/dev` remain a documented residual.
+# The probe checks *that* claim with a read instead of a write, and answers `partial`
+# for a boundary that only confines writes, which this provider then refuses to run
+# under. Turn it on when the checkout is not the whole world: `/tmp` stays a fresh
+# tmpfs and the workspace is re-bound from the cwd, which is the part that makes the
+# mask survivable.
+#
 # `probe()` asks the machine by *running* a trivial sandbox, not by checking for
 # `unshare`: Ubuntu 24.04's default AppArmor policy blocks unprivileged user
 # namespaces, so a presence check reports `full` on a host that cannot isolate
@@ -31,5 +50,9 @@
     # How the boundary is entered, as a command line. `unshare` ships with
     # util-linux; `["bwrap", ...]` works too once bubblewrap is installed.
     enter: [unshare]
+    # What this boundary claims about reads: `host` (writes confined, reads reach
+    # the whole filesystem) or `workspace` (reads confined to the workspace).
+    # Claiming more than the boundary enforces is refused, not ignored.
+    read_scope: host
     max_output_bytes: 64000
   tier: trusted

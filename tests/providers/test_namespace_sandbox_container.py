@@ -52,7 +52,7 @@ from pathlib import Path
 import pytest
 
 from forgepilot.seams.refs import SessionId
-from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
+from forgepilot.seams.sandbox import ReadScope, SandboxExecutionPolicy, SandboxMode
 
 IMAGE = os.environ.get("FORGEPILOT_SANDBOX_CONTAINER", "")
 WORKSPACE = Path("/ws")
@@ -65,6 +65,21 @@ if echo x  > /ws/.git/hook 2>/dev/null; then g=WRITABLE; else g=read-only; fi
 if echo ok > /tmp/scratch 2>/dev/null; then t=writable; else t=READ-ONLY; fi
 if cat /ws/keep.txt >/dev/null 2>&1; then r=readable; else r=UNREADABLE; fi
 echo "workspace_root=$w subdir=$s outside=$o git=$g tmp=$t existing=$r"
+"""
+
+# `read_scope: workspace` — the same boundary, plus the read claim. `/outside`
+# is written by the prelude and then masked, so the question is what a command
+# inside the boundary can still reach.
+CONFINED_CHECKS = """
+if echo ok > /ws/inside.txt 2>/dev/null; then w=writable; else w=READ-ONLY; fi
+if echo ok > /ws/src/new.py 2>/dev/null; then s=writable; else s=READ-ONLY; fi
+if echo x  > /ws/.git/hook 2>/dev/null; then g=WRITABLE; else g=read-only; fi
+if cat /outside/secret.txt >/dev/null 2>&1; then o=LEAKED; else o=hidden; fi
+if echo x > /outside/poison 2>/dev/null; then p=writable-mask; else p=read-only; fi
+if cat /ws/keep.txt >/dev/null 2>&1; then r=readable; else r=UNREADABLE; fi
+if echo ok > /tmp/scratch 2>/dev/null; then t=writable; else t=READ-ONLY; fi
+if [ -r /etc/passwd ]; then e=etc-visible; else e=ETC-HIDDEN; fi
+echo "workspace_root=$w subdir=$s git=$g outside_read=$o outside_write=$p existing=$r tmp=$t toolchain=$e"
 """
 
 
@@ -106,18 +121,21 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def generated_script() -> str:
+def generated_script(
+    *, read_scope: ReadScope = ReadScope.HOST, mode: SandboxMode = SandboxMode.WORKSPACE_WRITE
+) -> str:
     """The provider's own launcher, with the exec replaced by assertions."""
     from forgepilot.providers.sandbox.namespace import build_argv
 
     argv = build_argv(
         ["true"],
         policy=SandboxExecutionPolicy(
-            mode=SandboxMode.WORKSPACE_WRITE,
+            mode=mode,
             workspace_root=WORKSPACE,
             session_id=SessionId("container"),
         ),
         cwd=WORKSPACE,
+        read_scope=read_scope,
     )
     script = argv[argv.index("-c") + 1]
     assert script.rstrip().endswith('exec "$@"'), script[-120:]
@@ -133,6 +151,29 @@ def scriptfile(tmp_path_factory) -> Path:
         + CHECKS,
         encoding="ascii",
         newline="\n",  # CRLF would make `2>&1\\r` invalid shell
+    )
+    return path
+
+
+@pytest.fixture(scope="module")
+def confined_scriptfile(tmp_path_factory) -> Path:
+    """The same launcher under a read claim, with a secret outside the workspace.
+
+    The secret is written **before** the masks, which is the only moment it is
+    reachable: after them, `/outside` is a fresh tmpfs and the file behind it is
+    unreachable rather than merely unwritable — which is the whole difference
+    between this and `read_scope: host`.
+    """
+    path = tmp_path_factory.mktemp("confined") / "launcher.sh"
+    path.write_text(
+        "#!/bin/sh\nmkdir -p /ws/.git /ws/src /outside/nested\n"
+        "echo seed > /ws/keep.txt\n"
+        "echo top-secret > /outside/secret.txt\n"
+        "echo deeper > /outside/nested/secret.txt\n"
+        + generated_script(read_scope=ReadScope.WORKSPACE)
+        + CONFINED_CHECKS,
+        encoding="ascii",
+        newline="\n",
     )
     return path
 
@@ -181,3 +222,27 @@ def test_the_workspace_is_writable_and_everything_else_is_not(scriptfile: Path) 
     assert verdict["git"] == "read-only", verdict
     assert verdict["tmp"] == "writable", verdict
     assert verdict["existing"] == "readable", verdict
+
+
+def test_a_read_claim_hides_what_it_does_not_name(confined_scriptfile: Path) -> None:
+    """Finding 20, closed: the same boundary, with reads confined too.
+
+    A read-only root is *visible* — `cat /eval/evals/tasks/not-in-the-checkout/
+    index.json` succeeded on the shipped rules — so the file has to be replaced
+    rather than merely protected. The secret is planted outside the workspace,
+    the masks go up, and this asserts a command inside can no longer reach it
+    while the workspace, the toolchain and `/tmp` are all still usable.
+    """
+    verdict = run_in_container(confined_scriptfile)
+
+    assert verdict["outside_read"] == "hidden", verdict
+    assert verdict["workspace_root"] == "writable", verdict
+    assert verdict["subdir"] == "writable", verdict
+    assert verdict["existing"] == "readable", verdict
+    assert verdict["git"] == "read-only", verdict
+    assert verdict["tmp"] == "writable", verdict
+    assert verdict["toolchain"] == "etc-visible", verdict
+    # ⚠️ `writable-mask` is the intended answer, not a leak. The mask is a fresh
+    # tmpfs, so writes land in memory and the host's `/outside` is neither read
+    # nor altered — which is why the read above, not this write, is the evidence.
+    assert verdict["outside_write"] == "writable-mask", verdict

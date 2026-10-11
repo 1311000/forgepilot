@@ -43,6 +43,75 @@ existed at the time asserted the `--` was present**, because the test and the
 implementation shared the same wrong assumption; the test now asserts the shape
 `sh` actually requires, and says why.
 
+### Writes are confined; reads are not — so the boundary *claims*, and the probe checks the claim
+
+`/` bound read-only is **visible, not hidden**. Every file the filesystem will hand
+over stays readable inside the boundary: measured on Linux against these very rules,
+`cat /eval/evals/tasks/not-in-the-checkout/index.json` **succeeded and printed the
+task**, in the same namespace where writing to that directory returned `Read-only
+file system` (finding 20, `docs/notes/evals.md`). A write-based `probe()` reports
+`FULL` for that boundary — correctly — and says nothing whatever about reads.
+
+So the claim became explicit. `seams/sandbox.py::ReadScope` is chosen in the profile,
+and it is **provider configuration, not part of `SandboxExecutionPolicy`**: a call
+site knows what it is about to run, but not how a deployment built its boundary.
+
+- `host` (the default, and what this bundle configures): writes are confined, reads
+  reach the filesystem. Verified by a **write** the read-only root must refuse.
+- `workspace`: reads outside the workspace fail too. Verified by a **read** of a
+  canary that must not come back.
+
+The two probes are the point: a write test cannot tell a boundary from a boundary
+that hides nothing, so `workspace` against today's rules answers `PARTIAL` — the claim
+is not met — and `run` **refuses** rather than borrowing the write probe's confidence.
+`PARTIAL` is now reported as `PARTIAL` (it used to be flattened to `NONE`), because
+"no sandbox on this host" and "a sandbox that keeps half its promise" need different
+fixes and both arrive as exit 126.
+
+Two details decide whether the probe means anything:
+
+- **The canary must not sit under `/tmp`.** Inside the boundary `/tmp` is a fresh
+  tmpfs, so a canary there is invisible in *every* scope and the probe would report
+  `FULL` for a boundary that hides nothing — the same trap that hid a prepared
+  workspace in the eval harness. It goes under `$HOME`, then `/var/tmp`.
+- **Unverifiable is not verified.** No writable canary directory, a command that ran
+  and printed no marker, or a non-zero exit each answer `PARTIAL`/`NONE`, never
+  `FULL`. And a typo in the profile (`read_scope: workspce`) raises at load instead of
+  falling back to the weaker claim and being verified as fully enforced.
+
+`workspace` used to be a *claim with a to-do attached*. The masks are now in the
+launcher, and the probe is what proves it rather than asserting it:
+
+- **`/` stays bound read-only, and that is deliberate.** Masking does not need a tmpfs
+  root, and keeping `/` real is what keeps the existing
+  `/.forgepilot-boundary-check` — a *write* that must fail — meaning what it meant.
+  Every top-level entry the boundary does not name is then replaced: an empty tmpfs
+  over a directory, `/dev/null` over a file.
+- **The cwd is taken before the masks, and that is the load-bearing line.**
+  `mount(8)` canonicalises its source argument, so once an ancestor of the workspace
+  is a mask, `mount --bind . <workspace>` resolves `.` to the *masked* path and
+  silently binds an empty directory over the workspace. `mount -c`
+  (`--no-canonicalize`) is what keeps `.` a dentry, and a `stat -c %d:%i` comparison
+  against the workspace is the belt: it exits 125 rather than handing over an empty
+  checkout. Two ways to notice, because the failure is otherwise silent.
+- **Symlinks are skipped.** `/bin -> usr/bin` is the standard layout, so masking
+  `/bin` would replace `/usr/bin` — and the shell running the script would no longer
+  find `mount`.
+- **The toolchain set is named rather than accidental:** `/usr /bin /sbin /lib
+  /lib64 /lib32 /libx32 /etc /dev /proc`. That is the second half of what `ReadScope`
+  promises — reads outside the workspace *and this set* fail — and `/etc` and `/dev`
+  are the honest residual: a secret living in `/etc` is still readable inside the
+  boundary.
+- **A mask is writable.** The tmpfs over a masked directory accepts writes; they land
+  in memory and never reach the host. That is why the *read* is the evidence, not the
+  write.
+
+Measured against a real kernel — `ubuntu:24.04`, `--privileged`, the provider's own
+generated launcher, `tests/providers/test_namespace_sandbox_container.py`: a secret
+planted at `/outside/secret.txt` before the masks comes back **unreadable** inside
+them, while `/ws` stays writable, `/ws/.git` stays read-only, `/tmp` stays a fresh
+tmpfs and `/etc/passwd` stays readable.
+
 ### Telling the model the boundary was the reason
 
 `runtime/sandbox_denial.py`, and the `run` tool surfaces it. Codex issue **#41320**
