@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from forgepilot.seams.refs import CommitAuthor, RepoRef
+from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation
 from forgepilot.seams.vcs import PullRequestDraft
 
@@ -249,7 +249,7 @@ def test_a_draft_is_sent_as_a_draft() -> None:
 def test_githubs_own_error_message_is_what_gets_reported() -> None:
     """A 422 means the branch is missing or a PR already exists, and GitHub says
     which. Replacing that with "request failed" throws away the only useful part."""
-    from forgepilot.providers.vcs.github import GitHubRequestFailed, parse_error
+    from forgepilot.providers.vcs.github import parse_error
 
     message = parse_error(
         422,

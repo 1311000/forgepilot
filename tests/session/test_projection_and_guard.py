@@ -9,17 +9,16 @@ from __future__ import annotations
 
 import pytest
 
+from forgepilot.kernel import create_root, dispose_fiber
 from forgepilot.kernel.errors import ModelVisibleNotLogged
 from forgepilot.providers.llm.replay import ReplayLLMPlugin, text_turn
-from forgepilot.runtime.log_guard import assert_logged, guarded_complete, guarded_stream
+from forgepilot.runtime.log_guard import assert_logged, guarded_complete
 from forgepilot.runtime.projection import build_request, derive_messages
 from forgepilot.runtime.session import Session
 from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
 from forgepilot.seams.refs import PrincipalId, TenantId, TurnId
 from forgepilot.seams.security import ExecutionConstraints, Principal
-from forgepilot.seams.session import EventKind, SessionEvent, SurfaceOp
-
-from forgepilot.kernel import create_root, dispose_fiber
+from forgepilot.seams.session import EventKind, SurfaceOp
 
 
 async def seeded(store, sid) -> Session:

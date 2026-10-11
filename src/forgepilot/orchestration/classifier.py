@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from forgepilot.seams.classifier import (
-    Classifier,
     ClassificationRequest,
+    Classifier,
     TicketUnderstanding,
 )
 
@@ -48,5 +48,5 @@ class ClassifierGateway:
         self.requests.clear()
 
     @classmethod
-    def wrap(cls, classifier: Any) -> "ClassifierGateway":
+    def wrap(cls, classifier: Any) -> ClassifierGateway:
         return cls(classifier=classifier)

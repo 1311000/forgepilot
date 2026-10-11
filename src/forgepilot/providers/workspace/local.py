@@ -57,7 +57,7 @@ class LocalTempWorkspacePlugin(PluginService):
         self._baseline: dict[SessionId, dict[str, str]] = {}
 
     # -- fixtures ----------------------------------------------------------
-    def seed_files(self, files: Mapping[str, str]) -> "LocalTempWorkspacePlugin":
+    def seed_files(self, files: Mapping[str, str]) -> LocalTempWorkspacePlugin:
         """Add files a fresh workspace starts with."""
         self._seed.update({str(k): str(v) for k, v in files.items()})
         return self

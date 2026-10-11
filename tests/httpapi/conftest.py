@@ -206,7 +206,7 @@ async def live_api(tmp_path: Path, signing_env):
         server.should_exit = True
         try:
             await asyncio.wait_for(serving, timeout=10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             serving.cancel()
         await built.close()
 

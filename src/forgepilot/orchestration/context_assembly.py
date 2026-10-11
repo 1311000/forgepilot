@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.classifier import TicketUnderstanding

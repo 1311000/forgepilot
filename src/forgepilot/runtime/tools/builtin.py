@@ -26,8 +26,8 @@ from forgepilot.kernel.errors import CapabilityNotGranted
 from forgepilot.runtime.commandline import shell_argv
 from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
-from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
+from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.security import Operation, normalise_relative
 from forgepilot.seams.tools import (
     ResourceTargets,
@@ -537,7 +537,10 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
         replacement = new.replace("\n", "\r\n")
 
     result = text
-    for start, end in reversed(list(zip(offsets, ends))):
+    # `strict=True`: `offsets` and `ends` are built in lockstep from the same match
+    # list, so unequal lengths would be a bug in this function rather than a case to
+    # absorb quietly.
+    for start, end in reversed(list(zip(offsets, ends, strict=True))):
         result = result[:start] + replacement + result[end:]
 
     # `newline=""`: the default translates `\n` to `os.linesep` on the way out, so

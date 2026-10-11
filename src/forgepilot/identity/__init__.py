@@ -28,12 +28,12 @@ from forgepilot.identity.errors import (
     SignatureInvalid,
     SigningKeyMissing,
 )
-from forgepilot.identity.principal import Grant, PrincipalServicePlugin, TokenRecord
 from forgepilot.identity.policy import (
     PolicyDecision,
     PolicyServicePlugin,
     ResourceRef,
 )
+from forgepilot.identity.principal import Grant, PrincipalServicePlugin, TokenRecord
 from forgepilot.identity.scope import RequestScope, open_request_scope
 from forgepilot.identity.signing import ENV_KEY, load_key, sign, verify
 

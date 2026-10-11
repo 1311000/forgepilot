@@ -35,6 +35,12 @@ dev = [
     # produced a hit. So the tests need the real thing, and this is where a
     # development machine gets it. A deployment installs ripgrep its own way.
     "ripgrep-bin>=14.0",
+    # The gates. `scripts/check.py` runs `ruff check` and `pytest --cov`, and both
+    # tools are declared here rather than installed ad hoc: a gate that only works on
+    # the machine where somebody happened to `pip install` it is not a gate, and that
+    # is the same shape as the undeclared `httpx` this file already records.
+    "ruff>=0.17",
+    "pytest-cov>=7.0",
 ]
 
 # The HTTP/SSE surface the workbench talks to. Optional for the same reason the
@@ -77,3 +83,72 @@ packages = ["src/forgepilot"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["error::RuntimeWarning"]
+
+# ---------------------------------------------------------------------------
+# The gates. One command runs all of them: `python scripts/check.py`
+# ---------------------------------------------------------------------------
+# ⚠️ **These are configured explicitly rather than inherited**, and that is not a
+# formality: this tree reports **354 findings** under ruff's own defaults, so an
+# unconfigured `ruff check` is red before anything is wrong with the code. A gate
+# whose first state is "red for reasons nobody chose" is a gate that gets switched
+# off in the first week.
+[tool.ruff]
+# The target, not the dev box: `requires-python` above is 3.12, and this decides
+# which modernisations `UP` is allowed to suggest.
+target-version = "py312"
+line-length = 100
+# **Test data, not code.** These hold fixtures with deliberately broken or
+# degenerate code — the seeded bug in `examples/stat-fix/fixture`, and the eval
+# tasks' `solution/` variants, one of which exists to be *wrong* on purpose.
+# Linting them would report findings that nobody should fix, and fixing them would
+# break the fixtures.
+extend-exclude = [
+    "Scripts",
+    "graphify-out",
+    ".tmp",
+    ".forgepilot",
+    "examples/stat-fix/fixture",
+    "evals/tasks/*/fixture",
+    "evals/tasks/*/solution",
+]
+
+[tool.ruff.lint]
+# Chosen to be a gate that is **green on the tree as it stands** and still says
+# something: unused imports, unsorted imports, pyflakes errors, and bugbear's real
+# footguns. Widening it is cheap; narrowing it after it has caught something is not.
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B"]
+# ⚠️ `E501` is off deliberately, and it is not laziness. This codebase wraps for
+# readability and carries long f-string refusal messages that a linter cannot
+# shorten. `ruff format` and `E501` fight over the same lines, and a gate that
+# reports 681 lines it will not fix teaches people to ignore the output.
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends(...)` in an argument default is FastAPI's documented idiom: the call
+# builds a *marker*, not a value, and it is not shared across calls. B008 exists to
+# catch a mutable or expensive default evaluated once at definition time, which is
+# a different thing — so this is the precise exception rather than a blanket waiver.
+extend-immutable-calls = ["fastapi.Depends"]
+
+# ⚠️ **`S` (flake8-bandit) is deliberately not enabled, and the measurement is the
+# reason.** On this tree: `S101` is **0 in `src/`** — every assert there is already
+# a `noqa`'d invariant — and **1320 in `tests/`**, where a bare assert *is* the
+# language of the file. What is left is ~48 `S603`/`S607` on `subprocess` calls
+# this project makes on purpose, plus `S105`/`S104` false positives on test tokens
+# and on the string `"0.0.0.0"` appearing as a *value* in the binding tests.
+# Enabling it wholesale would add ~50 waivers and turn a security gate into noise —
+# and a detector that cries wolf gets switched off, which is this repository's own
+# recorded lesson about the `..` check. Turning it on properly means judging each
+# rule against what this system deliberately does, and that is its own task.
+
+[tool.coverage.run]
+source = ["forgepilot"]
+
+[tool.coverage.report]
+# ⚠️ **Just below the measured value, on purpose.** The tree measures **87%**
+# (7380 statements, 940 missed) on this machine — where 215 tests skip for platform
+# reasons. A Linux run executes more of them and scores higher; a Windows-only run
+# scores lower. A threshold set at the ceiling would fail on the platform that
+# skips most, and a gate that fails for a reason unrelated to the change is one
+# nobody keeps. Raise it when the measurement rises.
+fail_under = 85

@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from forgepilot import __version__
 from forgepilot.console import use_utf8_output
@@ -524,9 +525,9 @@ def _task(args: argparse.Namespace) -> int:
     from forgepilot.kernel import create_root
     from forgepilot.orchestration import ClassifierGateway
     from forgepilot.orchestration.modes.task import plan_task, run_task
-    from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
     from forgepilot.orchestration.task_state import TaskState
     from forgepilot.runtime.assembly import assemble_session, usage_tracker
+    from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
     from forgepilot.seams.refs import TicketId
 
     try:

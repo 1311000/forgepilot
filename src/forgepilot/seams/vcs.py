@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from forgepilot.seams.refs import BranchRef, CommitAuthor, CommitRef, RepoRef
+from forgepilot.seams.refs import CommitAuthor, RepoRef
 from forgepilot.seams.security import ExecutionConstraints
 
 __all__ = [

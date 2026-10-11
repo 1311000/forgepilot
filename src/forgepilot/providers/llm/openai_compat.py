@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 

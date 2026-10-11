@@ -16,7 +16,7 @@ callers would still believe them.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from forgepilot.kernel import PluginService
@@ -83,7 +83,7 @@ class InMemoryMemoryStorePlugin(PluginService):
             id=memory_id,
             candidate=candidate,
             provenance=provenance,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         return memory_id
 
@@ -93,7 +93,7 @@ class InMemoryMemoryStorePlugin(PluginService):
             id=memory_id,
             candidate=candidate,
             provenance=provenance,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         return memory_id
 

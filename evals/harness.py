@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
-import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,7 +185,7 @@ def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
     own `pwd`.
     """
     digest = hashlib.blake2s(
-        f"{task.name}|{arm}|{rep}".encode("utf-8"), digest_size=6
+        f"{task.name}|{arm}|{rep}".encode(), digest_size=6
     ).hexdigest()
     return scratch_root() / f"run-{digest}"
 

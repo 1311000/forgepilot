@@ -25,8 +25,9 @@ and the service leaks to the root — silently. That was measured, not read; see
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from forgepilot.identity.signing import verify
 from forgepilot.kernel import isolate_services, provide

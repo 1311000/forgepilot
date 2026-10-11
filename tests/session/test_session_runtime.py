@@ -13,17 +13,12 @@ wrong in a way nobody notices until a session is replayed:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
-
 from forgepilot.runtime.events import is_balanced, open_turn, pending_tool_calls
 from forgepilot.runtime.session import Session
-from forgepilot.seams.refs import SessionId, TurnId
+from forgepilot.seams.refs import TurnId
 from forgepilot.seams.session import (
     EventKind,
     SessionEvent,
-    SessionHeader,
     SurfaceOp,
 )
 

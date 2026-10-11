@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -36,6 +36,6 @@ async def created(store):
     """A store plus a session id that already exists in it."""
     sid = SessionId("s-under-test")
     await store.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme")
+        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme")
     )
     return store, sid

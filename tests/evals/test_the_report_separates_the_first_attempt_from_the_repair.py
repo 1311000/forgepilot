@@ -81,7 +81,7 @@ def test_the_two_rates_are_cumulative_so_the_gap_is_the_loops_work() -> None:
     ones = [report._pass_at(r, 1) for r in RESCUED]
     twos = [report._pass_at(r, 2) for r in RESCUED]
 
-    assert all(two >= one for one, two in zip(ones, twos))
+    assert all(two >= one for one, two in zip(ones, twos, strict=True))
     assert sum(ones) == 1 and sum(twos) == 2, "one rescue should be one conversion"
 
 

@@ -18,9 +18,8 @@ which nobody listed. It went unnoticed only because nothing called `decide()`.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
-
-import pytest
 
 from forgepilot.identity.policy import PolicyDecision
 from forgepilot.seams.refs import PrincipalId, SessionId, TenantId, TurnId
@@ -260,15 +259,16 @@ async def test_a_pipeline_without_a_principal_refuses_rather_than_skipping(
     loaded = await build_root({"default": "allow"})
     root = loaded["root"]
     try:
+        from datetime import datetime
+
         from forgepilot.runtime.session import Session
         from forgepilot.seams.session import SessionHeader
-        from datetime import datetime, timezone
 
         sid = SessionId("no-principal")
         await root.sessionPersistence.create(
             SessionHeader(
                 session_id=sid,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 tenant="acme",
                 principal="alice",
             )

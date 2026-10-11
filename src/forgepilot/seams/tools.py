@@ -91,7 +91,7 @@ class Capabilities:
     network: bool = False
 
     @classmethod
-    def for_effects(cls, effects: frozenset["ToolEffect"]) -> "Capabilities":
+    def for_effects(cls, effects: frozenset[ToolEffect]) -> Capabilities:
         return cls(
             fs_read=ToolEffect.READ in effects,
             fs_write=ToolEffect.WRITE in effects,
@@ -99,7 +99,7 @@ class Capabilities:
             network=ToolEffect.NETWORK in effects,
         )
 
-    def intersect(self, other: "Capabilities") -> "Capabilities":
+    def intersect(self, other: Capabilities) -> Capabilities:
         """Narrow to what both permit. Capabilities only ever shrink."""
         return Capabilities(
             fs_read=self.fs_read and other.fs_read,
@@ -108,7 +108,7 @@ class Capabilities:
             network=self.network and other.network,
         )
 
-    def without(self, *names: str) -> "Capabilities":
+    def without(self, *names: str) -> Capabilities:
         """Revoke named capabilities. Used to apply the sandbox's verdict."""
         values = {
             "fs_read": self.fs_read,

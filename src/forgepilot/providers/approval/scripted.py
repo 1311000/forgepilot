@@ -40,7 +40,7 @@ class ScriptedApprovalPlugin(PluginService):
         #: Requests that reached the answerer, for assertions.
         self.requests: list[ApprovalRequest] = []
 
-    def script(self, *outcomes: ApprovalOutcome | str) -> "ScriptedApprovalPlugin":
+    def script(self, *outcomes: ApprovalOutcome | str) -> ScriptedApprovalPlugin:
         for outcome in outcomes:
             self._outcomes.append(
                 outcome if isinstance(outcome, ApprovalOutcome) else ApprovalOutcome(outcome)

@@ -24,8 +24,9 @@ nobody thinks to double-check.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.tickets import Ticket
@@ -117,7 +118,16 @@ def preprocess(
     """Validate and normalise ``ticket`` using rules alone."""
     missing: list[str] = []
     description = ticket.description_md or ""
-    haystack = f"{ticket.title}\n{description}"
+    # ⚠️ **The completeness rules read the description, and not the title.** The
+    # title is checked for being non-empty and is searched for nothing else — so a
+    # ticket whose *title* says「复现步骤：…」while its description does not is
+    # `awaiting_info`.
+    #
+    # An unused `haystack = title + description` used to sit on this line, which read
+    # as though the rules searched both. Removing it makes the real behaviour visible
+    # instead of assumed — and changing it is a **routing** change, because it moves
+    # where tickets go, so it wants its own decision rather than a tidy-up. (Found by
+    # `ruff`'s F841 the first time a linter ran over this repository.)
 
     if not ticket.title.strip():
         missing.append("title")

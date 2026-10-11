@@ -111,7 +111,7 @@ def render_markdown(narrative: ChangeNarrative) -> str:
             out.append("")
             out.append(f"> {group.rationale.text}{_cite(group.rationale)}")
             if group.position_reason:
-                out.append(f"> ")
+                out.append("> ")
                 out.append(f"> *为什么在这里：{group.position_reason}*")
             for hunk in group.hunks[:2]:
                 out.append("")

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from forgepilot.runtime.events import open_turn, pending_tool_calls
@@ -64,10 +64,10 @@ class Session:
         tenant: str = "",
         principal: str = "",
         cwd: str = "",
-    ) -> "Session":
+    ) -> Session:
         header = SessionHeader(
             session_id=session_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant=tenant,
             principal=principal,
             cwd=cwd,
@@ -82,7 +82,7 @@ class Session:
         session_id: SessionId,
         *,
         recover: bool = True,
-    ) -> "Session":
+    ) -> Session:
         """Load a session, repairing a torn tail and balancing open turns.
 
         Recovery is deliberately asymmetric: a **torn tail fragment** is
@@ -107,7 +107,7 @@ class Session:
         boundary: int | None = None,
         tenant: str = "",
         principal: str = "",
-    ) -> "Session":
+    ) -> Session:
         header = await store.fork(
             source, boundary=boundary, tenant=tenant, principal=principal
         )
@@ -165,7 +165,7 @@ class Session:
             kind=kind,
             data=dict(data or {}),
             surface=surface,
-            ts=datetime.now(timezone.utc),
+            ts=datetime.now(UTC),
             turn=turn,
             step=step,
             event_id=uuid.uuid4().hex,

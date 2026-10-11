@@ -17,7 +17,7 @@ tell a genuine set from a constructed one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from forgepilot.identity.principal import Grant
 from forgepilot.identity.signing import sign
@@ -60,7 +60,7 @@ class ProjectPolicy:
         writable_paths: tuple[str, ...] = ("src",),
         network: NetworkAccess = NetworkAccess.DENY,
         budget: Budget | None = None,
-    ) -> "ProjectPolicy":
+    ) -> ProjectPolicy:
         """A permissive project, for fixtures and demos.
 
         Named ``open_project`` rather than being the default constructor, so that
@@ -111,7 +111,7 @@ def derive(
         # Budget comes from the project alone: an identity grant says what a
         # person may do, not how much of the company's spend they may consume.
         budget=policy.budget,
-        issued_at=datetime.now(timezone.utc),
+        issued_at=datetime.now(UTC),
     )
     return sign(constraints, key)
 

@@ -12,7 +12,7 @@ different questions with three different answers to "who is allowed to do this",
 and collapsing them is how a hook ends up with authority it was never granted.
 """
 
-from forgepilot.runtime.tools.arm import ArmScope, ArmRefused, mint_capabilities
+from forgepilot.runtime.tools.arm import ArmRefused, ArmScope, mint_capabilities
 from forgepilot.runtime.tools.pipeline import Phase, ToolPipeline
 from forgepilot.runtime.tools.pre_execute import (
     CallPreview,

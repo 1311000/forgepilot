@@ -278,13 +278,13 @@ async def test_commit_records_the_working_tree_as_a_real_commit(workspace, origi
 
 async def test_commit_refuses_when_the_caller_may_not_write_code(workspace) -> None:
     """The check that used to live on ``vcs.commit`` must not be lost in the move."""
+    from forgepilot.seams.refs import PrincipalId, TenantId
     from forgepilot.seams.security import (
         ExecutionConstraints,
         NetworkAccess,
         Operation,
         Principal,
     )
-    from forgepilot.seams.refs import PrincipalId, TenantId
 
     read_only = ExecutionConstraints.for_principal(
         Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),

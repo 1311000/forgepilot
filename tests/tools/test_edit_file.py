@@ -123,7 +123,9 @@ async def test_the_rest_of_the_file_is_untouched_byte_for_byte(tree: Path) -> No
 
     after = _read(tree).splitlines()
     assert len(before) == len(after)
-    assert [a for a, b in zip(before, after) if a != b] == ["    for _ in range(3):"]
+    assert [a for a, b in zip(before, after, strict=True) if a != b] == [
+        "    for _ in range(3):"
+    ]
 
 
 async def test_replacing_every_occurrence_is_opt_in(tree: Path) -> None:

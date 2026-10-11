@@ -26,8 +26,9 @@ from forgepilot.runtime.loop.step import ContextWindowExceeded, accumulate
 from forgepilot.runtime.loop.turn import run_turn
 from forgepilot.seams.agent_loop import AgentSpec, UserInput
 from forgepilot.seams.llm import Role, StreamChunk, Usage
-from forgepilot.seams.refs import AgentId, SessionId, TurnId
+from forgepilot.seams.refs import AgentId, SessionId
 from forgepilot.seams.session import EventKind
+
 
 def constraints_for(workspace, *, writable=("src",), operations=None):
     from forgepilot.seams.refs import PrincipalId, TenantId

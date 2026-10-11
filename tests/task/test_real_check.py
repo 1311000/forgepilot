@@ -14,8 +14,7 @@ fell out the moment it was:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -97,7 +96,7 @@ def constraints() -> ExecutionConstraints:
 @pytest.fixture
 async def session():
     """A live session, because run_checks records a ``task/check`` event."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from forgepilot.config import resolve_plugin
     from forgepilot.kernel import create_root, dispose_fiber
@@ -110,7 +109,7 @@ async def session():
     )
     sid = SessionId("s-check")
     await root.sessionPersistence.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme")
+        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme")
     )
     live = await Session.open(root.sessionPersistence, sid)
     try:
@@ -329,7 +328,6 @@ REAL_SEED = {
 @pytest.fixture
 async def real_task_rig(tmp_path):
     """The task rig, with a real sandbox and a test that inspects the real file."""
-    from dataclasses import replace
 
     from forgepilot.config import resolve_plugin
     from forgepilot.config.project import ProjectConfig
@@ -384,7 +382,7 @@ async def real_task_rig(tmp_path):
 
     sid = SessionId("real-task")
     await root.sessionPersistence.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme", principal="alice")
+        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice")
     )
 
     project = ProjectConfig(
@@ -650,12 +648,8 @@ async def test_relaxing_the_test_does_not_make_the_check_pass(real_task_rig) -> 
     """
     import json
 
-    from forgepilot.orchestration import ClassifierGateway
-    from forgepilot.orchestration.modes.task import plan_task, run_task
+    from forgepilot.orchestration.modes.task import run_task
     from forgepilot.providers.llm.replay import text_turn, tool_call_turn
-    from forgepilot.seams.classifier import TicketUnderstanding
-    from forgepilot.seams.refs import TicketId
-    from forgepilot.seams.tickets import Ticket, TicketPriority
 
     rig = real_task_rig
     plan = await _plan(rig)

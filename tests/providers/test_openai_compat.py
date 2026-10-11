@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from forgepilot.kernel import create_root, dispose_fiber
 from forgepilot.providers.llm.openai_compat import (
     OpenAICompatError,
     OpenAICompatLLMPlugin,
@@ -38,8 +39,6 @@ from forgepilot.seams.llm import (
     Usage,
     drain_stream,
 )
-
-from forgepilot.kernel import create_root, dispose_fiber
 
 
 def request_with(messages, *, system=(), tools=()) -> ChatRequest:
@@ -279,7 +278,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         for event in self.server.events:
-            frame = f"data: {json.dumps(event)}\n\n".encode("utf-8")
+            frame = f"data: {json.dumps(event)}\n\n".encode()
             self.wfile.write(f"{len(frame):X}\r\n".encode())
             self.wfile.write(frame)
             self.wfile.write(b"\r\n")

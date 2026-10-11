@@ -13,7 +13,7 @@ satisfies, or the two will quietly diverge.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -59,7 +59,7 @@ def ev(seq: int, kind: str = EventKind.USER_MESSAGE, **data) -> SessionEvent:
 async def new_session(store, sid: str = "s-1") -> SessionId:
     session_id = SessionId(sid)
     await store.create(
-        SessionHeader(session_id=session_id, created_at=datetime.now(timezone.utc))
+        SessionHeader(session_id=session_id, created_at=datetime.now(UTC))
     )
     return session_id
 
@@ -96,7 +96,7 @@ async def test_surface_and_metadata_survive_storage(store) -> None:
         kind=EventKind.REQUEST_HEADER,
         data={"model": "m"},
         surface=SurfaceOp.LOG_ONLY,
-        ts=datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc),
+        ts=datetime(2026, 10, 7, 12, 0, tzinfo=UTC),
         event_id="evt-1",
         tenant="acme",
         principal="alice",
@@ -357,7 +357,7 @@ async def test_jsonl_reopening_your_own_session_is_allowed(tmp_path: Path) -> No
         sid = await new_session(store, "reentrant")
 
         await store.create(
-            SessionHeader(session_id=sid, created_at=datetime.now(timezone.utc))
+            SessionHeader(session_id=sid, created_at=datetime.now(UTC))
         )  # must not raise
         await store.append(sid, [ev(1, text="fine")])
 

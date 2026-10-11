@@ -27,8 +27,9 @@ wrong pre-approved set.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.classifier import TicketUnderstanding

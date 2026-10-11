@@ -76,12 +76,12 @@ from forgepilot.seams.refs import (
     TurnId,
 )
 from forgepilot.seams.retriever import (
+    WORKING_TREE,
     CodeHit,
     FileSlice,
     Retriever,
     RetrieverCapabilities,
     SearchQuery,
-    WORKING_TREE,
     SymbolHit,
     SymbolKind,
     SymbolQuery,
@@ -101,12 +101,12 @@ from forgepilot.seams.security import (
     Principal,
 )
 from forgepilot.seams.session import (
+    TURN_END_REASONS,
     EventKind,
     Page,
     SessionEvent,
     SessionStore,
     SessionSummary,
-    TURN_END_REASONS,
 )
 from forgepilot.seams.tickets import (
     AttachmentMeta,
@@ -163,6 +163,12 @@ __all__ = [
     # retriever
     "CodeHit", "FileSlice", "Retriever", "RetrieverCapabilities", "SearchQuery",
     "SymbolHit", "SymbolKind", "SymbolQuery",
+    # `WORKING_TREE` is the sentinel meaning "the checkout as it is now, not a
+    # commit" — public in `seams/retriever.py`, so it is re-exported here with the
+    # rest of that seam. It was missing from `__all__`, which `ruff` reported as an
+    # unused import, correctly: an import nothing can reach is either a mistake or an
+    # unfinished re-export, and only one of those is worth keeping.
+    "WORKING_TREE",
     # sandbox
     "ExecResult", "Sandbox", "SandboxEnforcement", "SandboxExecutionPolicy", "SandboxMode",
     # security

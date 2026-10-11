@@ -51,7 +51,7 @@ def constraints_for(*repos: RepoRef) -> ExecutionConstraints:
 
 @pytest.fixture
 def roots(tmp_path: Path) -> dict[str, str]:
-    for slug, name in ((REPO.slug, "svc-a"), (OTHER.slug, "svc-b")):
+    for name in ("svc-a", "svc-b"):
         root = tmp_path / name
         for relative, content in SOURCES.items():
             target = root / relative
@@ -171,7 +171,7 @@ async def test_a_repository_with_no_checkout_is_an_error_not_an_empty_result(ret
 # open()
 # ---------------------------------------------------------------------------
 async def test_open_returns_the_lines_it_actually_read(retriever) -> None:
-    from forgepilot.seams.refs import CodeRef, LineSpan
+    from forgepilot.seams.refs import LineSpan
 
     hits = await retriever.search(
         SearchQuery(pattern="def retry_login", repos=(REPO,), ref="main"),

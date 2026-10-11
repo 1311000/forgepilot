@@ -27,7 +27,7 @@ from forgepilot.seams.refs import SessionId
 __all__ = ["SessionNotFound", "SessionBusy", "SessionRegistry", "PendingApproval"]
 
 
-def _report_failure(live: "LiveSession"):
+def _report_failure(live: LiveSession):
     """A done-callback that consumes the task's exception, loudly.
 
     The log already records a failed turn — the loop closes it with reason
@@ -182,7 +182,7 @@ class SessionRegistry:
         self.approvals[request.request_id] = pending
         try:
             return await asyncio.wait_for(pending.future, timeout=self.approval_timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             return ApprovalOutcome.UNAVAILABLE
         finally:
             self.approvals.pop(request.request_id, None)

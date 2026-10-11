@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 from forgepilot.seams.review import ChangedHunk, DiffLine, DiffLineKind, NoiseKind
 

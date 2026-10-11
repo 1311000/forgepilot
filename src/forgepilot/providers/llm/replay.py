@@ -92,7 +92,7 @@ class ReplayLLMPlugin(PluginService):
         self.requests: list[ChatRequest] = []
 
     # -- scripting ---------------------------------------------------------
-    def script(self, *turns: Iterable[StreamChunk] | str) -> "ReplayLLMPlugin":
+    def script(self, *turns: Iterable[StreamChunk] | str) -> ReplayLLMPlugin:
         """Queue turns. A plain string becomes a text-only turn."""
         for turn in turns:
             self._turns.append(text_turn(turn) if isinstance(turn, str) else tuple(turn))

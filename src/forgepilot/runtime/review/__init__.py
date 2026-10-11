@@ -13,23 +13,23 @@ The ordering step is the one worth reading first: it is where this stops being a
 summariser. See `grouping.py`.
 """
 
-from forgepilot.runtime.review.diffmodel import (
-    ParsedFile,
-    ParsedDiff,
-    parse_diff,
-    classify_noise,
-    detect_renames,
-)
-from forgepilot.runtime.review.grouping import group_hunks, order_groups
 from forgepilot.runtime.review.blastradius import (
+    analyse_blast_radius,
     analysis_backend,
     ast_available,
-    analyse_blast_radius,
 )
+from forgepilot.runtime.review.diffmodel import (
+    ParsedDiff,
+    ParsedFile,
+    classify_noise,
+    detect_renames,
+    parse_diff,
+)
+from forgepilot.runtime.review.grouping import group_hunks, order_groups
 from forgepilot.runtime.review.narrative import build_narrative, compute_coverage
-from forgepilot.runtime.review.validate import EvidenceUniverse, validate_narrative
-from forgepilot.runtime.review.render_markdown import render_markdown
 from forgepilot.runtime.review.render_json import render_json
+from forgepilot.runtime.review.render_markdown import render_markdown
+from forgepilot.runtime.review.validate import EvidenceUniverse, validate_narrative
 
 __all__ = [
     "ParsedFile",

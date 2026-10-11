@@ -63,7 +63,7 @@ class MockRetrieverPlugin(PluginService):
     # -- fixtures ----------------------------------------------------------
     def add_file(
         self, repo: RepoRef, path: str, text: str, ref: str = "main"
-    ) -> "MockRetrieverPlugin":
+    ) -> MockRetrieverPlugin:
         self._files.append(CorpusFile(repo=repo, path=path, text=text, ref=ref))
         return self
 
@@ -76,7 +76,7 @@ class MockRetrieverPlugin(PluginService):
         span: LineSpan,
         ref: str = "main",
         signature: str | None = None,
-    ) -> "MockRetrieverPlugin":
+    ) -> MockRetrieverPlugin:
         self._symbols.append(
             SymbolHit(
                 location=CodeRef(repo=repo, path=path, ref=ref),

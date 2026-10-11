@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.kernel import PluginService
-from forgepilot.seams.refs import BranchRef, CommitRef, RepoRef
-from forgepilot.seams.security import ExecutionConstraints, Operation
+from forgepilot.seams.refs import RepoRef
+from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.vcs import (
     SERVICE_NAME,
     ChangedFile,

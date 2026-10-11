@@ -52,7 +52,7 @@ class MockVcsPlugin(PluginService):
         self.denied_calls: int = 0
 
     # -- fixtures ----------------------------------------------------------
-    def set_diff(self, repo: RepoRef, base: str, head: str, diff: DiffBundle) -> "MockVcsPlugin":
+    def set_diff(self, repo: RepoRef, base: str, head: str, diff: DiffBundle) -> MockVcsPlugin:
         self._diffs[(repo, base, head)] = diff
         return self
 

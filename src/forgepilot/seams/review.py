@@ -28,9 +28,10 @@ and the diff.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, Mapping
+from typing import Any
 
 from forgepilot.seams.refs import CodeRef
 

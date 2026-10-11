@@ -23,8 +23,9 @@ from __future__ import annotations
 import inspect
 import os
 import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from forgepilot.config.errors import ConfigError, DuplicateRowId, PatchFormatError
 from forgepilot.kernel.effects import make_plugin
@@ -240,7 +241,7 @@ def _as_plugin(target: Any, row: ResolvedRow) -> Any:
         if row.inject:
             # Patch-level inject overrides what the class declared. Deliberate:
             # it is how a bundle swaps a plugin's dependency without forking it.
-            setattr(target, "inject", list(row.inject))
+            target.inject = list(row.inject)
         return target
     return make_plugin(target, inject=list(row.inject) if row.inject else None)
 

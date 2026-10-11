@@ -29,7 +29,6 @@ from forgepilot.seams.llm import Role
 from forgepilot.seams.refs import PrincipalId, TenantId, TurnId
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 from forgepilot.seams.session import EventKind
-
 from tests.compaction.test_tiered_compaction import SECTIONS, build, close, make_session
 
 WINDOW = 800

@@ -42,7 +42,6 @@ from forgepilot.kernel import PluginService
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
 from forgepilot.seams.retriever import (
     SERVICE_NAME,
-    WORKING_TREE,
     CodeHit,
     FileSlice,
     RetrieverCapabilities,

@@ -14,6 +14,8 @@ command says when a file is simply not yours.
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 
@@ -25,7 +27,7 @@ async def scripted_rig(tmp_path):
     fine for asserting what *would* have run, useless for asserting what the
     model is told about how it failed.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from forgepilot.config import resolve_plugin
     from forgepilot.kernel import create_root, dispose_fiber
@@ -69,7 +71,7 @@ async def scripted_rig(tmp_path):
     sid = SessionId("denial")
     await root.sessionPersistence.create(
         SessionHeader(
-            session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme", principal="alice"
+            session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice"
         )
     )
 

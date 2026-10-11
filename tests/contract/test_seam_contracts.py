@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import pytest
 
+from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+from forgepilot.providers.memory.memory import UnprovenMemoryWrite
 from forgepilot.seams import (
     ApprovalOutcome,
     ApprovalService,
     CodeRef,
-    EventKind,
     ExecutionConstraints,
-    LLMService,
     LineSpan,
+    LLMService,
     MemoryCandidate,
     MemoryScope,
     MemoryStore,
@@ -34,9 +35,7 @@ from forgepilot.seams import (
     SandboxExecutionPolicy,
     SandboxMode,
     SearchQuery,
-    SessionEvent,
     SessionId,
-    SessionStore,
     SymbolKind,
     SymbolQuery,
     TenantId,
@@ -48,8 +47,6 @@ from forgepilot.seams import (
     Vcs,
     Workspace,
 )
-from forgepilot.providers.llm.replay import text_turn, tool_call_turn
-from forgepilot.providers.memory.memory import UnprovenMemoryWrite
 from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
 from forgepilot.seams.vcs import PullRequestDraft
 

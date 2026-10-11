@@ -16,11 +16,12 @@ precede the tool body it authorises.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from forgepilot.errors import ForgePilotError
-from forgepilot.httpapi.registry import SessionBusy, SessionNotFound, SessionRegistry
+from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry
 from forgepilot.httpapi.sse import LostStream, tail_session
 from forgepilot.seams.approval import ApprovalOutcome
 from forgepilot.seams.refs import AgentId, Mode, SessionId
@@ -269,10 +270,10 @@ async def _open_session(root: Any, registry: SessionRegistry, cred: Any, workspa
 
 
 def _new_session_id() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     return f"session-{stamp}-{uuid4().hex[:8]}"
 
 

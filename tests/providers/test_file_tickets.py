@@ -35,7 +35,7 @@ description: |
 async def make_source(tmp_path: Path, files: dict[str, str], **config):
     """Boot the provider the way a profile would, and hand back the service."""
     from forgepilot.config import resolve_plugin
-    from forgepilot.kernel import create_root, dispose_fiber
+    from forgepilot.kernel import create_root
 
     for name, content in files.items():
         target = tmp_path / name

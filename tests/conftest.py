@@ -9,25 +9,25 @@ approximation of it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from forgepilot.config import resolve_plugin
+from forgepilot.config.project import ProjectConfig
 from forgepilot.kernel import create_root, dispose_fiber
 from forgepilot.runtime.guards import GuardRegistry, UsageTracker, default_guards
 from forgepilot.runtime.session import Session
 from forgepilot.runtime.tools.pipeline import ToolPipeline
-from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.refs import PrincipalId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
+from forgepilot.seams.session import SessionHeader
 
 #: The caller every rig builds its pipeline for. A pipeline now requires one:
 #: `tools/pre-execute` asks the policy service *who is calling*, and a permission
 #: check that cannot say who is not one.
 RIG_PRINCIPAL = Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme"))
-from forgepilot.seams.session import SessionHeader
 
 
 @dataclass
@@ -46,28 +46,15 @@ class Rig:
     workspace: Path
 
 
-def constraints_for(
-    workspace: Path,
-    *,
-    repos: tuple = (),
-    prefixes: frozenset[str] = frozenset(),
-    operations: tuple[Operation, ...] = (
-        Operation.READ_CODE,
-        Operation.WRITE_CODE,
-        Operation.RUN_TESTS,
-        Operation.OPEN_PR,
-    ),
-    writable: tuple[str, ...] = ("src",),
-    network: NetworkAccess = NetworkAccess.DENY,
-) -> ExecutionConstraints:
-    return ExecutionConstraints.for_principal(
-        Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
-        allowed_repos=frozenset(repos),
-        allowed_repo_prefixes=prefixes,
-        permitted_operations=frozenset(operations),
-        writable_paths=writable,
-        network=network,
-    )
+# ⚠️ A second `constraints_for` used to live here, taking a `workspace` plus
+# `repos`/`prefixes`. The one further down takes the same name, so this one was
+# **shadowed from the day it was written** and could never be called — `ruff`
+# reported it as F811 the first time a linter ran over this repository.
+#
+# Deleted rather than renamed because nothing referenced it: the only call site in
+# this file uses the signature below, and no module imports this one. If a richer
+# helper is wanted later, give it a name that says what it adds rather than
+# reusing this one — a shadowed helper reads as available and is not.
 
 
 @dataclass
@@ -92,10 +79,8 @@ async def loop_rig(tmp_path: Path):
     prompt-assembly bugs behind the model's tolerance. No test in this suite
     touches a network.
     """
-    import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    from forgepilot.providers.llm.replay import ReplayLLMPlugin
     from forgepilot.seams.session import SessionHeader
 
     root = create_root()
@@ -139,7 +124,7 @@ async def loop_rig(tmp_path: Path):
     await root.sessionPersistence.create(
         SessionHeader(
             session_id=session_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant="acme",
             principal="alice",
         )
@@ -164,7 +149,7 @@ async def loop_rig(tmp_path: Path):
 @pytest.fixture
 async def rig(tmp_path: Path):
     """A booted pipeline with one open session."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     root = create_root()
     fibers = []
@@ -223,7 +208,7 @@ async def rig(tmp_path: Path):
     await root.sessionPersistence.create(
         SessionHeader(
             session_id=session_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant="acme",
             principal="alice",
         )
@@ -262,7 +247,6 @@ def constraints_factory():
     from forgepilot.seams.security import (
         ExecutionConstraints,
         NetworkAccess,
-        Operation,
         Principal,
     )
 
@@ -430,7 +414,7 @@ async def task_rig(tmp_path: Path):
     await root.sessionPersistence.create(
         SessionHeader(
             session_id=session_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant="acme",
             principal="alice",
         )

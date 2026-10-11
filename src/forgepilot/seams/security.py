@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Mapping
+from typing import Any
 
 from forgepilot.seams.refs import PrincipalId, RepoRef, TeamId, TenantId
 
@@ -145,7 +145,7 @@ class ExecutionConstraints:
         writable_paths: tuple[str, ...] = (),
         network: NetworkAccess = NetworkAccess.DENY,
         budget: Budget | None = None,
-    ) -> "ExecutionConstraints":
+    ) -> ExecutionConstraints:
         """Build constraints for ``principal``.
 
         Note there is no path from a model-produced value (a ticket
@@ -202,7 +202,7 @@ class ExecutionConstraints:
                 return True
         return False
 
-    def narrowed_to(self, other: "ExecutionConstraints") -> "ExecutionConstraints":
+    def narrowed_to(self, other: ExecutionConstraints) -> ExecutionConstraints:
         """Return constraints that are ``self`` intersected with ``other``.
 
         A subagent, a resumed session, or a forked session must only ever be able

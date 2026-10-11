@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from forgepilot.providers.sandbox.local import LocalProcessSandboxPlugin, PolicyNotEnforceable
+from forgepilot.providers.sandbox.local import PolicyNotEnforceable
 from forgepilot.seams.refs import SessionId
 from forgepilot.seams.sandbox import (
     SandboxEnforcement,

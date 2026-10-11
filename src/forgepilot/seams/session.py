@@ -227,7 +227,7 @@ class SessionEvent:
         return payload
 
     @classmethod
-    def from_json(cls, raw: Mapping[str, Any]) -> "SessionEvent":
+    def from_json(cls, raw: Mapping[str, Any]) -> SessionEvent:
         ts = raw.get("ts")
         turn = raw.get("turn")
         return cls(

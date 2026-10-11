@@ -43,7 +43,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -107,7 +107,7 @@ class JsonlSessionStorePlugin(PluginService):
         self._handles: dict[SessionId, Any] = {}
         self._high_water: dict[SessionId, int] = {}
         self._locations: dict[SessionId, Path] = {}
-        self._locks: dict[SessionId, "_SessionLock"] = {}
+        self._locks: dict[SessionId, _SessionLock] = {}
 
     # -- paths -------------------------------------------------------------
     def _shard(self, tenant: str, when: datetime) -> Path:
@@ -183,7 +183,7 @@ class JsonlSessionStorePlugin(PluginService):
         created = raw.get("created_at")
         return SessionHeader(
             session_id=SessionId(raw["session_id"]),
-            created_at=datetime.fromisoformat(created) if created else datetime.now(timezone.utc),
+            created_at=datetime.fromisoformat(created) if created else datetime.now(UTC),
             format_version=int(raw.get("format_version", 1)),
             tenant=str(raw.get("tenant", "")),
             principal=str(raw.get("principal", "")),
@@ -314,7 +314,7 @@ class JsonlSessionStorePlugin(PluginService):
         child = child_session_id or SessionId(f"{source}-fork-{uuid.uuid4().hex[:8]}")
         header = SessionHeader(
             session_id=child,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant=tenant or source_header.tenant,
             principal=principal or source_header.principal,
             cwd=source_header.cwd,
@@ -334,7 +334,7 @@ class JsonlSessionStorePlugin(PluginService):
                     seq=cut + 1,
                     kind=EventKind.END_SEED,
                     data={},
-                    ts=datetime.now(timezone.utc),
+                    ts=datetime.now(UTC),
                     tenant=header.tenant,
                     principal=header.principal,
                 )

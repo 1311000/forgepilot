@@ -13,14 +13,12 @@ does not have to rediscover them.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 
 import pytest
 from cordis_port import Context, Service
 
 from forgepilot.kernel import (
-    assert_apply_arity,
     assert_declares_inject,
     bind_effect,
     bind_waterfall,

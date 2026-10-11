@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.errors import ForgePilotError
+from forgepilot.runtime.context_size import estimate_tokens, measure
 from forgepilot.runtime.log_guard import guarded_stream
 from forgepilot.runtime.projection import build_request
-from forgepilot.seams.llm import ChatMessage, StreamChunk, ToolCallRequest, ToolSchema, Usage
+from forgepilot.seams.llm import StreamChunk, ToolCallRequest, ToolSchema, Usage
 from forgepilot.seams.refs import TurnId
-from forgepilot.runtime.context_size import estimate_tokens, measure
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.session import EventKind
 from forgepilot.seams.tools import ToolCall

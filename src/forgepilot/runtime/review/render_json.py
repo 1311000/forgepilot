@@ -21,7 +21,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
 
-from forgepilot.seams.review import ChangedHunk, ChangeNarrative, Claim, DiffLineKind
+from forgepilot.seams.review import ChangedHunk, ChangeNarrative, Claim
 
 __all__ = ["render_json", "to_jsonable"]
 

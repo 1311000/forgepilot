@@ -21,16 +21,16 @@ how a broken build consumes a day.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from forgepilot.runtime.commandline import split_command
 from forgepilot.runtime.pinning import unpinned_notice
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.refs import SessionId, TurnId
 from forgepilot.seams.sandbox import (
-    ExecResult,
     SandboxEnforcement,
     SandboxExecutionPolicy,
     SandboxMode,
@@ -250,7 +250,7 @@ async def _record(
     )
 
 
-def combine_checks(named: Sequence[tuple[str, "CheckResult"]]) -> "CheckResult":
+def combine_checks(named: Sequence[tuple[str, CheckResult]]) -> CheckResult:
     """One verdict from the same checks run over two different trees.
 
     **Why two runs.** Pinning the project's tests to the base revision is what

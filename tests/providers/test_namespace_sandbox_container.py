@@ -115,7 +115,14 @@ def run_in_container(script: Path) -> dict[str, str]:
         timeout=600,
         check=False,
     )
-    line = next((l for l in completed.stdout.splitlines() if l.startswith("workspace_root=")), "")
+    line = next(
+        (
+            candidate
+            for candidate in completed.stdout.splitlines()
+            if candidate.startswith("workspace_root=")
+        ),
+        "",
+    )
     assert line, f"the launcher produced no verdict.\nstdout: {completed.stdout}\nstderr: {completed.stderr}"
     return dict(part.split("=", 1) for part in line.split())
 

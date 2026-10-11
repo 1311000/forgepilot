@@ -22,7 +22,7 @@ at. A tool that cannot say that cannot be trusted when it implies otherwise.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 
 from forgepilot.runtime.review.diffmodel import ParsedDiff

@@ -31,7 +31,7 @@ def main() -> int:
     for values, window, expected in CASES:
         got = list(moving_average(values, window))
         if len(got) != len(expected) or any(
-            abs(a - b) > 1e-9 for a, b in zip(got, expected)
+            abs(a - b) > 1e-9 for a, b in zip(got, expected, strict=True)
         ):
             print(
                 f"moving_average({values}, {window}) -> {got}, expected {expected}",

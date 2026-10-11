@@ -53,7 +53,10 @@ def load_env_file(path: Path) -> list[str]:
     _require_utf8_text(path, raw_bytes)
 
     applied: list[str] = []
-    for lineno, raw in enumerate(raw_bytes.decode("utf-8").splitlines(), start=1):
+    # Not `enumerate`: the line number is not used. The loader names the *file* when
+    # it refuses one, and `_require_utf8_text` names the problem; a counter that
+    # nothing reads used to sit here and suggested otherwise. (Found by `ruff`'s B007.)
+    for raw in raw_bytes.decode("utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

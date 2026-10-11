@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 
-
 from forgepilot.runtime.guards import GuardDecision, GuardResult
 from forgepilot.runtime.tools.pipeline import Phase
 from forgepilot.seams.approval import ApprovalOutcome
@@ -24,6 +23,7 @@ from forgepilot.seams.tools import (
     ToolEffect,
     ToolOutcome,
 )
+
 
 def constraints_for(
     workspace,
@@ -269,7 +269,6 @@ async def test_an_answerer_that_raises_is_not_a_yes(rig) -> None:
 
 async def test_never_policy_short_circuits_the_answerer(rig) -> None:
     """A policy of never cannot be routed around by registering an answerer."""
-    from forgepilot.runtime.approval import ApprovalServicePlugin
     from forgepilot.seams.approval import ApprovalPolicy
 
     rig.approval._policy = ApprovalPolicy.NEVER
@@ -335,7 +334,6 @@ async def test_the_prompt_is_durable_while_the_human_is_being_asked(rig) -> None
 # ---------------------------------------------------------------------------
 async def test_a_tool_is_not_granted_what_it_did_not_declare(rig) -> None:
     """A read-only tool that tries to write finds no capability to do it with."""
-    from forgepilot.kernel.errors import CapabilityNotGranted
 
     rig.registry.register(
         ToolDefinition(

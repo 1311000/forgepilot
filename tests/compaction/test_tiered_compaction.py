@@ -20,10 +20,8 @@ The thresholds in these tests are tiny on purpose — `estimate_tokens` is
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-import pytest
 
 from forgepilot.providers.llm.replay import text_turn
 from forgepilot.runtime.context_size import measure
@@ -38,7 +36,7 @@ from forgepilot.seams.compaction import (
 )
 from forgepilot.seams.llm import Role, Usage
 from forgepilot.seams.refs import SessionId, TurnId
-from forgepilot.seams.session import EventKind, SessionHeader, SessionEvent, SurfaceOp
+from forgepilot.seams.session import EventKind, SessionEvent, SessionHeader, SurfaceOp
 
 BIG = "line of output\n" * 120  # ~1800 chars, ~450 estimated tokens
 
@@ -74,7 +72,7 @@ async def make_session(root: Any, *, turns: int = 4, brief: str = "fix the bug")
     sid = SessionId("compact-under-test")
     await root.sessionPersistence.create(
         SessionHeader(
-            session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme", principal="alice"
+            session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice"
         )
     )
     session = await Session.open(root.sessionPersistence, sid)

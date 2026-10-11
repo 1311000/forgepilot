@@ -124,7 +124,7 @@ def test_the_helper_does_what_the_two_subprocess_tests_rely_on() -> None:
         stream.flush()
     finally:
         _sys.stdout = saved
-    assert "ok".encode() in raw.getvalue()
+    assert b"ok" in raw.getvalue()
 
 
 def test_the_helper_is_shared_rather_than_copied() -> None:

@@ -40,7 +40,7 @@ class MockTicketSourcePlugin(PluginService):
         self._next_comment = 1
 
     # -- fixtures ----------------------------------------------------------
-    def add_ticket(self, ticket: Ticket) -> "MockTicketSourcePlugin":
+    def add_ticket(self, ticket: Ticket) -> MockTicketSourcePlugin:
         self._tickets[ticket.id] = ticket
         return self
 
@@ -70,7 +70,7 @@ class MockTicketSourcePlugin(PluginService):
         self.add_ticket(ticket)
         return ticket
 
-    def add_attachment(self, attachment_id: str, content: bytes) -> "MockTicketSourcePlugin":
+    def add_attachment(self, attachment_id: str, content: bytes) -> MockTicketSourcePlugin:
         self._attachments[attachment_id] = content
         return self
 

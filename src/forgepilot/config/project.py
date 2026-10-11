@@ -19,9 +19,10 @@ Mixing those would be the same mistake as treating a prompt as a policy.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -128,7 +129,7 @@ class ProjectConfig:
     #: Free-form, for context assembly only. Never read by a decision.
     notes: str = ""
 
-    def tests_in(self, paths: "list[str] | tuple[str, ...]") -> tuple[str, ...]:
+    def tests_in(self, paths: list[str] | tuple[str, ...]) -> tuple[str, ...]:
         """The subset of ``paths`` this project counts as tests, in order."""
         return tuple(
             path

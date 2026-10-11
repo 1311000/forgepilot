@@ -60,7 +60,7 @@ class EvidenceUniverse:
         self.check_events = frozenset(check_events)
 
     @classmethod
-    def from_session(cls, session: object, *, changed_paths=(), hunk_ids=(), kinds=None) -> "EvidenceUniverse":
+    def from_session(cls, session: object, *, changed_paths=(), hunk_ids=(), kinds=None) -> EvidenceUniverse:
         """Build from a live session object."""
         from forgepilot.seams.session import EventKind
 

@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from forgepilot.orchestration import ClassifierGateway
 from forgepilot.orchestration.modes.task import plan_task, run_task
 from forgepilot.providers.llm.replay import text_turn, tool_call_turn
@@ -30,8 +28,6 @@ from forgepilot.seams.refs import RepoRef, TicketId
 from forgepilot.seams.security import Operation
 from forgepilot.seams.session import EventKind
 from forgepilot.seams.tickets import Ticket, TicketPriority
-
-
 
 # Defined locally rather than imported from conftest: pytest does not put the
 # tests package on sys.path, so a relative conftest import fails at collection.
@@ -502,7 +498,10 @@ async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
     plan = await make_plan(task_rig)
     task_rig.llm.script(write_fix(FIXED), text_turn('done'))
 
-    outcome = await run(task_rig, plan)
+    # Deliberately not bound: this test asserts from the **log**, which is the
+    # principle — a returned value is the runner's own bookkeeping. The call still
+    # has to happen, so the await stays and only the unused name goes.
+    await run(task_rig, plan)
 
     states = [e for e in task_rig.session.events if e.kind == EventKind.TASK_STATE]
     final = states[-1].data

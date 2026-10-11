@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from forgepilot.kernel import PluginService
@@ -125,7 +125,7 @@ class InMemorySessionStorePlugin(PluginService):
         child = child_session_id or SessionId(f"{source}-fork")
         header = SessionHeader(
             session_id=child,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             tenant=tenant or source_header.tenant,
             principal=principal or source_header.principal,
             cwd=source_header.cwd,
@@ -142,7 +142,7 @@ class InMemorySessionStorePlugin(PluginService):
                     seq=(seed[-1].seq if seed else 0) + 1,
                     kind=EventKind.END_SEED,
                     data={},
-                    ts=datetime.now(timezone.utc),
+                    ts=datetime.now(UTC),
                     tenant=header.tenant,
                     principal=header.principal,
                 )
@@ -156,7 +156,7 @@ class InMemorySessionStorePlugin(PluginService):
         items = tuple(
             SessionSummary(
                 session_id=sid,
-                created_at=self._headers.get(sid, SessionHeader(sid, datetime.now(timezone.utc))).created_at,
+                created_at=self._headers.get(sid, SessionHeader(sid, datetime.now(UTC))).created_at,
                 last_event_at=events[-1].ts if events else None,
                 event_count=len(events),
                 tenant=self._headers[sid].tenant if sid in self._headers else "",

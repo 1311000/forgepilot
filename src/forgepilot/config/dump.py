@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["render"]
 
 
-def render(cfg: "ResolvedConfig") -> str:
+def render(cfg: ResolvedConfig) -> str:
     """Render ``cfg`` as a stable, greppable text tree.
 
     Every row carries its ``sources``, so "which layer set the sandbox mode to

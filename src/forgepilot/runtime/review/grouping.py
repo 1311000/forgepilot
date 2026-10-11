@@ -29,17 +29,17 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from forgepilot.runtime.review.diffmodel import ParsedDiff, ParsedFile
 from forgepilot.seams.review import (
     ROLE_ORDER,
     ROLE_TITLES,
+    ChangedHunk,
     ChangeGroup,
     ChangeRole,
-    ChangedHunk,
     Claim,
     EvidenceKind,
     EvidenceRef,
 )
-from forgepilot.runtime.review.diffmodel import ParsedDiff, ParsedFile
 
 __all__ = ["assign_role", "group_hunks", "order_groups", "position_reason"]
 

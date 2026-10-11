@@ -45,7 +45,7 @@ class ScriptedResult:
     stderr: str = ""
 
     @classmethod
-    def failure(cls, output: str, *, exit_code: int = 1) -> "ScriptedResult":
+    def failure(cls, output: str, *, exit_code: int = 1) -> ScriptedResult:
         return cls(exit_code=exit_code, stdout=output)
 
 
@@ -71,7 +71,7 @@ class ScriptedSandboxPlugin(PluginService):
         self.exhausted = False
 
     # -- scripting ---------------------------------------------------------
-    def script(self, *results: ScriptedResult | int | str) -> "ScriptedSandboxPlugin":
+    def script(self, *results: ScriptedResult | int | str) -> ScriptedSandboxPlugin:
         for result in results:
             if isinstance(result, ScriptedResult):
                 self._script.append(result)

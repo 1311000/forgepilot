@@ -20,7 +20,7 @@ arbitrary:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +85,7 @@ async def assemble_session(
         )
 
     resolved_id = session_id or SessionId(
-        f"session-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+        f"session-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
     )
     store = root.sessionPersistence
     try:
@@ -94,7 +94,7 @@ async def assemble_session(
         await store.create(
             SessionHeader(
                 session_id=resolved_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 tenant=str(principal.tenant_id),
                 principal=str(principal.principal_id),
                 cwd=str(workspace_root or ""),

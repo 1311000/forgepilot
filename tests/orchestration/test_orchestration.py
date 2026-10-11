@@ -13,9 +13,6 @@ The assertions that matter:
 
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
-
 import pytest
 
 from forgepilot.config.project import ProjectConfig, RetryPolicy, project_from_mapping
@@ -29,7 +26,6 @@ from forgepilot.orchestration import (
 )
 from forgepilot.orchestration.context_assembly import (
     assemble_system_sections,
-    compose_task_brief,
 )
 from forgepilot.orchestration.modes.chat import prepare_chat_turn
 from forgepilot.orchestration.modes.task import plan_task

@@ -22,13 +22,13 @@ that guesses.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.orchestration.classifier import ClassifierGateway
-from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
 from forgepilot.orchestration.context_assembly import (
     PromptSection,
     assemble_system_sections,
@@ -37,6 +37,7 @@ from forgepilot.orchestration.context_assembly import (
 from forgepilot.orchestration.preprocess import PreprocessResult, preprocess
 from forgepilot.orchestration.router import AdapterSelection, select_adapters
 from forgepilot.orchestration.task_state import TaskState, TaskStateMachine
+from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
 from forgepilot.seams.classifier import ClassificationRequest, TicketUnderstanding
 from forgepilot.seams.memory import MemoryRecord
 from forgepilot.seams.security import ExecutionConstraints

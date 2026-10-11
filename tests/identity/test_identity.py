@@ -8,18 +8,18 @@ needs authority cannot exist where authority does not".
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from forgepilot.config import resolve_plugin
+from forgepilot.httpapi.deps import authenticate
 from forgepilot.identity import (
     AuthenticationFailed,
     Grant,
     PolicyDecision,
     PolicyServicePlugin,
     ProjectPolicy,
-    RequestScope,
     SignatureInvalid,
     SigningKeyMissing,
     derive,
@@ -28,12 +28,11 @@ from forgepilot.identity import (
     sign,
     verify,
 )
-from forgepilot.identity.errors import IdentityError
-from forgepilot.identity.principal import PrincipalServicePlugin, principal_of
 from forgepilot.identity.policy import ResourceRef
-from forgepilot.httpapi.deps import authenticate
+from forgepilot.identity.principal import PrincipalServicePlugin, principal_of
 from forgepilot.kernel import create_root, dispose_fiber
 from forgepilot.seams.refs import PrincipalId, RepoRef, TenantId
+from forgepilot.seams.retriever import SearchQuery
 from forgepilot.seams.security import (
     Budget,
     ExecutionConstraints,
@@ -41,7 +40,6 @@ from forgepilot.seams.security import (
     Operation,
     Principal,
 )
-from forgepilot.seams.retriever import SearchQuery
 
 KEY = b"test-signing-key"
 REPO_A = RepoRef(host="git.corp", namespace="team", name="svc-a")
@@ -180,7 +178,7 @@ async def test_unknown_or_expired_credentials_fail_the_same_way() -> None:
         root.principal.add_token(
             "stale",
             principal_of("bob", "acme"),
-            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
         )
 
         assert root.principal.resolve("good").principal.principal_id == PrincipalId("alice")
@@ -576,7 +574,7 @@ def test_a_permissive_grant_on_a_restricted_project_can_still_write(
     `allows_write_to` then agrees — and it is the *guard* that refused, so the
     end-to-end statement is the one worth pinning.
     """
-    from forgepilot.seams.security import ExecutionConstraints, Operation
+    from forgepilot.seams.security import Operation
 
     # `derive` signs what it returns, and an unsigned set is refused rather
     # than treated as "unverified but probably fine".

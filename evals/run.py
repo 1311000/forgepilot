@@ -25,7 +25,7 @@ import json
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +45,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
     something the report must be able to show, and swallowing it into a missing
     row would make a broken arm look like a small sample.
     """
-    from forgepilot.identity import ProjectPolicy, derive
-    from forgepilot.kernel import dispose_fiber
+    from forgepilot.identity import derive
     from forgepilot.orchestration import ClassifierGateway
     from forgepilot.orchestration.modes.task import plan_task, run_task
     from forgepilot.runtime.assembly import assemble_session, usage_tracker
@@ -61,7 +60,7 @@ async def run_one(task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: 
         "arm": arm.name,
         "rep": rep,
         "mode": "scripted" if scripted else "live",
-        "started": datetime.now(timezone.utc).isoformat(),
+        "started": datetime.now(UTC).isoformat(),
         # The mapping from an opaque directory back to what it was. It lives here
         # rather than in the path because the path is inside the agent's own
         # context, and a directory called `...-no-repair-1` is a hint the model can
@@ -315,7 +314,7 @@ async def main_async(args: argparse.Namespace) -> int:
     tasks_by_name = {name: H.load_task(name) for name, _, _ in cells}
 
     RESULTS.mkdir(parents=True, exist_ok=True)
-    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{'scripted' if args.scripted else 'live'}"
+    run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{'scripted' if args.scripted else 'live'}"
     out = RESULTS / f"{run_id}.jsonl"
 
     total = len(cells) * args.reps

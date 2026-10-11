@@ -20,7 +20,6 @@ specificity.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from forgepilot.seams.refs import SessionId
-from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxEnforcement, SandboxMode
+from forgepilot.seams.sandbox import SandboxEnforcement, SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.security import NetworkAccess
 
 WORKSPACE = Path("/srv/checkouts/svc-a")

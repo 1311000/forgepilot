@@ -19,7 +19,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from forgepilot.identity.errors import AuthenticationFailed
@@ -52,7 +52,7 @@ class TokenRecord:
     def is_expired(self, now: datetime | None = None) -> bool:
         if self.expires_at is None:
             return False
-        return (now or datetime.now(timezone.utc)) >= self.expires_at
+        return (now or datetime.now(UTC)) >= self.expires_at
 
 
 #: Environment variable holding a JSON array of dev credentials. Read by *name*

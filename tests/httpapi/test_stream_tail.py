@@ -11,7 +11,7 @@ than as an opaque token the tests agree with the code about.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -36,7 +36,7 @@ async def session(tmp_path):
     try:
         sid = SessionId("s-tail")
         await root.sessionPersistence.create(
-            SessionHeader(session_id=sid, created_at=datetime.now(timezone.utc), tenant="acme")
+            SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme")
         )
         live = await Session.open(root.sessionPersistence, sid)
         await live.turn_start(TurnId(1))
