@@ -639,6 +639,60 @@ provider backed by an index rather than by a directory. That is P7-2's fake ente
 which is already the recorded next step for that seam — the eval needs it before it can price
 retrieval at all.
 
+**17. The first task whose answer is not on disk produced the first structural arm difference — and
+then showed that its own rows were not evidence.** `not-in-the-checkout`: the listing must page at
+the value the reporting service publishes, in a repository that is **not checked out**, so
+`findstr`/`grep` have nothing to find and the retriever is the only route. The visible test asserts
+a **band** (100–400), because anything sharper would have to name the number — and a number named in
+a file the agent can read is a number it can copy without consulting the index. The exact contract
+is the probe's job.
+
+Verified both ways offline first (`--scripted`): the fix passes, and a plausible in-band value
+(`200`) fails **on the probe**, with the reason naming the indexed contract:
+
+```
+MAX_PER_PAGE is 200; the reporting service publishes 250
+(git.local/demo/contracts:paging/contract.py@main)
+```
+
+Then live, three reps each:
+
+```
+full       3/3   median 11 calls, 14s
+no-search   ---  median 25 calls, 41s
+```
+
+⚠️ **`---`, not `0/3`.** All three `no-search` rows are **`aside`**: the harness says of each one
+*"so nothing in this row is evidence about the agent"*, because its shell commands reached outside
+the checkout. So this sweep does **not** yet support "without the retriever the task cannot be
+solved". Conflating the two would be the easiest mistake to make with this table, and it is the
+reason the separation exists.
+
+⚠️ **What it does support, and it was not designed in.** Unable to find the contract in its
+checkout, the agent went looking on the **host**:
+
+```
+rep1  dir /s /b D:\...\forge\.forgepilot 2>nul | findstr /i "contract index"
+rep2  cd /d D:\...\forge && dir /b /s .forgepilot | findstr /i "json toml yaml yml ini conf md"
+rep3  dir /s /b /a D:\...\forge\.forgepilot\sessions
+```
+
+It searched the eval's own home directory, and once the **session logs**. Three rows of three. That
+makes the workspace guard **load-bearing rather than hygienic**: it is the only thing between "the
+retriever was removed" and "the agent read the answer off the host" — and a task that puts the
+answer outside the checkout is exactly the task that provokes the attempt. The guard's own wording
+is what let this be read as a sandbox being probed rather than as three agent failures.
+
+⚠️ **And it is the second cause of `aside`, which is why the report now names both.** `routed away`
+is the router declining before any work happened; `left the checkout` is work that probed the
+sandbox. One concept for the rate — not evidence about the agent — and two sentences in the
+footnote, because they invite different next actions.
+
+**To finish the sentence this task was built for:** a setup where leaving the workspace is not what
+ends the run (a variant that tolerates the escape, or a bound that makes it a distinguishable
+outcome), and a larger `no-search` sample. Until then, `no-search` here is `---`, and saying "0/3"
+would be claiming a measurement this sweep did not make.
+
 ## Reading the output
 
 ```
