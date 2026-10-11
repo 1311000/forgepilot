@@ -17,6 +17,7 @@ from forgepilot.seams import (
     ApprovalService,
     CodeRef,
     CredentialChannel,
+    EventRef,
     ExecutionConstraints,
     LineSpan,
     LLMService,
@@ -54,6 +55,17 @@ from forgepilot.seams.vcs import PullRequestDraft
 
 ACME = RepoRef(host="git.corp", namespace="team", name="svc-a")
 OTHER = RepoRef(host="git.corp", namespace="other", name="secret")
+ACME_TENANT = TenantId("acme")
+ACME_SESSION = SessionId("s-acme")
+
+
+def event(seq: int, session: SessionId = ACME_SESSION) -> EventRef:
+    """A citation into the durable log, which is the only kind evidence can be.
+
+    Evidence used to be a bare string, so a record could cite `"seq:12"` — a
+    promise that something at position 12 said this, which no store could check.
+    """
+    return EventRef(session_id=session, seq=seq)
 
 
 def constraints_for(
@@ -339,12 +351,17 @@ async def test_memory_refuses_to_admit_a_model_assertion(container) -> None:
     memory = container.memory
     assert isinstance(memory, MemoryStore)
 
-    candidate = MemoryCandidate(text="the bug is in the retry loop", scope=MemoryScope.REPO, scope_ref=ACME.slug)
+    candidate = MemoryCandidate(
+        text="the bug is in the retry loop",
+        scope=MemoryScope.REPO,
+        scope_ref=ACME.slug,
+        tenant_id=ACME_TENANT,
+    )
 
     with pytest.raises(UnprovenMemoryWrite, match="guess to fact"):
         await memory.write(
             candidate,
-            Provenance(kind=ProvenanceKind.MODEL_ASSERTED, evidence_refs=("seq:12",)),
+            Provenance(kind=ProvenanceKind.MODEL_ASSERTED, evidence_refs=(event(12),)),
         )
 
     # It can be quarantined, but quarantine is not recallable.
@@ -360,16 +377,28 @@ async def test_memory_refuses_to_admit_a_model_assertion(container) -> None:
 
 async def test_memory_recalls_only_evidenced_records_within_permission(container) -> None:
     memory = container.memory
-    elsewhere = MemoryCandidate(text="secret repo fact", scope=MemoryScope.REPO, scope_ref=OTHER.slug)
+    elsewhere = MemoryCandidate(
+        text="secret repo fact",
+        scope=MemoryScope.REPO,
+        scope_ref=OTHER.slug,
+        tenant_id=ACME_TENANT,
+    )
 
     await memory.quarantine(elsewhere, Provenance(kind=ProvenanceKind.MODEL_ASSERTED))
-    good = MemoryCandidate(text="retry loop needs a cap", scope=MemoryScope.REPO, scope_ref=ACME.slug)
+    good = MemoryCandidate(
+        text="retry loop needs a cap",
+        scope=MemoryScope.REPO,
+        scope_ref=ACME.slug,
+        tenant_id=ACME_TENANT,
+    )
     await memory.write(
         good,
         Provenance(
             kind=ProvenanceKind.TEST_VERIFIED,
             repo=ACME,
-            evidence_refs=("test:tests/test_retry.py::test_cap",),
+            # The citation is the `task/check` event that passed, not the test id:
+            # a test id is a name, and a name cannot be looked up in a log.
+            evidence_refs=(event(3),),
         ),
     )
 
@@ -396,6 +425,7 @@ async def test_memory_refuses_a_record_with_no_evidence(container) -> None:
         text="this project never needs to run its tests",
         scope=MemoryScope.REPO,
         scope_ref=ACME.slug,
+        tenant_id=ACME_TENANT,
     )
 
     with pytest.raises(UnprovenMemoryWrite, match="evidence"):
@@ -427,13 +457,23 @@ async def test_memory_never_recalls_a_scope_the_caller_cannot_reach(container) -
     # Written while working in ACME, about ACME's own audience — but the record
     # does not say where it was learned.
     await memory.write(
-        MemoryCandidate(text=question, scope=MemoryScope.REPO, scope_ref=OTHER.slug),
-        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, evidence_refs=("seq:9",)),
+        MemoryCandidate(
+            text=question,
+            scope=MemoryScope.REPO,
+            scope_ref=OTHER.slug,
+            tenant_id=ACME_TENANT,
+        ),
+        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, evidence_refs=(event(9),)),
     )
     # And one that names ACME as provenance while claiming OTHER's audience.
     await memory.write(
-        MemoryCandidate(text=question + " (mismatched)", scope=MemoryScope.REPO, scope_ref=OTHER.slug),
-        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, repo=ACME, evidence_refs=("seq:10",)),
+        MemoryCandidate(
+            text=question + " (mismatched)",
+            scope=MemoryScope.REPO,
+            scope_ref=OTHER.slug,
+            tenant_id=ACME_TENANT,
+        ),
+        Provenance(kind=ProvenanceKind.TOOL_OBSERVED, repo=ACME, evidence_refs=(event(10),)),
     )
 
     recalled = await memory.recall(
@@ -459,9 +499,13 @@ async def test_memory_refuses_a_scope_whose_audience_is_undefined(container) -> 
     """
     memory = container.memory
     await memory.write(
-        MemoryCandidate(text="platform team owns the deploy pipeline",
-                        scope=MemoryScope.TEAM, scope_ref="team-platform"),
-        Provenance(kind=ProvenanceKind.HUMAN_VERIFIED, evidence_refs=("seq:11",)),
+        MemoryCandidate(
+            text="platform team owns the deploy pipeline",
+            scope=MemoryScope.TEAM,
+            scope_ref="team-platform",
+            tenant_id=ACME_TENANT,
+        ),
+        Provenance(kind=ProvenanceKind.HUMAN_VERIFIED, evidence_refs=(event(11),)),
     )
 
     with pytest.raises(UnattributableScope, match="audience"):

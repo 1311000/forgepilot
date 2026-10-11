@@ -56,15 +56,29 @@ from forgepilot.seams.llm import (
     drain_stream,
 )
 from forgepilot.seams.memory import (
+    CONFIDENCE_FOR_PROVENANCE,
+    LEGAL_TRANSITIONS,
+    MEMORY_TYPE_MODES,
+    RECALLABLE_STATUSES,
+    Confidence,
+    EventRef,
+    IllegalTransition,
     MemoryCandidate,
     MemoryRecord,
     MemoryScope,
+    MemoryStatus,
     MemoryStore,
+    MemoryType,
     Provenance,
     ProvenanceKind,
     RecallQuery,
     UnattributableScope,
+    UnattributableTenant,
+    assert_transition,
     audience_repo,
+    confidence_for,
+    content_hash_of,
+    normalize_subject,
 )
 from forgepilot.seams.refs import (
     AgentId,
@@ -169,6 +183,12 @@ __all__ = [
     # memory
     "MemoryCandidate", "MemoryRecord", "MemoryScope", "MemoryStore", "Provenance",
     "ProvenanceKind", "RecallQuery", "UnattributableScope", "audience_repo",
+    # memory, M11b's half: what kind of thing it is, how far it is believed, where
+    # it is in its life, and the typed citation the belief rests on.
+    "Confidence", "EventRef", "IllegalTransition", "MemoryStatus", "MemoryType",
+    "UnattributableTenant", "assert_transition", "confidence_for", "content_hash_of",
+    "normalize_subject", "CONFIDENCE_FOR_PROVENANCE", "LEGAL_TRANSITIONS",
+    "MEMORY_TYPE_MODES", "RECALLABLE_STATUSES",
     # refs
     "AgentId", "BranchRef", "CodeRef", "CommitRef", "LineSpan", "MemoryId", "Mode",
     "PrincipalId", "RepoRef", "SessionId", "TeamId", "TenantId", "TicketId", "TurnId",
