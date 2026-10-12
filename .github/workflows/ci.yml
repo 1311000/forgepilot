@@ -193,22 +193,32 @@ jobs:
           sudo install -d -o runner2 -g runner2 -m 700 /home/runner2/tmp
           id runner2
 
-      # ⚠️ Not a gate, and it is here because the first run of this job failed *in the steps below*
-      # for a reason that had nothing to do with the sandbox: runpy said `No module named
-      # forgepilot.__main__; 'forgepilot' is a package and cannot be directly executed` — which is
-      # exactly what it says for a **namespace** package, i.e. a directory with no `__init__.py`.
-      # So `forgepilot` resolved somewhere that is not this checkout. `sudo` resets the
-      # environment, and what a non-root user ends up able to import is a fact to print.
+      # ⚠️ Not a gate, and its first run is why it exists: `sandbox-check` died with `No module
+      # named forgepilot.cli` while the same interpreter ran it fine as `runner`, and the answer was
+      # permissions — the checkout lives under `/home/runner`, and a home directory is not
+      # world-traversable, so every path into the source tree was *silently* unusable for `runner2`
+      # (the importer skips a directory it cannot enter; it does not complain). `sys.path.insert`
+      # and `PYTHONPATH` both pointed straight at it, and both did nothing — which is what made it
+      # look like a Python mystery instead of an `ls -ld` on two ancestor directories.
       - name: what a non-root user can actually see
         run: |
           set +e
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE  PWD=$PWD"
-          ls -ld src src/forgepilot src/forgepilot/__init__.py src/forgepilot/__main__.py
-          probe='import importlib.util as u, sys; s = u.find_spec("forgepilot"); print("cwd =", sys.path[0]); print("forgepilot ->", s.origin, list(s.submodule_search_locations or [])); print("forgepilot.__main__ found:", u.find_spec("forgepilot.__main__") is not None)'
-          echo "--- as runner2, with the source tree named ---"
+          probe='import importlib.util as u, os; s = u.find_spec("forgepilot"); print("PYTHONPATH =", os.environ.get("PYTHONPATH")); print("forgepilot ->", s.origin, list(s.submodule_search_locations or [])); print("forgepilot.__main__ found:", u.find_spec("forgepilot.__main__") is not None)'
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "--- can runner2 even reach the checkout? (asked as runner2) ---"
+          sudo -u runner2 ls -ld /home/runner /home/runner/work "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/src"
+          echo "--- as runner2, before the fix ---"
           sudo -u runner2 env HOME=/home/runner2 TMPDIR=/home/runner2/tmp PYTHONPATH="$GITHUB_WORKSPACE/src" "$(command -v python)" -c "$probe"
-          echo "--- as runner2, with nothing named (what the environment resolves alone) ---"
-          sudo -u runner2 env HOME=/home/runner2 "$(command -v python)" -c "$probe"
+
+          # The fix is about the *directory chain*, not the files: traverse-only on the two
+          # ancestors (`o+x`, deliberately not `o+r`, so the home is not listable), read for the
+          # checkout itself. An ephemeral single-tenant CI VM is where loosening this is cheap; a
+          # deployment puts the checkout somewhere a non-root user can already reach.
+          sudo chmod o+x /home/runner /home/runner/work
+          sudo chmod -R o+rX "$GITHUB_WORKSPACE"
+
+          echo "--- as runner2, after the fix ---"
+          sudo -u runner2 env HOME=/home/runner2 TMPDIR=/home/runner2/tmp PYTHONPATH="$GITHUB_WORKSPACE/src" "$(command -v python)" -c "$probe"
 
       # Not a gate: the point is the *pair* with the next step. What it does assert is the
       # conditional one — if this kernel says `1` and the check fails, the refusal has to name
@@ -237,6 +247,14 @@ jobs:
           set -e
           echo "$out"
           echo "sandbox-check exit: $code"
+
+          # Distinguish "the sandbox refused" from "the check never ran". The first CI run reported
+          # the second as the first — an import failure became a claim about a kernel — and the
+          # guard below is what makes that impossible to do again.
+          if echo "$out" | grep -qE "No module named|ModuleNotFoundError|Traceback \(most recent call last\)"; then
+            echo "::error::the check did not run at all: this is an instrument failure, not a sandbox refusal"
+            exit 1
+          fi
 
           flag=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)
           if [ "$flag" = "1" ] && [ "$code" != "0" ]; then
