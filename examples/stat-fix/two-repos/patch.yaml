@@ -1,0 +1,108 @@
+# The cross-repository deployment: **one ticket, two repositories, two pull
+# requests.**
+#
+# Applied over the shipped profile with `--patch`, exactly like `../patch.yaml` —
+# and, like `../github/patch.yaml`, it is self-contained rather than composed with
+# it. That is on purpose: a demo that must be read as three layers is a demo people
+# get wrong. The cost is that the rows both files share are written twice, and a
+# change to one will not reach the other.
+#
+# What is different from `../patch.yaml` is only the second slug. The three rows
+# that hold a repository → path mapping (`workspace`, `retriever`, `vcs`) each need
+# a line for `git.local/demo/reporting`, and `prepare_repo.py` prints the extra
+# export that names its checkout. Everything else — the classifier, the ticket
+# directory, the executing sandbox, the principal — is the same because it has
+# nothing to do with how many repositories there are.
+#
+# ⚠️ **Why this is a separate patch file at all.** `${VAR}` with no default is
+# *refused* when the variable is unset (`config/patch.py`), so adding
+# `${FORGEPILOT_EXAMPLE_REPO_2}` to `../patch.yaml` would make a second prepared
+# checkout mandatory for every run of the single-repository example and for all
+# nine eval tasks. A deployment with two repositories adds the line; the existing
+# one keeps working.
+
+- id: classifier
+  plugin: forgepilot.providers.classify.llm:LLMClassifierPlugin
+  config:
+    model: ${FORGEPILOT_LLM_MODEL:-deepseek-flash}
+    max_tokens: 2048
+  tier: trusted
+
+- id: tickets
+  plugin: forgepilot.providers.tickets.file:FileTicketSourcePlugin
+  config:
+    # This variant's own ticket directory, so `--task BUG-2` reads the
+    # cross-repository ticket and `../tickets/BUG-1.yaml` stays a single-repository
+    # ticket. A ticket in the wrong directory is not a bug the planner can see.
+    root: examples/stat-fix/two-repos/tickets
+  tier: trusted
+
+- id: workspace
+  plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+  config:
+    # One entry per repository. The handle is keyed `(session, repo)`, so the two
+    # deliveries get two worktrees and two branches under one session — see M13
+    # Phase A. Omitting the second line here does not produce a confusing shared
+    # tree any more; it produces `repo 'git.local/demo/reporting' is not permitted`
+    # at the point the delivery starts.
+    repos:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+      git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+    worktree_root: ${FORGEPILOT_EXAMPLE_WORKTREES}
+    branch_prefix: forgepilot
+  tier: trusted
+
+- id: retriever
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
+  config:
+    # Search is scoped per repository, and the delivery's own tree is what
+    # `code_search` reaches. A repository missing from this map is not searched —
+    # and, more importantly, the agent is told that in the brief it gets for each
+    # delivery, so it does not go looking for the sibling's files in its tree.
+    roots:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+      git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+  tier: trusted
+
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin
+  config:
+    max_output_bytes: 64000
+  tier: trusted
+
+- id: vcs
+  plugin: forgepilot.providers.vcs.local:LocalRepositoryVcsPlugin
+  config:
+    # A repository with no host behind it, as in `../patch.yaml`: the run ends at
+    # READY with a draft per repository rather than claiming a pull request. Swap
+    # this row for the GitHub provider to watch two real pull requests appear; the
+    # per-delivery split section of the body is what makes the second one
+    # reviewable on its own.
+    repos:
+      git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+      git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+  tier: trusted
+
+# The same credential as `../patch.yaml`, and the same reason for the
+# `writable_paths`/`network` comments there: the grant and the project are
+# intersected, so both have to agree.
+- id: principal
+  plugin: forgepilot.identity.principal:PrincipalServicePlugin
+  config:
+    tokens:
+      - token: demo-token
+        principal_id: demo
+        tenant_id: local
+        teams: []
+        operations:
+          - read_code
+          - write_code
+          - run_tests
+          - read_ticket
+          - open_pr
+        repo_prefixes:
+          - git.local/demo/*
+        writable_paths:
+          - "."
+        network: allow
+  tier: trusted

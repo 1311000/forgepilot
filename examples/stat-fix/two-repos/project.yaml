@@ -1,0 +1,96 @@
+# The same project as `../project.yaml`, with **two repositories**.
+#
+# M13 made one ticket able to cover several repositories, each delivered on its
+# own: one working tree, one commit and one pull request per repository. That is a
+# plural *ticket*, and the plurality comes from the ticket text — never from this
+# file. What this file does is make the second repository *known*, because
+# `preprocess` scans ticket text against this list and nothing else: a ticket
+# naming `git.local/demo/reporting` against `../project.yaml` would find no
+# repository for it and stop before the classifier.
+#
+# ⚠️ **Why this is a directory of its own rather than an edit to `../project.yaml`.**
+# Two reasons, and the first is mechanical: `patch.yaml` needs a *path* for every
+# slug it lists, the path comes from an exported variable, and `${VAR}` with no
+# default is refused when the variable is unset (`config/patch.py`). Adding a
+# second slug to `../patch.yaml` would therefore make `FORGEPILOT_EXAMPLE_REPO_2`
+# mandatory for the single-repository example and for all nine eval tasks that run
+# it. The second is not mechanical: ticket text is scanned for a repository's
+# *name* as well as its slug, so declaring `reporting` in the shared project would
+# silently re-scope an existing eval ticket whose description happens to contain
+# that word (`evals/tasks/no-failing-test/task.yaml` names `reporting.py`). A
+# deployment that has two repositories adds the second line; a measurement that is
+# comparing eras does not get to move its own target.
+
+name: stat-fix-two-repos
+
+# Both repositories this project is. A ticket that names one of them gets one
+# delivery; a ticket that names both gets two, and the pull request body of each
+# says where the other one stands.
+repos:
+  - git.local/demo/stats
+  - git.local/demo/reporting
+
+repo_prefixes:
+  - git.local/demo/*
+
+default_branch: main
+
+# ⚠️ **One command for both repositories, and it is run in each repository's own
+# tree** (M13/D3). That works here because each checkout is a self-contained
+# Python project with its own `tests/`; a suite that needed *both* repositories
+# side by side in one directory would need a merged checkout, which M13
+# deliberately does not build. That gap is written down in
+# `docs/notes/task-delivery.md` rather than papered over by a flag.
+test:
+  - ${FORGEPILOT_PYTHON} -m pytest -q
+
+allowed_operations:
+  - read_code
+  - write_code
+  - run_tests
+  - read_ticket
+
+writable_paths:
+  - "."
+
+# `allow` for the same reason as `../project.yaml`: this deployment runs checks
+# through `bundles/local_exec`, which contains nothing, and a backend that cannot
+# deny the network refuses a policy that asks it to rather than accepting it.
+network: allow
+
+# ⚠️ **Per delivery, not per ticket** (M13/D7). Two repositories means up to
+# `2 × (max_attempts + 1)` model turns, because each delivery repairs its own
+# change: a fix that needed two attempts in `stats` must not use up the dashboard's
+# budget for a first attempt.
+retry:
+  max_attempts: 2
+  on_failure: stop
+
+# The check's own oracle — restored to the base revision while the checks run, so a
+# relaxed assertion cannot be what makes them pass. Both repositories use the same
+# paths, which is why this stays project-level: `tests/` and `test_*.py` describe
+# where a project keeps its oracle, not where one repository does.
+test_paths:
+  - tests/
+  - "test_*.py"
+  - conftest.py
+
+tool_sets:
+  default:
+    - read_file
+    - code_search
+  bugfix:
+    - read_file
+    - code_search
+    - write_file
+    - edit_file
+    - run
+
+category_tool_sets:
+  bug: bugfix
+  question: default
+  feature: bugfix
+
+budget:
+  max_tool_calls: 60
+  max_tokens: 200000

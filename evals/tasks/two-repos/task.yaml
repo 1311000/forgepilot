@@ -1,0 +1,134 @@
+# **One ticket, two repositories, two deliveries** — M13's own task.
+#
+# Every other task in this set spans one repository, which is why the thing M13
+# added had no measurement at all: a plural plan, a loop that publishes each
+# repository on its own, and a report that has to say *which* repositories were
+# delivered rather than whether "the task" passed.
+#
+# ⚠️ **The second repository is the point, and it is real.** `extra_repos` below
+# gives this task a second checkout built from `examples/stat-fix/fixture-reporting`,
+# and the task's own `patches` rows name both slugs, so the workspace, the retriever
+# and the vcs all know about the second one. A task that merely *declared* a second
+# repository in `project.repos` and stopped there would fail at the delivery with
+# `repo 'git.local/demo/reporting' is not permitted` — which is a useful refusal, but
+# not the measurement.
+#
+# ⚠️ **Why the second repository carries its own copy of the defect** rather than
+# importing `stats.moving_average`. Each delivery's checks run in *its own* tree
+# (M13/D3), and there is no merged checkout, so a `reporting` that imported `stats`
+# would fail every check with an `ImportError` — a failure that has nothing to do
+# with the bug and would make this row unreadable. The defect being *copied* is also
+# how it got into both repositories, which is why one ticket covers both.
+name: two-repos
+fixture: ../../../examples/stat-fix/fixture
+
+extra_repos:
+  - slug: git.local/demo/reporting
+    fixture: ../../../examples/stat-fix/fixture-reporting
+    variable: FORGEPILOT_EXAMPLE_REPO_2
+
+# What the ticket names, and therefore what is in scope. Ticket text is scanned
+# against this list and nothing else; `extra_repos` above is what makes the second
+# slug *resolvable*, and this is what makes it *in scope*.
+project:
+  name: stat-fix-two-repos
+  repos:
+    - git.local/demo/stats
+    - git.local/demo/reporting
+
+# The three rows that hold a repository → path mapping, restated for both slugs.
+# ⚠️ A task row **replaces** an overridden row's whole config (`config/patch.py`:
+# "the whole config is replaced, not merged"), so `worktree_root` and
+# `branch_prefix` have to be restated here even though they are unchanged — leaving
+# them out would silently drop them and the worktrees would land in the default
+# directory, outside the eval's scratch.
+patches:
+  - id: workspace
+    plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+    config:
+      repos:
+        git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+        git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+      worktree_root: ${FORGEPILOT_EXAMPLE_WORKTREES}
+      branch_prefix: forgepilot
+    tier: trusted
+  - id: retriever
+    plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
+    config:
+      roots:
+        git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+        git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+    tier: trusted
+  - id: vcs
+    plugin: forgepilot.providers.vcs.local:LocalRepositoryVcsPlugin
+    config:
+      repos:
+        git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+        git.local/demo/reporting: ${FORGEPILOT_EXAMPLE_REPO_2}
+    tier: trusted
+
+ticket:
+  id: BUG-2
+  title: 周均线和移动平均线都少一个窗口 —— 两个仓库同一个根因
+  description: |
+    复现步骤：
+    1. 调用 moving_average([1, 2, 3, 4], 2)
+    2. 调用 weekly_average([1, 2, 3, 4], 2)
+
+    预期结果：两边都返回 3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+    实际结果：两边都只有 2 个窗口
+
+    受影响仓库：git.local/demo/stats
+    受影响仓库：git.local/demo/reporting
+    相关文件：stats.py、reporting/windows.py
+
+# What a good run looks like. The first four keys are the same shape every task in
+# this set uses; `deliveries` is the one only a plural ticket can satisfy, and it is
+# why this task exists — a run that fixes `stats`, opens its pull request and never
+# starts `reporting` can meet **every** other expectation here and still be wrong.
+expect:
+  # No repo host in an eval run, so each delivery ends committed-and-verified:
+  # `ready` per delivery, which the task-level verdict reports as `ready`.
+  states: [ready, delivered]
+  checks: pass
+  oracle_pinned: any
+  # Two files, one per repository. A run that touched three is doing something the
+  # ticket did not ask for.
+  max_changed_paths: 2
+  max_tool_calls: 60
+  # Two deliveries, each one turn when the fix works first time. Four leaves room
+  # for one repair without accepting a run that spins.
+  max_turns: 4
+  # ⚠️ **The assertion this task is for.** `deliveries: 2` is compared against the
+  # row's own per-repository records, not against the plan: a plan that named two
+  # repositories and a run that delivered one is exactly the half-delivery M13 was
+  # written about.
+  deliveries: 2
+  delivery_states: [ready, delivered]
+  # Both repositories really were changed — an aggregate count of two could in
+  # principle be two files in one tree.
+  changed_paths_include:
+    - stats.py
+    - reporting/windows.py
+
+# --- offline: what a *correct* agent does ----------------------------------
+#
+# ⚠️ **Four turns, not two, and the reason is the shape of a delivery.** One
+# delivery's single attempt is a whole turn: the scripted model writes the fix and
+# then has to *finish* the turn, which is the `say`. So two deliveries consume four
+# entries in order — `write`/`say` for the first repository, then `write`/`say` for
+# the second — and a script with only the two writes would leave the first delivery
+# waiting for a text turn that never comes. `script_turns` pads with four more
+# `say`s, which is what the repair path would consume.
+understanding:
+  category: bug
+  symptom: both moving_average and weekly_average return one fewer window than the input implies
+  expected: three windows from four values with a window of two, in both repositories
+  actual: two windows in both
+  confidence: 0.95
+
+script:
+  - write: {path: stats.py, from: solution/stats.py}
+  - say: "stats 修好了：循环少加了 +1，末尾那个窗口被丢掉了"
+  - write: {path: reporting/windows.py, from: solution/windows.py}
+  - say: "reporting 也修好了：同一个根因，同样少加了 +1"

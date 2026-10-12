@@ -181,9 +181,13 @@ async def run_one(
     }
 
     try:
-        repo = H.prepare_repo(task, scratch / "repo")
+        # **Every repository the task needs.** `prepare_repos` returns the primary
+        # checkout and one more per `extra_repos`, and the export below names each
+        # one under the variable the task's own patch rows expand — a task that
+        # measures a plural ticket (`two-repos`) is the only one with extras.
+        repo, extra_repos = H.prepare_repos(task, scratch / "repo")
         shipped = H.base_paths(repo)
-        H.export_environment(repo, scratch / "worktrees")
+        H.export_environment(repo, scratch / "worktrees", extras=extra_repos)
         root, _ = await H.boot(
             task, [*arm.patches, *memory_rows], scripted=scripted, contain=contain
         )

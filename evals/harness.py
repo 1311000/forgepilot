@@ -71,6 +71,17 @@ class EvalTask:
     #: can still override it — see `run_layers` for why that order is the point rather than a
     #: detail.
     patches: tuple[dict[str, Any], ...] = ()
+    #: **Further repositories this task needs** (M13), each
+    #: `{slug, fixture, variable}`. A ticket that covers several repositories is
+    #: delivered one repository at a time — one worktree, one commit, one pull
+    #: request each — so measuring that needs a second real checkout, named by the
+    #: variable the task's `patches` rows expand.
+    #:
+    #: `slug` is documentation and naming only: what actually puts a repository in
+    #: scope is the task's `project.repos` list, because ticket text is scanned
+    #: against that list and nothing else. `fixture` is resolved relative to the
+    #: task directory, exactly as `fixture` is.
+    extra_repos: tuple[dict[str, Any], ...] = ()
 
 
 def load_task(name: str) -> EvalTask:
@@ -92,6 +103,21 @@ def load_task(name: str) -> EvalTask:
     if not fixture.is_dir():
         raise FileNotFoundError(f"{spec_path}: fixture {fixture} is not a directory")
 
+    # A further repository's fixture is resolved the same way the primary one is,
+    # and a typo fails here rather than at `copytree` half a run later.
+    extra_repos = []
+    for entry in raw.get("extra_repos") or ():
+        extra = dict(entry)
+        source = Path(str(extra.get("fixture", "")))
+        if not source.is_absolute():
+            source = (directory / source).resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(
+                f"{spec_path}: extra repository fixture {source} is not a directory"
+            )
+        extra["fixture"] = source
+        extra_repos.append(extra)
+
     return EvalTask(
         name=str(raw.get("name", name)),
         directory=directory,
@@ -104,6 +130,7 @@ def load_task(name: str) -> EvalTask:
         probes=tuple(raw.get("probes") or ()),
         variants=dict(raw.get("variants") or {}),
         patches=tuple(raw.get("patches") or ()),
+        extra_repos=tuple(extra_repos),
     )
 
 
@@ -284,39 +311,90 @@ def _git(*args: str, cwd: Path) -> None:
         raise RuntimeError(f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr}")
 
 
-def prepare_repo(task: EvalTask, into: Path) -> Path:
+def prepare_repo(
+    task: EvalTask,
+    into: Path,
+    *,
+    fixture: Path | None = None,
+    label: str | None = None,
+) -> Path:
     """A fresh git repository from the task's fixture, ready to be a worktree
     source. Recreated every run: an eval that reuses a mutated checkout measures
-    the previous run."""
+    the previous run.
+
+    ``fixture``/``label`` exist for a task with more than one repository (see
+    ``prepare_repos``): the marker-free copytree, the ``-b main`` and the single
+    initial commit are the same three steps for every checkout, and a second copy
+    of them is how two checkouts in one eval would start to differ.
+    """
     from forgepilot.fs import remove_tree
 
+    source = task.fixture if fixture is None else fixture
     if into.exists():
         remove_tree(into)
     into.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(
-        task.fixture, into, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".git")
+        source, into, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".git")
     )
     _git("init", "-b", "main", cwd=into)
     _git("add", "-A", cwd=into)
     _git(
         "-c", "user.name=ForgePilot Eval", "-c", "user.email=eval@localhost",
-        "commit", "-m", f"eval fixture: {task.name}", cwd=into,
+        "commit", "-m", f"eval fixture: {label or task.name}", cwd=into,
     )
     return into
 
 
-def export_environment(repo: Path, worktrees: Path) -> dict[str, str]:
+def prepare_repos(task: EvalTask, into: Path) -> tuple[Path, dict[str, Path]]:
+    """Every checkout this task needs: the primary one, plus one per `extra_repos`.
+
+    Returns ``(primary, {variable: path})`` — keyed by the *environment variable*
+    because the caller's next act is `export_environment`, and the variable name is
+    what a patch row expands.
+
+    ⚠️ **The extra checkouts are siblings, not subdirectories**, and that is
+    load-bearing rather than tidy. A checkout inside the primary one would be a file
+    the primary repository owns: `git status` would show it, the delivery's diff
+    could contain it, and the agent in repository A could read repository B's
+    sources — which is exactly what the per-delivery brief tells it it cannot do.
+    """
+    primary = prepare_repo(task, into)
+    extras: dict[str, Path] = {}
+    for index, entry in enumerate(task.extra_repos):
+        slug = str(entry.get("slug") or "")
+        variable = str(entry.get("variable") or f"FORGEPILOT_EXAMPLE_REPO_{index + 2}")
+        name = slug.rsplit("/", 1)[-1] if slug else f"extra-{index + 2}"
+        extras[variable] = prepare_repo(
+            task,
+            into.parent / name,
+            fixture=entry["fixture"],
+            label=f"{task.name}/{name}",
+        )
+    return primary, extras
+
+
+def export_environment(
+    repo: Path, worktrees: Path, *, extras: Mapping[str, Path] | None = None
+) -> dict[str, str]:
     """The variables `examples/stat-fix/patch.yaml` expands.
 
     Set rather than replaced, so the eval runs **the same patch file the README
     tells a person to run**. An eval that assembled its own plugin tree would be
     measuring a program nobody has.
+
+    ``extras`` adds one variable per further repository, under the name the task's
+    own patch rows expand (`two-repos/task.yaml` uses
+    `${FORGEPILOT_EXAMPLE_REPO_2}`). The example's shared `patch.yaml` does not
+    name it — an unset `${VAR}` with no default is refused — so it is the task's
+    rows that make it load-bearing.
     """
     values = {
         "FORGEPILOT_EXAMPLE_REPO": str(repo),
         "FORGEPILOT_EXAMPLE_WORKTREES": str(worktrees),
         "FORGEPILOT_PYTHON": sys.executable,
     }
+    for variable, path in (extras or {}).items():
+        values[variable] = str(path)
     os.environ.update(values)
     return values
 

@@ -1,0 +1,29 @@
+# A ticket that names **two** repositories.
+#
+# `preprocess` scans this description against the project's `repos` list and takes
+# every repository it finds — so both `受影响仓库` lines below are what make this a
+# plural ticket, and the project file only has to *know* the two slugs. A ticket
+# that names one repository gets one delivery; this one gets two.
+#
+# Both slugs are written out in full, and the bare names (`stats`, `reporting`)
+# would also match — a name is enough, which is why a project that declares a
+# repository called `reporting` cannot have a ticket that merely mentions the word.
+id: BUG-2
+title: 周均线和移动平均线都少一个窗口 —— 两个仓库同一个根因
+status: new
+priority: high
+
+description: |
+  复现步骤：
+  1. 调用 moving_average([1, 2, 3, 4], 2)
+  2. 调用 weekly_average([1, 2, 3, 4], 2)
+
+  预期结果：两边都返回 3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+  实际结果：两边都只有 2 个窗口
+
+  受影响仓库：git.local/demo/stats
+  受影响仓库：git.local/demo/reporting
+  相关文件：stats.py、reporting/windows.py
+
+  看板和周报的曲线都比预期短一格，末尾那个窗口丢掉了。两边的窗口代码是三年前
+  拆仓库时复制过去的，所以循环边界上有同一个错误——请分别在两个仓库里修。

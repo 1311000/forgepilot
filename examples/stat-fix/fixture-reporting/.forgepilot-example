@@ -1,0 +1,8 @@
+forgepilot-example: stat-fix-reporting
+
+This marker exists so `prepare_repo.py` can tell "a checkout I made earlier, safe
+to recreate" from "a directory someone else is using, hands off". It is committed
+into the fixture's initial commit, so it travels with the repository.
+
+Do not remove it from a prepared checkout — `prepare_repo.py` will then refuse to
+reset that directory, which is the safe failure but a confusing one.

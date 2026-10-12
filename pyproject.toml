@@ -98,8 +98,10 @@ filterwarnings = ["error::RuntimeWarning"]
 target-version = "py312"
 line-length = 100
 # **Test data, not code.** These hold fixtures with deliberately broken or
-# degenerate code — the seeded bug in `examples/stat-fix/fixture`, and the eval
-# tasks' `solution/` variants, one of which exists to be *wrong* on purpose.
+# degenerate code — the seeded bug in `examples/stat-fix/fixture` and its
+# `fixture-reporting` sibling (the same off-by-one, in the second repository's own
+# copy of the arithmetic) — and the eval tasks' `solution/` variants, one of which
+# exists to be *wrong* on purpose.
 # Linting them would report findings that nobody should fix, and fixing them would
 # break the fixtures.
 extend-exclude = [
@@ -108,6 +110,7 @@ extend-exclude = [
     ".tmp",
     ".forgepilot",
     "examples/stat-fix/fixture",
+    "examples/stat-fix/fixture-reporting",
     "evals/tasks/*/fixture",
     "evals/tasks/*/solution",
 ]

@@ -185,8 +185,8 @@ because a warning printed beside a pass is a pass. This is the same distinction 
 
 ## The tasks
 
-Four shapes, chosen because each one exercises a *different* mechanism. A set of
-four off-by-one fixes would produce four correlated numbers and one finding.
+Each shape is here because it exercises a *different* mechanism. A set of ten
+off-by-one fixes would produce ten correlated numbers and one finding.
 
 | task | what it measures |
 |---|---|
@@ -199,6 +199,7 @@ four off-by-one fixes would produce four correlated numbers and one finding.
 | `two-attempts` | **repair** — the ticket's one example is satisfied by a fix that breaks three cases it never mentions, so the first attempt is wrong and the check has to say so — scored by a held-out input too, because the loop can otherwise be satisfied by a table of the five numbers the suite asserts |
 | `no-failing-test` | **the held-out input is the only instrument** — two modules compute one statistic two ways, the ticket says which side is authoritative, and the visible suite is green either way; a fix means reading a convention out of the codebase before editing, and the failure mode is not "could not do it" but "decided the disagreement was a matter of taste" |
 | `not-in-the-checkout` | **the answer is not on disk** — the value the fix needs is published by a repository that is not checked out, so the retriever is the only route to it and the exact contract is checked by a held-out input; removing `code_search` is a *structural* failure here, not an expensive one |
+| `two-repos` | **the unit of delivery is a repository, not a ticket** — one ticket naming two repositories, and the row is only a pass if *each* one was delivered on its own; the task it was written for is a run that fixed the first, opened its pull request and never started the second, which meets every other expectation in the set |
 
 Each task carries its own offline solution (`solution/`) and a scripted run, so
 **a task whose own correct answer does not score is a broken task** — and finding

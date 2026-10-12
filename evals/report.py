@@ -73,6 +73,24 @@ def _attempt_columns(group: list[dict[str, Any]]) -> tuple[str, str, bool]:
     return f"{sum(ones)}/{len(group)}", f"{sum(twos)}/{len(group)}", True
 
 
+def _delivery_column(group: list[dict[str, Any]]) -> str:
+    """How many repositories a row delivered to, as a median — or ``-``.
+
+    M13 made one ticket able to cover several repositories, each delivered on its own
+    (one worktree, one commit, one pull request each), so "the task passed" no longer
+    implies "every repository it named was delivered". This column is the size of the
+    unit those rows were scored on.
+
+    ⚠️ **Absent is not zero, and that is why the key is looked for rather than
+    `get`-ed with a default.** A row written before M13 has no `deliveries` key at all;
+    a row that recorded an empty tuple is a task that planned no repository. Printing
+    `0` for the first would read as "this task delivered nothing", which is the
+    opposite of what those rows show — the same distinction `_pass_at` draws.
+    """
+    recorded = [len(r["deliveries"]) for r in group if "deliveries" in r]
+    return _median([float(count) for count in recorded])
+
+
 def _print_grouped(rows: list[dict[str, Any]]) -> None:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -80,9 +98,9 @@ def _print_grouped(rows: list[dict[str, Any]]) -> None:
 
     print(
         f"{'task':<14}{'arm':<14}{'mode':<10}{'n':>3}{'pass':>7}"
-        f"{'pass@1':>8}{'pass@2':>8}{'calls':>7}{'turns':>7}{'secs':>7}  states"
+        f"{'pass@1':>8}{'pass@2':>8}{'calls':>7}{'turns':>7}{'secs':>7}{'deliv':>7}  states"
     )
-    print("-" * 104)
+    print("-" * 111)
     for (task, arm), group in sorted(groups.items()):
         passed = sum(1 for r in group if r.get("passed"))
         first, second, _ = _attempt_columns(group)
@@ -93,7 +111,8 @@ def _print_grouped(rows: list[dict[str, Any]]) -> None:
             f"{first:>8}{second:>8}"
             f"{_median([r.get('tool_calls', 0) for r in group]):>7}"
             f"{_median([r.get('turns', 0) for r in group]):>7}"
-            f"{_median([r.get('wall_s', 0) for r in group]):>7}  {states}"
+            f"{_median([r.get('wall_s', 0) for r in group]):>7}"
+            f"{_delivery_column(group):>7}  {states}"
         )
 
     if groups and not all(_attempt_columns(g)[2] for g in groups.values()):
