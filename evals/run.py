@@ -162,6 +162,10 @@ async def run_one(
             approval=root.approval,
             principal=record.principal,
             compactor=getattr(root, "compaction", None),
+            # On by default here, because an eval that runs without the mechanism is
+            # measuring a system nobody deploys. The `no-memory` arm (Phase G) is
+            # the *deliberate* version of that, and it passes `None` explicitly.
+            memory=getattr(root, "memory", None),
         )
 
         final = outcome.checks[-1] if outcome.checks else None

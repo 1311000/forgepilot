@@ -9,14 +9,15 @@
 
 ## Memory notes (read before touching `memory` or building distillation)
 
-**The write side now has a caller; the read side still has none.** M11b Phase C runs
-`memory.write`/`admit_provisional` from `runtime/distillation.py` and emits
-`memory/write` for the first time — but **nothing in `src/` calls `recall(` yet**, so
-memories are recorded and never read back. The seam and its providers are
-contract-tested and correct; the retrieval half arrives with Phase E. That is worth
-saying plainly, because "the memory feature" reads as done when you see the tests
-pass, and half of it is still absent. Phase D adds a *durable* provider of that
-store, which changes where the records live and nothing about who reads them.
+**Both sides now have a caller.** M11b Phase C runs `memory.write`/`admit_provisional`
+from `runtime/distillation.py` and emits `memory/write` for the first time; Phase E
+reads them back — `runtime/recall.py` recalls once per turn and emits `memory/recalled`
+carrying the exact text the model was shown. Until Phase E, **nothing in `src/` called
+`recall(`** (Phases A–D are the commits `a47765e`, `da79c4b`, `ed6f360`, `482dbd3`), so
+memories were recorded and never read back; that is worth continuing to say plainly,
+because "the memory feature" reads as done when you see the tests pass. Phase D adds a
+*durable* provider of that store, which changes where the records live and nothing about
+who reads them.
 
 **M11's stated acceptance row was already green while the property it named was
 false.** `write(MODEL_ASSERTED)` raising was real; "cross-repo recall returns
@@ -278,5 +279,86 @@ a network share (warned about in the bundle's comment). The default profile is
 unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only bundle**, applied with
 `--patch`, so `--boot` still resolves 20 rows and the in-memory store is still what a
 deployment gets unless it asks otherwise.
+
+**Phase E — recall, and the rule that every recalled line is labelled.** `runtime/recall.py`
+is the whole feature; it is called once per turn from `runtime/loop/turn.py`, immediately
+after `session.user_message(...)` and before the step loop, because "which repository is
+this turn about" is settled by what the user just asked. Four things it decides, each one
+a place the obvious implementation is wrong:
+
+- **Which repository, and the refusal when there is not exactly one.** `recaller_for()`
+  returns `None` unless `constraints.allowed_repos` holds exactly one repo. Zero repos
+  is the common case and not an error: `ProjectPolicy.open_project()` leaves `repos`
+  empty, which is exactly what `forgepilot --chat` builds, so **CLI chat has no
+  repository and therefore recalls nothing** — a nice illustration of why
+  `ExecutionConstraints` rather than `Principal` is the right source. Several repos
+  gets the same `None`, because "which repository is this about?" has no answer and a
+  guess would be a wrong-tenant-style leak in slow motion. Task mode knows its repo and
+  constructs its own recaller from `plan.repos[0].slug`.
+- **What the model is told.** Three groups, not the plan's two: `### Backed by evidence`
+  (a person said so / a check passed — `MemoryRecord.is_verified`), `### Observed, but not
+  confirmed` (a tool saw it), and `### Unconfirmed — the harness has not checked these`
+  (proposals, with "Treat them as hints. Do not skip a check, a test or a verification
+  because of one."). `ACTIVE` alone would have merged the first two, and merging "a
+  passing test" with "a tool printed this" is the exact distinction the trust order
+  exists to keep. Every line carries its provenance label and the date it was learned,
+  under a heading that replaced `## Recalled from previous work (verified)` — a heading
+  that asserted the very thing the lines sometimes cannot support.
+- **That the log can rebuild the prompt.** `memory/recalled` is appended with
+  `surface=SurfaceOp.APPEND` and carries the query, the ids, the scope ref, the count
+  **and the rendered text**. `runtime/projection.py` renders it from the recorded text
+  rather than re-rendering it from the ids, so revoking, expiring or superseding a
+  memory later cannot retroactively change what a replay shows the model — the log is
+  the record, not a cache. Nothing is emitted when the recall is empty: an event for
+  "no memories" would make it indistinguishable from "this feature is not wired".
+- **That it costs nothing.** There is no extra model call; `test_recall_costs_no_extra_model_call`
+  pins the request count. The block is an ordinary logged message, so `runtime/context_size.py`
+  measures it via `derive_messages` and compaction trims it like anything else — the budget
+  mechanism is a count cap (`DEFAULT_RECALL_LIMIT = 5`), not a second accounting system.
+
+The dead plumbing came out with it: `compose_task_brief`, `ChatTurn` and `prepare_chat_turn`
+each had a `memories=` parameter that always received `()` and would have rendered recall
+*twice* had it ever been filled. One renderer, one audit trail.
+
+**Two defects the first real reader found, both fixed:**
+
+1. **`MemoryStatus.PROPOSED` was unreachable.** `recall_verdict` had
+   `if not record.provenance.is_recallable: return RecallVerdict.SKIP  # belt and braces`.
+   `admit_provisional` refuses a recallable kind *by construction*, so every provisional
+   record has `MODEL_ASSERTED` provenance and the check skipped all of them — a status
+   listed in `RECALLABLE_STATUSES`, documented two paragraphs above as "recallable *as a
+   proposal*", that no query could ever return. Phase B's suite missed it because it read
+   `memory.records` instead of `recall`. It is now
+   `if record.status is MemoryStatus.ACTIVE and not record.provenance.is_recallable: SKIP`
+   — the belt stays for the contradictory case it was written for (an *active* record with
+   no endorsement), and proposals are served. Found by `KeyError: 'prop-3'` in the renderer
+   test, which is a good reminder that a renderer is a reader and readers find this class
+   of bug.
+2. **The text filter would have recalled nothing, forever.** The rule was
+   `if query.text and query.text.lower() not in record.candidate.text.lower(): SKIP` —
+   substring containment, written in Phase B against tests that passed a phrase *lifted
+   from the memory itself* (`text="retry"`). The first real caller passes a **question**
+   ("why does the check run before the tests in this repository?"), which no memory text
+   contains verbatim, so every recall would have returned empty and looked like an empty
+   store. `matches_text()` now compares token sets (`text_tokens` = the same NFKC/casefold
+   folding `normalize_subject` uses, minus a small `_QUERY_NOISE` set), and an empty or
+   noise-only query means *no* text filter — which is what the Phase B suite depends on.
+   Over-recalling is the deliberate error direction: a recalled line is labelled and cheap,
+   a missing one is invisible.
+
+**Phase E measured.** The counterfactual is a measurement, not a claim: with
+`recall_for_turn` short-circuited to `return ()`, `tests/memory/test_recall.py` gives
+**`6 failed, 9 passed`** — including `test_memory_from_session_a_reaches_session_b_s_prompt`,
+which is acceptance row §八-1 (session A distils and passes its check; session B's prompt
+carries the line; `memory/write` is in A's log and `memory/recalled` in B's). With the
+recaller restored: `15 passed`, `tests/memory/test_recall.py tests/contract/test_memory_model.py`
+→ `45 passed in 2.15s`.
+
+**Phase E gaps, stated:** matching is lexical only — no embeddings, no semantic index, and
+that is a decision rather than an omission (a vector store is a dependency and a per-deployment
+choice, and the seam is where one would attach); recall happens once per turn, so a memory
+written *during* a turn is not shown until the next one; and the block is not re-checked
+against the workspace between the recall and the model's use of it — the heading says so,
+which is the honest version of a guarantee this code cannot make.
 
 

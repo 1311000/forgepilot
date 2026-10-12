@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.runtime.loop.step import ContextWindowExceeded, StepResult, run_step
+from forgepilot.runtime.recall import recall_for_turn
 from forgepilot.seams.agent_loop import TurnResult, UserInput
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.security import ExecutionConstraints
@@ -46,11 +47,26 @@ async def run_turn(
     tracker: Any = None,
     is_cancelled: Callable[[], bool] | None = None,
     compactor: Any = None,
+    recaller: Any = None,
 ) -> TurnResult:
     """Run one turn to completion, always closing it in the log."""
     turn = session.next_turn()
     await session.turn_start(turn)
     await session.user_message(turn, user_input.text)
+
+    # Before the first step, once per turn, and outside the step loop: recall is a
+    # property of "what this turn is about", and re-asking it every step would let
+    # the store's content drift mid-turn for no reason the model can see. The event
+    # is appended here, so the order in the log is: the question, then what was
+    # recalled for it.
+    if recaller is not None:
+        await recall_for_turn(
+            session,
+            recaller=recaller,
+            text=user_input.text,
+            constraints=constraints,
+            turn=turn,
+        )
 
     reason = "completed"
     text_parts: list[str] = []

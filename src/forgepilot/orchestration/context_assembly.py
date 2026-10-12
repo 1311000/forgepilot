@@ -28,13 +28,11 @@ from __future__ import annotations
 
 import platform
 import sys
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.classifier import TicketUnderstanding
-from forgepilot.seams.memory import MemoryRecord
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.tickets import Ticket
 
@@ -144,7 +142,6 @@ def compose_task_brief(
     ticket: Ticket,
     understanding: TicketUnderstanding | None = None,
     preprocessed: object | None = None,
-    memories: Sequence[MemoryRecord] = (),
 ) -> str:
     """The untrusted half: the ticket and what was made of it.
 
@@ -152,6 +149,15 @@ def compose_task_brief(
     someone else, and the framing says so — including that a classification is a
     *reading*, not a fact. A model that treats its own earlier guess as
     established will not go and check.
+
+    **Not where memories go.** Until Phase E this function took a ``memories``
+    argument and rendered them under a heading that said "(verified)" — over every
+    line, whatever backed it. Recall now runs in the runtime
+    (:mod:`forgepilot.runtime.recall`), which is the only place that can say what
+    was recalled *and* log it: a brief assembled here would be model-visible
+    without a session event, which is exactly the invariant the runtime refuses to
+    break. Two renderers would also mean the same memory looked different in chat
+    and in a task.
     """
     lines: list[str] = []
 
@@ -209,11 +215,5 @@ def compose_task_brief(
         if understanding.missing:
             lines.append("- could not determine: " + ", ".join(understanding.missing))
         lines.append(f"- confidence: {understanding.confidence:.2f}")
-
-    if memories:
-        lines.append("")
-        lines.append("## Recalled from previous work (verified)")
-        for record in memories:
-            lines.append(f"- {record.candidate.text}")
 
     return "\n".join(lines)

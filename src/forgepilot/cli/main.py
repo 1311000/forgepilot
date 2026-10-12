@@ -984,6 +984,10 @@ def _task(args: argparse.Namespace) -> int:
                 approval=root.approval,
                 principal=record.principal,
                 compactor=getattr(root, "compaction", None),
+                # `getattr`, like compaction: a profile without a `memory` row is a
+                # valid deployment, and a task with no memories is a task that runs
+                # exactly as it did before this existed.
+                memory=getattr(root, "memory", None),
                 # Read from the `agentLoop` row rather than defaulted, so a
                 # profile's `max_steps` bounds a *task* the way it bounds a chat.
                 # It used not to reach here at all, and every task ran on 12.

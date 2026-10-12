@@ -21,6 +21,7 @@ from forgepilot.kernel import PluginService
 from forgepilot.kernel.errors import PluginContractViolation
 from forgepilot.runtime.guards import USAGE_SERVICE, UsageTracker
 from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS, run_turn
+from forgepilot.runtime.recall import recaller_for
 from forgepilot.seams.agent_loop import (
     AGENTS_SERVICE_NAME,
     SERVICE_NAME,
@@ -91,6 +92,10 @@ class ForgePilotAgent:
     #: the only thing that happens when the window is reached, which is what
     #: every caller got before this existed.
     compactor: Any = None
+    #: Optional recall. `None` — no `memory` row, or an authority that names zero or
+    #: several repositories — means the turn simply carries no memories, which is a
+    #: valid deployment (and what `--chat` gets; see `runtime/recall.py`).
+    recaller: Any = None
     _state: AgentState = AgentState.IDLE
     _cancel_reason: str | None = None
 
@@ -138,6 +143,7 @@ class ForgePilotAgent:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 compactor=self.compactor,
+                recaller=self.recaller,
                 tracker=self.tracker,
                 is_cancelled=self._is_cancelled,
             )
@@ -194,6 +200,14 @@ class ForgePilotAgentLoop:
             # authority. Contrast `policy`, which a session cannot be opened
             # without — that one fails closed.
             compactor=getattr(ctx, "compaction", None),
+            # Recall is built here, not injected, for the same reason compaction is
+            # read with `getattr`: a profile with no `memory` row is a valid
+            # deployment. But it also needs the *repository*, which this context
+            # does not name — `recaller_for` answers that from the spec's
+            # constraints, and returns `None` when the authority names none or
+            # several. `orchestration/modes/task.py` builds its own from the project
+            # it was given, because there the repository is known directly.
+            recaller=recaller_for(spec.constraints, spec.mode, getattr(ctx, "memory", None)),
         )
 
 

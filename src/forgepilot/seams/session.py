@@ -134,6 +134,15 @@ class EventKind:
     #: endpoints reject outright.
     TASK_CHECK = "task/check"
     MEMORY_WRITE = "memory/write"
+    #: Memories put in front of the model at the start of a turn.
+    #:
+    #: **Model-visible** (``SurfaceOp.APPEND``, rendered as a user message by
+    #: ``runtime/projection.py``), because the invariant is *model-visible means
+    #: logged* and a recall is the clearest case of it: if the model saw something
+    #: that is not an event, the prompt cannot be rebuilt from the log, and "why did
+    #: it believe that?" becomes unanswerable. Carries the query, the ids and the
+    #: exact text that went in.
+    MEMORY_RECALLED = "memory/recalled"
 
     # --- redaction --------------------------------------------------------
     # Emitted by the write path, never by a caller: they describe what the gate

@@ -39,7 +39,6 @@ from forgepilot.orchestration.router import AdapterSelection, select_adapters
 from forgepilot.orchestration.task_state import TaskState, TaskStateMachine
 from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
 from forgepilot.seams.classifier import ClassificationRequest, TicketUnderstanding
-from forgepilot.seams.memory import MemoryRecord
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.tickets import Ticket
 
@@ -116,7 +115,6 @@ async def plan_task(
     registry: Any,
     classifier: ClassifierGateway,
     workspace_root: Path | None = None,
-    memories: Sequence[MemoryRecord] = (),
 ) -> TaskPlan:
     """Preprocess, classify if needed, route, and assemble. Executes nothing."""
     machine = TaskStateMachine()
@@ -228,7 +226,6 @@ async def plan_task(
         ticket=ticket,
         understanding=understanding,
         preprocessed=preprocessed,
-        memories=memories,
     )
 
     return TaskPlan(
@@ -312,6 +309,10 @@ async def run_task(
     #: `max_steps` and every task ran on the default — a profile setting that only
     #: chat honoured. `attempts × max_steps` is the real bound on a task.
     max_steps: int = DEFAULT_MAX_STEPS,
+    #: Optional memory store. Unlike the agent loop, task mode **knows** which
+    #: repository it is about — the plan names exactly one — so it does not have to
+    #: ask the constraints. `None` means a profile with no `memory` row.
+    memory: Any = None,
 ) -> TaskOutcome:
     """Execute a plan: branch, work, check, repair, deliver.
 
@@ -324,8 +325,10 @@ async def run_task(
     from forgepilot.runtime.authority import authorise
     from forgepilot.runtime.loop.turn import run_turn
     from forgepilot.runtime.pinning import pinned_to_base
+    from forgepilot.runtime.recall import Recaller
     from forgepilot.runtime.repair import combine_checks, run_checks
     from forgepilot.seams.agent_loop import UserInput
+    from forgepilot.seams.refs import Mode
     from forgepilot.seams.security import Operation
     from forgepilot.seams.session import EventKind, SurfaceOp
     from forgepilot.seams.vcs import PullRequestDraft
@@ -354,6 +357,16 @@ async def run_task(
     )
     repo = plan.repos[0]
     session_id = session.header.session_id
+
+    # Recall is scoped to the plan's repository — which task mode simply *knows*,
+    # rather than having to infer it from the caller's authority as the agent loop
+    # must — and it runs on the **first attempt only**. A repair turn's input is
+    # `FIX_PROMPT` ("the project's checks failed…"), words that describe the
+    # situation rather than the work, so matching memories on them would recall
+    # almost anything; the block from attempt 0 is still in the conversation anyway.
+    recaller = (
+        Recaller(memory=memory, scope_ref=repo.slug, mode=Mode.TASK) if memory is not None else None
+    )
 
     # **The mirror comes first, and it is called unconditionally.** A worktree
     # cannot be cut from a repository that is not on this machine yet, and `vcs`
@@ -400,6 +413,7 @@ async def run_task(
             tool_schemas=plan.tool_schemas(tools),
             tracker=tracker,
             compactor=compactor,
+            recaller=recaller if attempt == 0 else None,
         )
         turns += 1
 

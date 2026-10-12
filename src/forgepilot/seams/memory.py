@@ -85,6 +85,8 @@ __all__ = [
     "expire_record",
     "count_recall",
     "may_recall",
+    "matches_text",
+    "text_tokens",
     "recall_verdict",
     "RECALLABLE_PROVENANCE",
     "CONFIDENCE_FOR_PROVENANCE",
@@ -771,6 +773,50 @@ def may_recall(query: RecallQuery, constraints: ExecutionConstraints) -> bool:
     return constraints.allows_repo(audience_repo(query.scope, query.scope_ref))
 
 
+#: Words too common to say anything about what a query is *about*. Kept tiny and
+#: deliberately not an English stop-word list: this codebase's memories and
+#: questions are English today, but a list like this is a language decision, and
+#: the short one is the one that can be defended.
+_QUERY_NOISE = frozenset({"a", "an", "and", "are", "for", "how", "is", "it", "of", "on", "the", "to", "what", "why"})
+
+
+def text_tokens(text: str) -> tuple[str, ...]:
+    """The words a query or a memory text is matched on.
+
+    The same folding :func:`normalize_subject` applies — NFKC, casefold, split on
+    anything that is not a word character — so a question and a memory agree on
+    what "the same word" means without agreeing on punctuation.
+    """
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return tuple(re.findall(r"[^\W_]+", folded, flags=re.UNICODE))
+
+
+def matches_text(query_text: str, record_text: str) -> bool:
+    """Whether a query is *about* a memory — the rule whose first caller found it.
+
+    ⚠️ **This replaces a substring test (`query.text.lower() in record.text.lower()`),
+    and the reason is worth keeping.** Substring-against-the-record was written in
+    Phase B against tests that passed a *phrase lifted from the memory itself*
+    (``text="retry"``), which is not the shape a caller ever sends. Phase E gave the
+    rule its first real caller, and the caller is a **question** — "why does the
+    build take so long?" — which no memory text contains verbatim, so the old rule
+    would have recalled nothing, forever, and looked like a store that was simply
+    empty. A rule with no caller is not a rule that works; it is one that has never
+    been asked.
+
+    An empty query — or one made only of the noise words above — means **no text
+    filter** (the store's "give me what is here" form), which is what the Phase B
+    contract suite relies on. Otherwise a query matches when it shares any word with
+    the record. Over-recalling is the deliberate error direction: a recalled memory
+    costs a few lines of context and is labelled in the prompt, while a missed one is
+    invisible.
+    """
+    wanted = {word for word in text_tokens(query_text) if word not in _QUERY_NOISE}
+    if not wanted:
+        return True
+    return bool(wanted & set(text_tokens(record_text)))
+
+
 def recall_verdict(
     record: MemoryRecord,
     query: RecallQuery,
@@ -791,8 +837,17 @@ def recall_verdict(
         # which is also why the field is not a decoration. Expiry is not deletion:
         # the record is kept and marked, so the audit trail survives.
         return RecallVerdict.EXPIRED
-    if not record.provenance.is_recallable:
-        return RecallVerdict.SKIP  # belt and braces: write() should have refused it
+    # An *active* record whose provenance carries no endorsement is a
+    # contradiction: `write()` refuses that provenance outright. The check stays
+    # for that case — and it used to be `if not record.provenance.is_recallable`,
+    # which caught something quite different. Every provisional record has a
+    # non-recallable kind by construction (`admit_provisional` refuses an
+    # endorsement), so the old form made `MemoryStatus.PROPOSED` — a status
+    # `RECALLABLE_STATUSES` lists as recallable — unreachable by any writer. A
+    # status that can never be returned is the "looks enforced, is not" shape in
+    # reverse, and it was found by the first renderer that tried to show a proposal.
+    if record.status is MemoryStatus.ACTIVE and not record.provenance.is_recallable:
+        return RecallVerdict.SKIP
     if record.candidate.scope != query.scope or record.candidate.scope_ref != query.scope_ref:
         return RecallVerdict.SKIP
     # Where it was learned is a second, independent limit on who may see it. It can
@@ -800,7 +855,7 @@ def recall_verdict(
     learned_in = record.provenance.repo
     if learned_in is not None and not constraints.allows_repo(learned_in):
         return RecallVerdict.SKIP
-    if query.text and query.text.lower() not in record.candidate.text.lower():
+    if not matches_text(query.text, record.candidate.text):
         return RecallVerdict.SKIP
     return RecallVerdict.HIT
 

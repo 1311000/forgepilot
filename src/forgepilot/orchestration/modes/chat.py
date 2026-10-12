@@ -19,7 +19,6 @@ from forgepilot.orchestration.context_assembly import (
     PromptSection,
     assemble_system_sections,
 )
-from forgepilot.seams.memory import MemoryRecord
 from forgepilot.seams.security import ExecutionConstraints
 
 __all__ = ["ChatTurn", "prepare_chat_turn"]
@@ -31,7 +30,6 @@ class ChatTurn:
 
     system_sections: tuple[PromptSection, ...]
     question: str
-    memories: tuple[MemoryRecord, ...] = ()
 
     @property
     def system_texts(self) -> tuple[str, ...]:
@@ -44,7 +42,6 @@ def prepare_chat_turn(
     project: ProjectConfig,
     constraints: ExecutionConstraints,
     workspace_root: Path | None = None,
-    memories: tuple[MemoryRecord, ...] = (),
 ) -> ChatTurn:
     """Assemble a chat turn.
 
@@ -52,8 +49,14 @@ def prepare_chat_turn(
     question is not a task, and running it through ticket machinery would be both
     wasted work and a wasted model call — which is exactly the claim
     ``test_a_query_never_reaches_the_classifier`` checks.
+
+    Memories are absent for a different reason: they are recalled by the runtime
+    when the turn runs (:mod:`forgepilot.runtime.recall`), so that what the model
+    was shown is in the log. Assembling them here would put them in front of the
+    model without an event, and — for the ``--chat`` grant, which names no
+    repository — with no repository to scope them to.
     """
     sections = assemble_system_sections(
         project=project, constraints=constraints, workspace_root=workspace_root
     )
-    return ChatTurn(system_sections=sections, question=question, memories=memories)
+    return ChatTurn(system_sections=sections, question=question)

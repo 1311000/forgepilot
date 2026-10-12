@@ -46,6 +46,9 @@ _SURFACE_KINDS = frozenset(
         # covers. A surface kind with no renderer raises rather than being
         # skipped, which is why the branch below is not optional.
         EventKind.COMPACTION_SUMMARY,
+        # Encoded from the store by `runtime/recall.py` and carried as its own
+        # `text`, so replaying the log rebuilds the same block the model saw.
+        EventKind.MEMORY_RECALLED,
     }
 )
 
@@ -241,6 +244,18 @@ def _render(event: SessionEvent) -> ChatMessage | None:
         return ChatMessage(
             role=Role.USER,
             content=f"[compacted conversation{span}]\n{body}",
+            source_event_seq=event.seq,
+        )
+
+    if event.kind == EventKind.MEMORY_RECALLED:
+        # A *user* message, like the two above: the harness is speaking. The body
+        # is recorded in the event verbatim rather than re-rendered from the ids,
+        # because a memory can be revoked, expired or superseded between the recall
+        # and a later replay — and "what the model saw" must not change retroactively
+        # when the store does.
+        return ChatMessage(
+            role=Role.USER,
+            content=str(data.get("text", "")),
             source_event_seq=event.seq,
         )
 
