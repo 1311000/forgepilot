@@ -79,6 +79,7 @@ async def run_checks(
     step: int | None = None,
     timeout_s: float = 900.0,
     pinned: Sequence[str] = (),
+    repo: str | None = None,
 ) -> CheckResult:
     """Run the project's check commands, in order, stopping at the first failure.
 
@@ -87,6 +88,12 @@ async def run_checks(
     how the commands run; it is carried so the model is told, because a repair
     loop that edits a test, fails again, and cannot find out why is a loop that
     spends its whole budget on the wrong file.
+
+    ``repo`` is the repository whose tree the commands ran in, and it is named on
+    the recorded event. Since M13 one session log can hold several repositories'
+    deliveries, and a passing check that does not say which tree it ran in cannot
+    be told apart from the other repository's. It is ``None`` for a caller that
+    has only one tree to talk about, which is every caller outside task mode.
     """
     if not commands:
         return CheckResult(
@@ -113,7 +120,7 @@ async def run_checks(
             could_not_run=True,
             reason="run_tests is not permitted",
         )
-        await _record(session, result, turn, step)
+        await _record(session, result, turn, step, repo)
         return result
 
     # Each configured command is its own process, in order, stopping at the first
@@ -208,7 +215,7 @@ async def run_checks(
     else:
         result = broken
 
-    await _record(session, result, turn, step)
+    await _record(session, result, turn, step, repo)
     return result
 
 
@@ -227,7 +234,11 @@ def _section(index: int, total: int, command: str, outcome: Any) -> str:
 
 
 async def _record(
-    session: Any, result: CheckResult, turn: TurnId | None, step: int | None
+    session: Any,
+    result: CheckResult,
+    turn: TurnId | None,
+    step: int | None,
+    repo: str | None = None,
 ) -> None:
     """Record the check so the model can see it and an auditor can reconstruct it."""
     if session is None:
@@ -235,6 +246,9 @@ async def _record(
     await session.append(
         EventKind.TASK_CHECK,
         {
+            # Which repository's tree ran, when the caller has more than one. See
+            # `run_checks`.
+            "repo": repo,
             "passed": result.passed,
             "command": result.command,
             "commands": list(result.commands),

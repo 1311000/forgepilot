@@ -786,6 +786,40 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
     limit = expect.get("max_changed_paths")
     if limit is not None and len(row["changed"]) > limit:
         failures.append(f"{len(row['changed'])} paths changed, limit {limit}")
+
+    # **How many repositories this run had to deliver to** (M13). A ticket spanning
+    # two repositories can satisfy every other expectation here while delivering to
+    # one of them: the checks it ran genuinely passed, and the paths it changed are
+    # genuinely the ones it was asked for. The un-attempted repository leaves no
+    # other trace in the row, which is exactly why the count is stated rather than
+    # inferred — and `deliveries` is checked against the *deliveries*, never
+    # against the plan, so a plan that names two and delivers one fails.
+    wanted_deliveries = expect.get("deliveries")
+    if wanted_deliveries is not None:
+        record = row.get("deliveries") or []
+        if isinstance(wanted_deliveries, int):
+            if len(record) != wanted_deliveries:
+                failures.append(
+                    f"{len(record)} deliveries recorded, expected {wanted_deliveries}"
+                )
+        else:
+            have = {str(entry.get("repo", "")) for entry in record}
+            missing = [slug for slug in wanted_deliveries if slug not in have]
+            if missing:
+                failures.append(f"no delivery was attempted for {missing}")
+
+    # `states` above is the task's own verdict, which for a plural ticket is the
+    # summary; this is the one that can insist *each* repository reached a state,
+    # e.g. both delivered rather than one delivered and one not attempted.
+    wanted_states = expect.get("delivery_states")
+    if wanted_states:
+        for entry in row.get("deliveries") or ():
+            if entry.get("state") not in wanted_states:
+                failures.append(
+                    f"delivery {entry.get('repo')!r} ended {entry.get('state')!r}, "
+                    f"not in {wanted_states}"
+                )
+
     limit = expect.get("max_tool_calls")
     if limit is not None and row["tool_calls"] > limit:
         failures.append(f"{row['tool_calls']} tool calls, limit {limit}")

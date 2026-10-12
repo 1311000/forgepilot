@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -346,13 +347,13 @@ class TaskRig:
         await self.session.close()
 
 
-def constraints_for(*operations: Operation, writable=("src",)) -> ExecutionConstraints:
+def constraints_for(*operations: Operation, writable=("src",), repos=None) -> ExecutionConstraints:
     return ExecutionConstraints.for_principal(
         Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
         # The task flow reaches the repository through the VCS seam, which
         # re-checks the repo allow-list itself — so an unset list is a refusal,
         # not an unrestricted default.
-        allowed_repos=frozenset({REPO}),
+        allowed_repos=frozenset(repos) if repos is not None else frozenset({REPO}),
         permitted_operations=frozenset(operations),
         writable_paths=writable,
         network=NetworkAccess.DENY,
@@ -370,6 +371,40 @@ PROJECT = ProjectConfig(
     # rule out: an agent that edits the test instead of the code. With only
     # `src` writable the guard refuses the write, the tree never changes, and a
     # test of the pinning proves nothing while looking like it does.
+    writable_paths=("src", "tests"),
+    tool_sets={
+        "default": ("read_file", "code_search"),
+        "bugfix": ("read_file", "code_search", "write_file", "run"),
+    },
+    category_tool_sets={"bug": "bugfix"},
+)
+
+# ---------------------------------------------------------------------------
+# A ticket that spans several repositories (M13).
+# ---------------------------------------------------------------------------
+REPO_B = RepoRef(host="git.corp", namespace="team", name="svc-b")
+REPO_C = RepoRef(host="git.corp", namespace="team", name="svc-c")
+
+#: The second repository's seed, holding a file the first one does not have — so a
+#: test can prove a delivery really stood in *its own* tree rather than in whichever
+#: checkout happened to be prepared first.
+SEED_B = {
+    "src/report.py": "def summarise(rows):\n    return sum(rows)\n",
+    "tests/test_report.py": "def test_summarise():\n    assert False, 'summarise is not written yet'\n",
+}
+
+SEED_C = {
+    "src/schedule.py": "def next_slot(now):\n    return now\n",
+    "tests/test_schedule.py": "def test_next_slot():\n    assert False, 'next_slot is not written yet'\n",
+}
+
+CROSS_PROJECT = ProjectConfig(
+    name="team-suite",
+    repos=(REPO, REPO_B, REPO_C),
+    repo_prefixes=("git.corp/team/*",),
+    default_branch="main",
+    test=("pytest -q",),
+    allowed_operations=frozenset(Operation),
     writable_paths=("src", "tests"),
     tool_sets={
         "default": ("read_file", "code_search"),
@@ -409,8 +444,21 @@ def make_origin_repo(root: Path, files: dict[str, str]) -> Path:
     return root
 
 
-@pytest.fixture
-async def task_rig(tmp_path: Path):
+@asynccontextmanager
+async def _task_rig(
+    tmp_path: Path,
+    *,
+    project: ProjectConfig,
+    origins: dict[str, dict[str, str]],
+    constraints: ExecutionConstraints,
+):
+    """A booted kernel with the task-mode services, over real git checkouts.
+
+    `origins` maps each repository slug to the files its `main` holds, so one rig
+    can stand up as many repositories as a test needs. M13 made a ticket spanning
+    several repositories a supported shape, and a fixture that could only build one
+    would leave that path untestable end to end.
+    """
     root = create_root()
     fibers = []
 
@@ -437,11 +485,15 @@ async def task_rig(tmp_path: Path):
     # A **real** repository with a **real** worktree, because `commit` now lives on
     # the workspace seam and the temp-directory provider refuses it — correctly:
     # it has no history to commit to, and inventing a sha would put a fabricated
-    # commit in the session log as evidence.
-    origin = make_origin_repo(tmp_path / "origin", SEED)
+    # commit in the session log as evidence. One per slug, in the order the caller
+    # declared them, so the ticket's order and the trees stay tellable apart.
+    checkouts = {
+        slug: str(make_origin_repo(tmp_path / f"origin-{index}", files))
+        for index, (slug, files) in enumerate(origins.items())
+    }
     await load(
         "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin",
-        {"repos": {REPO.slug: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
+        {"repos": checkouts, "worktree_root": str(tmp_path / "worktrees")},
     )
 
     tracker = UsageTracker()
@@ -482,11 +534,40 @@ async def task_rig(tmp_path: Path):
             approval=root.approval,
             principal=RIG_PRINCIPAL,
             tracker=tracker,
-            constraints=constraints_for(
-                Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR
-            ),
-            project=PROJECT,
+            constraints=constraints,
+            project=project,
         )
     finally:
         for fiber in reversed(fibers):
             await dispose_fiber(fiber)
+
+
+@pytest.fixture
+async def task_rig(tmp_path: Path):
+    async with _task_rig(
+        tmp_path,
+        project=PROJECT,
+        origins={REPO.slug: SEED},
+        constraints=constraints_for(
+            Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR
+        ),
+    ) as rig:
+        yield rig
+
+
+@pytest.fixture
+async def cross_repo_task_rig(tmp_path: Path):
+    """The same rig with three repositories, all of them permitted (M13)."""
+    async with _task_rig(
+        tmp_path,
+        project=CROSS_PROJECT,
+        origins={REPO.slug: SEED, REPO_B.slug: SEED_B, REPO_C.slug: SEED_C},
+        constraints=constraints_for(
+            Operation.READ_CODE,
+            Operation.WRITE_CODE,
+            Operation.RUN_TESTS,
+            Operation.OPEN_PR,
+            repos=(REPO, REPO_B, REPO_C),
+        ),
+    ) as rig:
+        yield rig

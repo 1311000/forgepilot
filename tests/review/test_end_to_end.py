@@ -30,6 +30,18 @@ from forgepilot.seams.tickets import Ticket, TicketPriority
 
 REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
 
+
+def _delivery(outcome):
+    """The one delivery; every ticket in this file names a single repository.
+
+    The review mode reads the *diff of a delivery*, and since M13 that diff lives
+    on the delivery rather than on the task outcome — one task may deliver to
+    several repositories, so there is no single diff to read.
+    """
+    assert len(outcome.deliveries) == 1, f"expected one delivery, got {outcome.deliveries}"
+    return outcome.deliveries[0]
+
+
 BUGGY = (
     "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n"
     "    attempts = 0\n    while True:\n        try:\n"
@@ -113,7 +125,7 @@ async def test_a_task_pr_becomes_a_narrative_whose_claims_trace_to_the_log(task_
     outcome = await deliver_a_fix(task_rig)
 
     narrative = await build_review(
-        outcome.diff,
+        _delivery(outcome).diff,
         title=f"fix: {a_ticket().title}",
         session=task_rig.session,
         llm=None,
@@ -127,8 +139,8 @@ async def test_a_task_pr_becomes_a_narrative_whose_claims_trace_to_the_log(task_
     # Every citation resolves against this session and this diff.
     universe = EvidenceUniverse.from_session(
         task_rig.session,
-        changed_paths=[f.path for f in prepare_review(outcome.diff).parsed.files],
-        hunk_ids=[h.hunk_id for h in prepare_review(outcome.diff).parsed.hunks],
+        changed_paths=[f.path for f in prepare_review(_delivery(outcome).diff).parsed.files],
+        hunk_ids=[h.hunk_id for h in prepare_review(_delivery(outcome).diff).parsed.hunks],
     )
     for claim in narrative.verified_claims:
         assert claim.evidence, f"verified without evidence: {claim.text!r}"
@@ -142,7 +154,7 @@ async def test_the_narrative_names_the_check_that_actually_ran(task_rig) -> None
 
     payload = render_json(
         await build_review(
-            outcome.diff, title="t", session=task_rig.session, use_model=False
+            _delivery(outcome).diff, title="t", session=task_rig.session, use_model=False
         )
     )
 
@@ -154,7 +166,7 @@ async def test_the_narrative_names_the_check_that_actually_ran(task_rig) -> None
 async def test_the_rendered_document_shows_order_coverage_and_what_is_unverified(task_rig) -> None:
     outcome = await deliver_a_fix(task_rig)
     narrative = await build_review(
-        outcome.diff, title="fix: 登录无限重试", session=task_rig.session, use_model=False
+        _delivery(outcome).diff, title="fix: 登录无限重试", session=task_rig.session, use_model=False
     )
 
     markdown = render_markdown(narrative)
@@ -172,7 +184,7 @@ async def test_the_rendered_document_shows_order_coverage_and_what_is_unverified
 # ---------------------------------------------------------------------------
 async def test_a_model_authored_claim_with_a_real_citation_is_verified(task_rig) -> None:
     outcome = await deliver_a_fix(task_rig)
-    plan = prepare_review(outcome.diff)
+    plan = prepare_review(_delivery(outcome).diff)
     real_hunk = plan.parsed.hunks[0].hunk_id
     real_seq = task_rig.session.committed_events[0].seq
 
@@ -197,7 +209,7 @@ async def test_a_model_authored_claim_with_a_real_citation_is_verified(task_rig)
     )
 
     narrative = await build_review(
-        outcome.diff,
+        _delivery(outcome).diff,
         title="t",
         session=task_rig.session,
         llm=task_rig.llm,
@@ -236,7 +248,7 @@ async def test_a_model_authored_claim_citing_an_invented_hunk_is_demoted(task_ri
     )
 
     narrative = await build_review(
-        outcome.diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
+        _delivery(outcome).diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
     )
 
     assert not narrative.intent.verified
@@ -254,7 +266,7 @@ async def test_a_model_that_returns_garbage_degrades_to_the_deterministic_narrat
     task_rig.llm.script(text_turn("I'm afraid I can't do that."))
 
     narrative = await build_review(
-        outcome.diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
+        _delivery(outcome).diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
     )
 
     assert narrative.meta["generator"] == "deterministic"

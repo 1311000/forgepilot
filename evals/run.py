@@ -273,19 +273,68 @@ async def run_one(
             memory=_memory_for(root, recall=arm.memory),
         )
 
-        final = outcome.checks[-1] if outcome.checks else None
+        # **M13: one task, several deliveries.** The flat keys below stay what they
+        # were for a single-repository task — which is every task written before
+        # this, and every row recorded by them — because they are then that
+        # delivery's own values. For a plural ticket they are the task's aggregate,
+        # and the per-repository facts live in `deliveries`, where an expectation
+        # about a plural ticket looks. Keeping the flat keys is not nostalgia: the
+        # report groups and compares on them, and a schema that changes shape when a
+        # task happens to span two repositories would make two eras uncomparable.
+        deliveries = tuple(outcome.deliveries)
+        single = deliveries[0] if len(deliveries) == 1 else None
+        checks = (
+            tuple(single.checks)
+            if single is not None
+            else tuple(check for d in deliveries for check in d.checks)
+        )
+        changed = (
+            tuple(single.changed_paths)
+            if single is not None
+            else tuple(dict.fromkeys(path for d in deliveries for path in d.changed_paths))
+        )
+        diff = (
+            single.diff
+            if single is not None
+            else "\n".join(f"# {d.repo.slug}\n{d.diff}" for d in deliveries if d.diff)
+        )
+        pinned_tests = (
+            tuple(single.pinned_tests)
+            if single is not None
+            else tuple(dict.fromkeys(path for d in deliveries for path in d.pinned_tests))
+        )
+        final = checks[-1] if checks else None
+        # Recorded per repository as well as in aggregate: the question a plural
+        # ticket asks is not "did the task pass" but "did **each** repository's
+        # delivery pass, and which ones were never attempted".
+        row["deliveries"] = [
+            {
+                "repo": d.repo.slug,
+                "state": d.state.value,
+                "attempted": d.attempted,
+                "branch": d.branch,
+                "changed": list(d.changed_paths),
+                "checks_passed": bool(d.checks[-1].passed) if d.checks else False,
+                "pinned": list(d.pinned_tests),
+                "pull_request": d.pull_request.url if d.pull_request is not None else "",
+                "reason": d.reason,
+            }
+            for d in deliveries
+        ]
         # ⚠️ **Per attempt, because one number hides the mechanism.** A row carrying
         # only the *final* verdict cannot tell a fix that worked first time from one
         # the repair loop rescued — and "the second round is what turns one into the
         # other" is the entire claim the loop rests on. `task.py` appends exactly one
         # check per attempt, in order, so index 0 is the first attempt's verdict:
-        # that is pass@1, and the last is what the run delivered.
+        # that is pass@1, and the last is what the run delivered. For a plural ticket
+        # this is every delivery's attempts end to end, and `deliveries` carries each
+        # one's own verdicts.
         #
         # Absent from rows recorded before this existed. The report prints `-` for
         # those rather than a rate of zero, because "no attempt passed" and "nobody
         # wrote it down" are different facts.
-        row["check_verdicts"] = [bool(c.passed) for c in outcome.checks]
-        added = tuple(p for p in outcome.changed_paths if p not in shipped)
+        row["check_verdicts"] = [bool(c.passed) for c in checks]
+        added = tuple(p for p in changed if p not in shipped)
         row["added_paths"] = list(added)
         row["added_tests"] = list(project.tests_in(added))
         # What counts as a test comes from the **task's** project, not the arm's:
@@ -305,7 +354,7 @@ async def run_one(
             if e.kind == "assistant/message" and e.data.get("text")
         )
         row["changed_tests"] = list(
-            _from_mapping(H.project_mapping(task), name=task.name).tests_in(outcome.changed_paths)
+            _from_mapping(H.project_mapping(task), name=task.name).tests_in(changed)
         )
         # ⚠️ **The half this eval never had.** `memory=` wired *recall*, and nothing ever
         # wrote into the store — so every memory arm began empty and the comparison was
@@ -328,10 +377,13 @@ async def run_one(
             delivered=outcome.state.value in {"delivered", "ready"},
             checks_passed=bool(final and final.passed),
             checks_could_not_run=bool(final and final.could_not_run),
-            pinned=list(outcome.pinned_tests),
-            changed=list(outcome.changed_paths),
-            diff_lines=len(outcome.diff.splitlines()),
-            branch=outcome.branch,
+            pinned=list(pinned_tests),
+            changed=list(changed),
+            diff_lines=len(diff.splitlines()),
+            # Empty for a plural ticket, deliberately: no single branch names where
+            # two repositories' changes went, and picking one would be the same
+            # lie the deleted `TaskOutcome.branch` field would have told.
+            branch=single.branch if single is not None else "",
             attempts=outcome.attempts,
             **H.summarise_session(runtime.session),
         )

@@ -33,6 +33,19 @@ from forgepilot.seams.tickets import Ticket, TicketPriority
 # tests package on sys.path, so a relative conftest import fails at collection.
 REPO = RepoRef(host="git.corp", namespace="team", name="svc-a")
 
+
+def _delivery(outcome):
+    """The one delivery, for the assertions that are about what was delivered.
+
+    Every ticket in this file names a single repository, so there is exactly one —
+    and asserting the arity here means a run that quietly delivered to none, or to
+    more than the ticket asked for, fails in the test rather than at the
+    attribute. M13 moved these facts off `TaskOutcome`: a task may have several
+    deliveries, and a `branch` field could only describe one of them.
+    """
+    assert len(outcome.deliveries) == 1, f"expected one delivery, got {outcome.deliveries}"
+    return outcome.deliveries[0]
+
 BUGGY = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    attempts = 0\n    while True:\n        try:\n            return client.login(credentials)\n        except AuthError:\n            attempts += 1\n"
 
 FIXED = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    for _ in range(MAX_ATTEMPTS):\n        try:\n            return client.login(credentials)\n        except AuthError:\n            continue\n    raise RuntimeError('login failed after retries')\n"
@@ -112,14 +125,14 @@ async def test_a_ticket_becomes_a_branch_a_diff_and_a_pull_request(task_rig) -> 
     outcome = await run(task_rig, plan)
 
     assert outcome.delivered, outcome.reason
-    assert outcome.branch
+    assert _delivery(outcome).branch
     assert outcome.attempts == 1
 
     # The diff is real: it reflects what the model wrote, not a placeholder.
-    assert "src/login.py" in outcome.diff
-    assert "for _ in range(MAX_ATTEMPTS)" in outcome.diff
-    assert "while True" in outcome.diff, "the removed line should appear as a removal"
-    assert outcome.changed_paths == ("src/login.py",)
+    assert "src/login.py" in _delivery(outcome).diff
+    assert "for _ in range(MAX_ATTEMPTS)" in _delivery(outcome).diff
+    assert "while True" in _delivery(outcome).diff, "the removed line should appear as a removal"
+    assert _delivery(outcome).changed_paths == ("src/login.py",)
 
 
 async def test_the_pull_request_is_recorded_and_traceable_to_the_ticket(task_rig) -> None:
@@ -132,12 +145,12 @@ async def test_the_pull_request_is_recorded_and_traceable_to_the_ticket(task_rig
     assert len(task_rig.vcs.pull_requests) == 1
     draft = task_rig.vcs.pull_requests[0]
     assert draft.ticket_id == "T-1", "a PR must be traceable to its work item"
-    assert draft.source_branch == outcome.branch
+    assert draft.source_branch == _delivery(outcome).branch
     assert draft.target_branch == "main"
     assert draft.draft is True
     assert "T-1" in draft.body_md
     assert "pytest -q" in draft.body_md
-    assert outcome.pull_request is not None
+    assert _delivery(outcome).pull_request is not None
 
 
 async def test_the_session_records_the_full_task_trace(task_rig) -> None:
@@ -178,7 +191,7 @@ async def test_a_failing_check_sends_the_model_back_to_fix_it(task_rig) -> None:
     assert outcome.delivered
     assert outcome.attempts == 2
     assert outcome.turns == 2
-    assert [c.passed for c in outcome.checks] == [False, True]
+    assert [c.passed for c in _delivery(outcome).checks] == [False, True]
 
 
 async def test_the_retry_bound_is_respected(task_rig) -> None:
@@ -237,8 +250,8 @@ async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(task_rig, con
     outcome = await run(task_rig, plan, constraints=read_only)
 
     assert outcome.state.value == "failed"
-    assert outcome.checks[-1].could_not_run is True
-    assert "not a pass" in outcome.checks[-1].output
+    assert _delivery(outcome).checks[-1].could_not_run is True
+    assert "not a pass" in _delivery(outcome).checks[-1].output
     assert task_rig.vcs.pull_requests == ()
 
 
@@ -468,10 +481,10 @@ async def test_without_a_repo_host_the_change_stops_as_a_ready_draft(task_rig) -
     assert outcome.state is not TaskState.DELIVERED, (
         "nothing was published, so claiming delivery is the same lie the mock refused to tell"
     )
-    assert outcome.pull_request is None
-    assert outcome.draft is not None, 'the draft is the deliverable here'
-    assert outcome.draft.source_branch == outcome.branch
-    assert outcome.draft.title.startswith("fix:")
+    assert _delivery(outcome).pull_request is None
+    assert _delivery(outcome).draft is not None, 'the draft is the deliverable here'
+    assert _delivery(outcome).draft.source_branch == _delivery(outcome).branch
+    assert _delivery(outcome).draft.title.startswith("fix:")
     assert "repo host" in outcome.reason, outcome.reason
 
 
@@ -486,8 +499,8 @@ async def test_the_draft_carries_the_evidence_the_run_produced(task_rig) -> None
 
     outcome = await run(task_rig, plan)
 
-    assert "T-1" in outcome.draft.body_md, 'not traceable to the ticket'
-    assert outcome.draft.body_md.strip(), 'an empty PR body is not reviewable'
+    assert "T-1" in _delivery(outcome).draft.body_md, 'not traceable to the ticket'
+    assert _delivery(outcome).draft.body_md.strip(), 'an empty PR body is not reviewable'
 
 
 async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
@@ -569,8 +582,8 @@ async def test_publishing_that_needs_a_human_and_gets_none_stops_at_ready(task_r
     assert task_rig.vcs.pushes == (), "a branch was pushed without approval"
     assert task_rig.vcs.pull_requests == (), "a pull request was opened without approval"
     # And the work is not lost — it is a draft somebody can raise.
-    assert outcome.draft is not None
-    assert outcome.checks[-1].passed is True
+    assert _delivery(outcome).draft is not None
+    assert _delivery(outcome).checks[-1].passed is True
 
 
 async def test_publishing_proceeds_once_a_human_allows_it(task_rig) -> None:

@@ -733,22 +733,43 @@ def _print_plan(plan: Any, gateway: Any) -> None:
 def _print_outcome(outcome: Any) -> None:
     print()
     print(f"state     : {outcome.state.value}   ({outcome.reason})")
-    if outcome.branch:
-        print(f"branch    : {outcome.branch}")
-    if outcome.changed_paths:
-        print(f"changed   : {list(outcome.changed_paths)}")
-    for index, check in enumerate(outcome.checks, start=1):
+    # One block per repository. A ticket may name several (M13), and printing the
+    # first one's branch beside the task's state is how a two-repository run used to
+    # read as a one-repository run that happened to succeed.
+    for delivery in outcome.deliveries:
+        _print_delivery(delivery)
+    for delivery in outcome.deliveries:
+        if delivery.draft is not None:
+            print()
+            print(f"--- the draft that would be raised for {delivery.repo.slug} ---")
+            _print_capped(delivery.draft.body_md, 4000)
+
+
+def _print_delivery(delivery: Any) -> None:
+    """One repository's delivery: what it changed, what was checked, where it went.
+
+    `not attempted` is printed as loudly as `failed`, because the repositories a run
+    stopped short of are the ones a reader is most likely to assume were fine.
+    """
+    from forgepilot.orchestration.task_state import TaskState
+
+    word = delivery.state.value if delivery.attempted else "not attempted"
+    print()
+    print(f"repo      : {delivery.repo.slug}   -> {word}")
+    if delivery.reason and delivery.state is not TaskState.DELIVERED:
+        print(f"reason    : {delivery.reason}")
+    if delivery.branch:
+        print(f"branch    : {delivery.branch}")
+    if delivery.changed_paths:
+        print(f"changed   : {list(delivery.changed_paths)}")
+    for index, check in enumerate(delivery.checks, start=1):
         verdict = "did-not-run" if check.could_not_run else ("pass" if check.passed else "FAIL")
         print(f"check {index}   : {verdict}  exit={check.exit_code}")
         if check.output:
             for line in check.output.splitlines()[-8:]:
                 print(f"             | {line}")
-    if outcome.pull_request is not None:
-        print(f"pull req  : {outcome.pull_request.url}")
-    if outcome.draft is not None:
-        print()
-        print("--- the draft that would be raised ---")
-        _print_capped(outcome.draft.body_md, 4000)
+    if delivery.pull_request is not None:
+        print(f"pull req  : {delivery.pull_request.url}")
 
 
 def _print_capped(text: str, limit: int) -> None:

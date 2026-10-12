@@ -190,20 +190,21 @@ async def test_an_incomplete_ticket_never_reaches_the_classifier() -> None:
     assert "reproduction steps" in plan.reason
 
 
-async def test_a_ticket_naming_two_repositories_is_refused_rather_than_half_done() -> None:
-    """One worktree, one commit, one pull request — so two targets cannot be honoured.
+async def test_a_ticket_naming_two_repositories_plans_both_of_them() -> None:
+    """Two repositories in the ticket, two in the plan — never one silently.
 
-    ⚠️ The failure this rules out is not a crash. It is a run that fixes one
-    repository, leaves the other alone, and reports `READY` — **a cross-repository
-    change whose other half nobody went to look at**, presented as complete. The
-    plan named both repositories the whole time; only the execution quietly used
-    the first, which is why a rate or a terminal state could never show it.
+    ⚠️ Until M13 the failure this ruled out was not a crash. It was a run that
+    fixed one repository, left the other alone, and reported `READY` — **a
+    cross-repository change whose other half nobody went to look at**, presented as
+    complete. The plan named both repositories the whole time; only the execution
+    quietly used the first, which is why a rate or a terminal state could never
+    show it. M13's answer is not a refusal but a plan that carries both, and a
+    `run_task` that delivers each one on its own: one worktree, one commit and one
+    pull request per repository.
 
-    Refused before the classifier, like an incomplete ticket: the answer is a rule,
-    and asking a model which half of a change to make would be asking it to decide
-    where to write.
+    What is still refused is *implicit* plurality — see the test below.
     """
-    gateway = ClassifierGateway(UnreachableClassifier())
+    gateway = ClassifierGateway(ScriptedClassifier(CONFIDENT_BUG))
 
     plan = await plan_task(
         ticket=a_ticket(
@@ -217,25 +218,27 @@ async def test_a_ticket_naming_two_repositories_is_refused_rather_than_half_done
         classifier=gateway,
     )
 
-    assert plan.state is TaskState.AWAITING_INFO
-    assert plan.needs_human
-    assert gateway.calls == 0, (
-        "a ticket that cannot be honoured must be refused by rules alone; reaching "
-        "the model would spend a call asking it to choose where to write"
+    assert plan.ready, plan.describe()
+    assert [repo.slug for repo in plan.repos] == [REPO_A.slug, REPO_B.slug], (
+        "both repositories the ticket named have to be in the plan, in the order "
+        "the project declares them; dropping either is the half-delivery again"
     )
-    assert REPO_A.slug in plan.reason and REPO_B.slug in plan.reason, (
-        "the refusal has to name the repositories, or a person cannot split the ticket"
+    assert gateway.calls == 1, (
+        "a complete ticket is classified exactly once, and the plurality comes "
+        "from the ticket's own repositories rather than from the classifier"
     )
 
 
 async def test_the_projects_own_repository_list_is_not_a_licence_to_pick_the_first() -> None:
-    """The fallback when a ticket names no repository is the project's list — and a
-    list of two is still two.
+    """A silent ticket gets the project's list — but only when that list is one long.
 
-    Choosing `repos[0]` here would be the same silent half-delivery, reached by a
-    different route: the ticket is silent, so *the configuration* decides, and a
-    project that declares several repositories would be worked on one of them at
-    random.
+    The fallback exists so that the common deployment — one repository, tickets
+    that do not spell out which — keeps working. With two declared it is not a
+    fallback any more, it is a choice: delivering to both would let *the
+    configuration* manufacture the plurality, and the "other repositories" section
+    of each pull request would explain a split the ticket never described. Picking
+    `repos[0]` would be the original silent half-delivery, reached by a different
+    route. So the run stops and names both, which is a rule — hence no classifier.
     """
     gateway = ClassifierGateway(UnreachableClassifier())
 
@@ -248,6 +251,7 @@ async def test_the_projects_own_repository_list_is_not_a_licence_to_pick_the_fir
     )
 
     assert plan.state is TaskState.AWAITING_INFO
+    assert plan.needs_human
     assert gateway.calls == 0
     assert REPO_A.slug in plan.reason and REPO_B.slug in plan.reason
 

@@ -25,6 +25,18 @@ from forgepilot.seams.sandbox import SandboxEnforcement
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 
 
+def _delivery(outcome):
+    """The one delivery; every ticket in this file names a single repository.
+
+    M13 moved the delivered facts (`checks`, `diff`, `branch`, …) off
+    `TaskOutcome` and onto each `RepoDelivery`, because a task may now deliver to
+    several repositories and one field could only describe one of them. Asserting
+    the arity here keeps the failure in the test that assumed a single delivery.
+    """
+    assert len(outcome.deliveries) == 1, f"expected one delivery, got {outcome.deliveries}"
+    return outcome.deliveries[0]
+
+
 class _FixedClassifier:
     """Declines nothing and always says `bug`, so the plan can be built."""
 
@@ -492,8 +504,8 @@ async def test_a_whole_task_is_decided_by_a_real_test_runner(real_task_rig) -> N
         principal=rig.principal,
     )
 
-    assert outcome.checks, "no check was recorded at all"
-    final = outcome.checks[-1]
+    assert _delivery(outcome).checks, "no check was recorded at all"
+    final = _delivery(outcome).checks[-1]
     assert final.could_not_run is False, final.reason
     assert final.passed is True, final.output
     assert outcome.delivered, outcome.reason
@@ -576,9 +588,9 @@ async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered
         principal=rig.principal,
     )
 
-    assert outcome.checks, 'no check was recorded'
-    assert outcome.checks[-1].could_not_run is False
-    assert outcome.checks[-1].passed is False, 'a failing test suite reported as passing'
+    assert _delivery(outcome).checks, 'no check was recorded'
+    assert _delivery(outcome).checks[-1].could_not_run is False
+    assert _delivery(outcome).checks[-1].passed is False, 'a failing test suite reported as passing'
     assert not outcome.delivered, 'a PR was opened for a change that does not fix anything'
 
 
@@ -683,15 +695,15 @@ async def test_relaxing_the_test_does_not_make_the_check_pass(real_task_rig) -> 
         principal=rig.principal,
     )
 
-    final = outcome.checks[-1]
+    final = _delivery(outcome).checks[-1]
     assert final.could_not_run is False, final.reason
     assert final.passed is False, (
         "the check passed because the agent relaxed the assertion — the oracle was "
         f"not held fixed.\n{final.output}"
     )
     assert not outcome.delivered
-    assert outcome.pinned_tests == ("tests/test_login.py",)
-    assert "tests/test_login.py" in outcome.changed_paths, (
+    assert _delivery(outcome).pinned_tests == ("tests/test_login.py",)
+    assert "tests/test_login.py" in _delivery(outcome).changed_paths, (
         "the agent's edit was dropped from the tree rather than set aside for the run"
     )
     assert final.meta["pinned"] == ["tests/test_login.py"]
@@ -782,5 +794,5 @@ async def test_nothing_is_pinned_when_the_agent_touched_no_tests(real_task_rig) 
         principal=rig.principal,
     )
 
-    assert outcome.pinned_tests == ()
-    assert outcome.checks[-1].passed is False, "nothing was fixed, so nothing should pass"
+    assert _delivery(outcome).pinned_tests == ()
+    assert _delivery(outcome).checks[-1].passed is False, "nothing was fixed, so nothing should pass"

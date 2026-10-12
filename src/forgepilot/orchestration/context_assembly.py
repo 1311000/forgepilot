@@ -28,15 +28,22 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from forgepilot.config.project import ProjectConfig
 from forgepilot.seams.classifier import TicketUnderstanding
+from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.tickets import Ticket
 
-__all__ = ["PromptSection", "assemble_system_sections", "compose_task_brief"]
+__all__ = [
+    "PromptSection",
+    "assemble_system_sections",
+    "compose_delivery_brief",
+    "compose_task_brief",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +142,54 @@ def assemble_system_sections(
     )
 
     return tuple(sections)
+
+
+def compose_delivery_brief(
+    *,
+    repo: RepoRef,
+    branch: str,
+    root: Path,
+    siblings: Sequence[RepoRef] = (),
+) -> str:
+    """Which repository, tree and branch **this turn** is about.
+
+    Prepended to the ticket brief, so it lands in the user turn beside it. It is
+    assembled from the plan and the workspace handle, never from ticket text — the
+    ticket arrives *after* this block, under its own heading.
+
+    It exists because M13 made a task plural. Before it, the workspace handle was
+    keyed on the session alone, so a second repository was handed the first one's
+    tree *and* its branch: the model had nothing to be told and nothing it could
+    have noticed. Now that each delivery has its own tree and its own branch, a turn
+    that did not say which one would leave the model to infer it from paths — and
+    inference is what this codebase does not ask a model to do where a rule can
+    answer.
+
+    The sibling sentence matters more than it looks: a model that believes it is
+    looking at "the change" will happily report success after editing one tree, and
+    the other repositories are precisely where nobody has looked.
+    """
+    lines = [
+        "## This delivery",
+        f"Repository: {repo.slug}",
+        f"Working tree: {root}",
+        f"Branch: {branch}",
+    ]
+    if siblings:
+        others = ", ".join(r.slug for r in siblings)
+        lines.append(
+            f"This ticket covers {len(siblings) + 1} repositories, and each one is "
+            f"delivered on its own: one working tree, one commit and one pull request "
+            f"each. This turn works in the repository above. The others are {others} — "
+            f"their files are **not** in this tree, so a change that belongs in one of "
+            f"them cannot be made here."
+        )
+    else:
+        lines.append(
+            "This ticket names this one repository, and everything to read and change "
+            "is in the working tree above."
+        )
+    return "\n".join(lines)
 
 
 def compose_task_brief(
