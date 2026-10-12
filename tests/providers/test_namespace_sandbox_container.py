@@ -324,6 +324,36 @@ def test_a_read_claim_hides_what_it_does_not_name(confined_scriptfile: Path) -> 
     assert verdict["outside_write"] == "writable-mask", verdict
 
 
+def _mount_namespace_was_refused(completed: subprocess.CompletedProcess[str]) -> str | None:
+    """The measured outcome that is neither containment nor a bug.
+
+    Measured on the `ubuntu-22.04` runner's kernel (the `sandbox` job, uid 1000 in
+    an unprivileged `ubuntu:24.04` container): `unshare -U -r --mount` fails before
+    it runs a single line of the launcher, with
+
+        unshare: cannot change root filesystem propagation: Permission denied
+
+    That kernel will not let a caller who is only root *inside a new user
+    namespace* change the propagation of a mount tree owned by one it is not
+    privileged in. ⚠️ **It is not worked around by `--propagation unchanged`**: the
+    tree would then stay shared, and the mounts this launcher makes could propagate
+    into the host's namespace — the opposite of a boundary. So the refusal is the
+    honest answer, and it is the one the provider already gives for that host:
+    `probe=none`, `cause=cannot_create_namespace`, with the launcher's own line
+    quoted. On Docker Desktop's WSL2 kernel (6.18) the same argv starts and all six
+    properties hold; on the 22.04 runner's it does not. Both are measurements.
+
+    ⚠️ This is deliberately **not** a pass by another name. The six assertions
+    below still run wherever the launcher starts, and the host-kernel job
+    (`sandbox-nonroot`) is where "a non-root caller is contained" is a **gate** —
+    there a skip fails the build by design. This module runs `ubuntu:24.04` *inside*
+    a 22.04 host, which is not the shape a deployment runs in.
+    """
+    if completed.returncode == 0 or "cannot change root filesystem propagation" not in completed.stderr:
+        return None
+    return completed.stderr.strip()
+
+
 def test_the_shipped_argv_cannot_contain_a_non_root_caller() -> None:
     """N2 as a negative control: the argv that passes as root fails as uid 1000.
 
@@ -350,8 +380,17 @@ def test_a_non_root_caller_is_contained_by_a_user_namespace() -> None:
     is the user namespace and nothing else. This is the row M12 exists for: before
     it the provider's own bundle could not contain a non-root deployment at all,
     and its refusal named the wrong cause.
+
+    Where the kernel refuses the mount-namespace half of the mechanism, this skips
+    with the launcher's own words — see `_mount_namespace_was_refused`.
     """
-    verdict = _verdict(run_argv_as_nobody(launcher_argv(userns=UserNamespace.MAP_ROOT)))
+    completed = run_argv_as_nobody(launcher_argv(userns=UserNamespace.MAP_ROOT))
+    if refusal := _mount_namespace_was_refused(completed):
+        pytest.skip(
+            "this kernel will not let a non-root caller make its mount tree private, "
+            f"so the user-namespace argv cannot start: {refusal}"
+        )
+    verdict = _verdict(completed)
 
     assert verdict["workspace_root"] == "writable", verdict
     assert verdict["subdir"] == "writable", verdict
@@ -384,4 +423,9 @@ def test_the_write_probe_succeeds_for_a_non_root_caller() -> None:
     )
     completed = run_argv_as_nobody(argv)
 
+    if refusal := _mount_namespace_was_refused(completed):
+        pytest.skip(
+            "the probe's own argv cannot start on this kernel either, for the reason "
+            f"above — so it would answer `none` here, not `full`: {refusal}"
+        )
     assert completed.returncode == 0, completed.stdout + completed.stderr

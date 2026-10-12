@@ -193,15 +193,45 @@ jobs:
           sudo install -d -o runner2 -g runner2 -m 700 /home/runner2/tmp
           id runner2
 
+      # ⚠️ Not a gate, and it is here because the first run of this job failed *in the steps below*
+      # for a reason that had nothing to do with the sandbox: runpy said `No module named
+      # forgepilot.__main__; 'forgepilot' is a package and cannot be directly executed` — which is
+      # exactly what it says for a **namespace** package, i.e. a directory with no `__init__.py`.
+      # So `forgepilot` resolved somewhere that is not this checkout. `sudo` resets the
+      # environment, and what a non-root user ends up able to import is a fact to print.
+      - name: what a non-root user can actually see
+        run: |
+          set +e
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE  PWD=$PWD"
+          ls -ld src src/forgepilot src/forgepilot/__init__.py src/forgepilot/__main__.py
+          probe='import importlib.util as u, sys; s = u.find_spec("forgepilot"); print("cwd =", sys.path[0]); print("forgepilot ->", s.origin, list(s.submodule_search_locations or [])); print("forgepilot.__main__ found:", u.find_spec("forgepilot.__main__") is not None)'
+          echo "--- as runner2, with the source tree named ---"
+          sudo -u runner2 env HOME=/home/runner2 TMPDIR=/home/runner2/tmp PYTHONPATH="$GITHUB_WORKSPACE/src" "$(command -v python)" -c "$probe"
+          echo "--- as runner2, with nothing named (what the environment resolves alone) ---"
+          sudo -u runner2 env HOME=/home/runner2 "$(command -v python)" -c "$probe"
+
       # Not a gate: the point is the *pair* with the next step. What it does assert is the
       # conditional one — if this kernel says `1` and the check fails, the refusal has to name
       # `kernel.apparmor_restrict_unprivileged_userns` and report the AppArmor cause. That is
       # acceptance row 4, and it is checkable wherever the condition holds.
       - name: before — as shipped, as a non-root user on a 24.04 host
         run: |
+          # ⚠️ The source tree is named *inside the interpreter*, not in the environment. The
+          # interpreter that `sudo -u runner2` runs is the same one, but what it can import is not
+          # the same thing — `python -m forgepilot` resolved to a `forgepilot` without `__main__`
+          # here while working in both local interpreters. `sys.path.insert(0, …)` is not a
+          # workaround for an unexplained failure, it is the difference between measuring this
+          # checkout and measuring whatever happens to be installed next to the interpreter.
+          run_as_runner2() {
+            sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
+              "$(command -v python)" "$@"
+          }
+          cli() {
+            run_as_runner2 -c "import sys; sys.path.insert(0, '$GITHUB_WORKSPACE/src'); from forgepilot.cli.main import main; raise SystemExit(main())" "$@"
+          }
+
           set +e
-          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
-            PYTHONPATH="$PWD/src" "$(command -v python)" -m forgepilot --config-dir configs \
+          out=$(cli --config-dir configs \
             --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check 2>&1)
           code=$?
           set -e
@@ -228,9 +258,20 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+          # Same reasoning as the step above: the checkout is named in the interpreter.
+          run_as_runner2() {
+            sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
+              "$(command -v python)" "$@"
+          }
+          pytest_as_runner2() {
+            run_as_runner2 -c "import sys; sys.path.insert(0, '$GITHUB_WORKSPACE/src'); import pytest; raise SystemExit(pytest.main(sys.argv[1:]))" "$@"
+          }
+          cli() {
+            run_as_runner2 -c "import sys; sys.path.insert(0, '$GITHUB_WORKSPACE/src'); from forgepilot.cli.main import main; raise SystemExit(main())" "$@"
+          }
+
           set +e
-          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
-            PYTHONPATH="$PWD/src" "$(command -v python)" -m pytest \
+          out=$(pytest_as_runner2 \
             tests/providers/test_namespace_sandbox.py -v -rs -p no:cacheprovider --no-header 2>&1)
           code=$?
           set -e
@@ -245,8 +286,7 @@ jobs:
           fi
 
           set +e
-          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
-            PYTHONPATH="$PWD/src" "$(command -v python)" -m forgepilot --config-dir configs \
+          out=$(cli --config-dir configs \
             --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check 2>&1)
           code=$?
           set -e
