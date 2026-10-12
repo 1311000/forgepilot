@@ -141,6 +141,53 @@ async def test_preparing_twice_for_one_session_does_not_make_a_second_worktree(
     assert again.root == first.root
 
 
+async def test_one_session_two_repositories_gets_two_worktrees_and_two_branches(
+    origin: Path, tmp_path: Path
+) -> None:
+    """**The M13 falsifier.** A ticket that spans two repositories delivers one
+    worktree, one branch and one commit *each*.
+
+    Keyed on the session alone, the second `prepare` returned the first
+    repository's handle — so the second repository's "tree" was the first
+    repository's tree, its "branch" was the first repository's branch, and the
+    parameter naming the repository had a reader that ignored it. Nothing failed:
+    the run committed one repository twice and reported two deliveries.
+    """
+    from forgepilot.config import resolve_plugin
+    from forgepilot.kernel import create_root, dispose_fiber
+
+    other_repo = RepoRef(host="git.corp", namespace="team", name="svc-b")
+    other = tmp_path / "origin-b"
+    (other / "src").mkdir(parents=True)
+    (other / "src" / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+    git("init", "-b", "main", cwd=other)
+    git("add", "-A", cwd=other)
+    git("commit", "-m", "initial", cwd=other)
+
+    root = create_root()
+    fiber = await root.plugin(
+        resolve_plugin(
+            "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"
+        ),
+        {
+            "repos": {SLUG: str(origin), other_repo.slug: str(other)},
+            "worktree_root": str(tmp_path / "worktrees"),
+        },
+    )
+    try:
+        session_id = SessionId("s-1")
+        first = await root.workspace.prepare(REPO, "main", session_id)
+        second = await root.workspace.prepare(other_repo, "main", session_id)
+    finally:
+        await dispose_fiber(fiber)
+
+    assert first.root != second.root, "two repositories shared one working tree"
+    assert first.branch != second.branch, "two repositories shared one branch"
+    assert second.repo == other_repo
+    assert (second.root / "src" / "b.py").is_file(), "not a checkout of svc-b"
+    assert git("rev-parse", "--abbrev-ref", "HEAD", cwd=second.root).strip() == second.branch
+
+
 async def test_an_unknown_repository_is_refused(workspace) -> None:
     """A slug nobody configured is not a repository this provider may touch."""
     from forgepilot.seams.workspace import UnknownRepository

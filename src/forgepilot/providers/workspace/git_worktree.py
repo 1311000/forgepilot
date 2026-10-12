@@ -83,7 +83,12 @@ class GitWorktreeWorkspacePlugin(PluginService):
         self._worktree_root.mkdir(parents=True, exist_ok=True)
         self._branch_prefix = str(cfg.get("branch_prefix", "forgepilot"))
 
-        self._handles: dict[SessionId, WorkspaceHandle] = {}
+        # Keyed by **(session, repository)**, and that pair is the whole story of
+        # M13: keyed on the session alone, a second `prepare` for a different
+        # repository in the same session returned the *first* repository's handle
+        # — same root, same branch — and every delivery after the first silently
+        # worked in the wrong tree. The parameter was there; the reader ignored it.
+        self._handles: dict[tuple[SessionId, str], WorkspaceHandle] = {}
 
     # -- git ---------------------------------------------------------------
     def _git(self, *args: str, cwd: Path | None = None, ok: tuple[int, ...] = (0,)) -> str:
@@ -125,24 +130,41 @@ class GitWorktreeWorkspacePlugin(PluginService):
             )
         return path
 
-    def _worktree_path(self, session_id: SessionId) -> Path:
-        # The session id is sanitised rather than used raw: it names a directory,
-        # and an id containing a separator would place the checkout outside the
-        # root the provider owns.
-        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(session_id))
-        return (self._worktree_root / safe).resolve()
+    @staticmethod
+    def _safe(text: str) -> str:
+        """One path/ref segment, never a separator and never a traversal.
+
+        A session id or a repository slug names a directory and a branch, and one
+        containing a separator would place the checkout outside the root the
+        provider owns — or name a branch nobody can check out. `.` is kept, so
+        `git.local/demo/stats` still reads as itself, which is why the two dots
+        that make `..` (a traversal, and an illegal ref sequence) are collapsed and
+        an all-dots segment becomes something else entirely.
+        """
+        raw = "".join(c if c.isalnum() or c in "-_." else "-" for c in str(text))
+        while ".." in raw:
+            raw = raw.replace("..", ".")
+        return raw.strip(".") or "_"
+
+    def _worktree_path(self, session_id: SessionId, repo: RepoRef) -> Path:
+        # ⚠️ The **repository** is part of the path, not only the session. A
+        # ticket that spans two repositories delivers one worktree each, and while
+        # the session id alone was enough to name one, it is the same directory
+        # for both — which is a collision, not a convenience.
+        return (self._worktree_root / self._safe(str(session_id)) / self._safe(repo.slug)).resolve()
 
     # -- Workspace ---------------------------------------------------------
     async def prepare(
         self, repo: RepoRef, base_ref: str, session_id: SessionId
     ) -> WorkspaceHandle:
-        existing = self._handles.get(session_id)
+        key = (session_id, repo.slug)
+        existing = self._handles.get(key)
         if existing is not None:
             return existing
 
         source = self._source(repo)
-        path = self._worktree_path(session_id)
-        branch = f"{self._branch_prefix}/{session_id}"
+        path = self._worktree_path(session_id, repo)
+        branch = f"{self._branch_prefix}/{self._safe(str(session_id))}/{self._safe(repo.slug)}"
 
         # **Prune before deciding, and the order is the whole point.** There are
         # four states, not two, and the third one is easy to miss:
@@ -185,7 +207,7 @@ class GitWorktreeWorkspacePlugin(PluginService):
             root=path,
             is_ephemeral=False,
         )
-        self._handles[session_id] = handle
+        self._handles[key] = handle
         return handle
 
     async def diff(self, handle: WorkspaceHandle) -> UnifiedDiff:
@@ -340,7 +362,7 @@ class GitWorktreeWorkspacePlugin(PluginService):
         that appears much later than its cause.
         """
         source = self._repos.get(handle.repo.slug)
-        self._handles.pop(handle.session_id, None)
+        self._handles.pop((handle.session_id, handle.repo.slug), None)
         if source is None:
             return
         self._git("worktree", "remove", "--force", str(handle.root), cwd=source)

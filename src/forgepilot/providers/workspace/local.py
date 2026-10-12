@@ -77,6 +77,21 @@ def _resolve_base(configured: str | None) -> Path:
     return fallback
 
 
+def _segment(text: str) -> str:
+    """One branch-name segment, never a separator and never a traversal.
+
+    The branch names the *repository* as well as the session (M13): one session
+    delivering to two repositories needs two branches, and `forgepilot/<session>`
+    was the same ref for both. `.` is kept so a slug still reads as itself — which
+    is why the two dots that make `..` are collapsed, and an all-dots segment
+    becomes something else.
+    """
+    raw = "".join(c if c.isalnum() or c in "-_." else "-" for c in str(text))
+    while ".." in raw:
+        raw = raw.replace("..", ".")
+    return raw.strip(".") or "_"
+
+
 class LocalTempWorkspacePlugin(PluginService):
     """Serves ``workspace`` using one temp directory per session."""
 
@@ -91,9 +106,13 @@ class LocalTempWorkspacePlugin(PluginService):
 
         #: Files written into a fresh workspace, standing in for a checkout.
         self._seed: dict[str, str] = dict(cfg.get("seed") or {})
-        self._handles: dict[SessionId, WorkspaceHandle] = {}
-        #: The state at `prepare`, used as the diff baseline.
-        self._baseline: dict[SessionId, dict[str, str]] = {}
+        #: Keyed by **(session, repository)**, not by session alone: a ticket that
+        #: spans two repositories prepares two workspaces, and one key would hand
+        #: the second repository the first one's directory. See M13.
+        self._handles: dict[tuple[SessionId, str], WorkspaceHandle] = {}
+        #: The state at `prepare`, used as the diff baseline — keyed the same way,
+        #: because two workspaces in one session have two different baselines.
+        self._baseline: dict[tuple[SessionId, str], dict[str, str]] = {}
 
     # -- fixtures ----------------------------------------------------------
     def seed_files(self, files: Mapping[str, str]) -> LocalTempWorkspacePlugin:
@@ -105,8 +124,9 @@ class LocalTempWorkspacePlugin(PluginService):
     async def prepare(
         self, repo: RepoRef, base_ref: str, session_id: SessionId
     ) -> WorkspaceHandle:
-        if session_id in self._handles:
-            return self._handles[session_id]
+        key = (session_id, repo.slug)
+        if key in self._handles:
+            return self._handles[key]
 
         root = Path(
             tempfile.mkdtemp(
@@ -124,22 +144,22 @@ class LocalTempWorkspacePlugin(PluginService):
             session_id=session_id,
             repo=repo,
             base_ref=base_ref,
-            branch=f"forgepilot/{session_id}",
+            branch=f"forgepilot/{_segment(str(session_id))}/{_segment(repo.slug)}",
             root=root,
             is_ephemeral=True,
         )
-        self._handles[session_id] = handle
-        self._baseline[session_id] = self._snapshot(root)
+        self._handles[key] = handle
+        self._baseline[key] = self._snapshot(root)
         return handle
 
     async def diff(self, handle: WorkspaceHandle) -> UnifiedDiff:
         current = self._snapshot(handle.root)
-        baseline = self._baseline.get(handle.session_id, {})
+        baseline = self._baseline.get((handle.session_id, handle.repo.slug), {})
         return _unified_diff(baseline, current)
 
     async def changed_paths(self, handle: WorkspaceHandle) -> Sequence[str]:
         current = self._snapshot(handle.root)
-        baseline = self._baseline.get(handle.session_id, {})
+        baseline = self._baseline.get((handle.session_id, handle.repo.slug), {})
         names = set(current) | set(baseline)
         return tuple(
             sorted(name for name in names if current.get(name) != baseline.get(name))
@@ -197,8 +217,9 @@ class LocalTempWorkspacePlugin(PluginService):
             target.write_text(text, encoding="utf-8")
 
     async def dispose(self, handle: WorkspaceHandle) -> None:
-        self._handles.pop(handle.session_id, None)
-        self._baseline.pop(handle.session_id, None)
+        key = (handle.session_id, handle.repo.slug)
+        self._handles.pop(key, None)
+        self._baseline.pop(key, None)
         if handle.is_ephemeral:
             shutil.rmtree(handle.root, ignore_errors=True)
 

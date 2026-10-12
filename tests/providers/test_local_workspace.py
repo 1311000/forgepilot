@@ -78,6 +78,27 @@ async def test_it_still_does_the_directory_job(workspace, tmp_path: Path) -> Non
     )
 
 
+async def test_two_repositories_in_one_session_get_two_workspaces(workspace) -> None:
+    """M13, the same defect one provider over: keyed on the session alone, the
+    second repository was handed the first repository's directory *and* its
+    diff baseline — so its changes were reported as the first one's."""
+    from forgepilot.seams.refs import RepoRef
+
+    other = RepoRef(host="git.corp", namespace="team", name="svc-b")
+    first = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    second = await workspace.prepare(other, "main", SessionId("s-1"))
+
+    assert first.root != second.root
+    assert first.branch != second.branch
+    assert second.repo == other
+
+    # The baselines are separate too: a change in one workspace is not a change
+    # in the other.
+    (second.root / "src" / "only-b.py").write_text("b = 1\n", encoding="utf-8")
+    assert await workspace.changed_paths(first) == ()
+    assert "src/only-b.py" in await workspace.changed_paths(second)
+
+
 async def test_a_commit_is_refused_rather_than_invented(workspace, writer) -> None:
     """No repository, no commit — and no fabricated sha.
 
