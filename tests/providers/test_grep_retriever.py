@@ -405,4 +405,105 @@ async def test_a_working_tree_that_is_not_there_is_refused_not_silently_ignored(
         )
 
     assert "not a directory" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# open() reads the copy the search saw
+# ---------------------------------------------------------------------------
+async def test_open_reads_the_copy_the_search_saw(retriever, roots, tmp_path: Path) -> None:
+    """A hit from a working tree must be *opened* in that working tree.
+
+    `search` grew a `root=` argument (M13's era); `open` did not follow, so a
+    slice opened from a working-tree hit came from the repository's configured
+    checkout — the same path, different content, and an answer that looks exactly
+    like an answer. The two directories here hold **the same file** with different
+    text, which is what makes the wrong read invisible.
+
+    Falsified by putting `grep.py::open` back to `self._root(location.repo,
+    constraints)`: the text below is then the configured checkout's.
+    """
+    from forgepilot.seams.refs import LineSpan
+
+    worktree = tmp_path / "worktree"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "src" / "login.py").write_text(
+        "def retry_login():\n    return 'edited in this session'\n", encoding="utf-8"
+    )
+
+    hits = await retriever.search(
+        SearchQuery(
+            pattern="edited in this session",
+            repos=(REPO,),
+            ref=WORKING_TREE,
+            root=str(worktree),
+        ),
+        constraints_for(REPO),
+    )
+    assert hits, "the working tree was not searched"
+
+    location = hits[0].location
+    assert location.root == str(worktree), "the hit did not carry where it came from"
+
+    slice_ = await retriever.open(
+        location, LineSpan(start=1, end=2), constraints_for(REPO)
+    )
+
+    assert "edited in this session" in slice_.text
+    assert slice_.location.ref == location.ref, "the slice must report the ref it read"
+    assert slice_.location.root == str(worktree)
+
+
+async def test_open_without_a_root_still_reads_the_configured_checkout(
+    retriever, roots
+) -> None:
+    """``None`` is not a fallback — it is the honest answer for an index.
+
+    A search that named no working tree produces a location with no root, and
+    opening that location reads the configured checkout, exactly as before. The
+    default has to stay honest or every index-backed provider would be claiming a
+    working tree it does not have.
+    """
+    from forgepilot.seams.refs import LineSpan
+
+    hits = await retriever.search(
+        SearchQuery(pattern="def retry_login", repos=(REPO,), ref="main"),
+        constraints_for(REPO),
+    )
+    location = hits[0].location
+
+    assert location.root == str(Path(roots[REPO.slug]))
+
+    slice_ = await retriever.open(
+        location, LineSpan(start=1, end=1), constraints_for(REPO)
+    )
+
+    assert slice_.text == "MAX_ATTEMPTS = 3"
+    assert slice_.location.root == str(Path(roots[REPO.slug]))
+
+
+async def test_open_refuses_a_working_tree_that_is_not_there(
+    retriever, roots, tmp_path: Path
+) -> None:
+    """The same refusal `search` makes, one call later.
+
+    If `open` fell back to the configured checkout when the recorded working tree
+    had vanished, the bug it was meant to fix would come back through the other
+    door — and would look like a successful read.
+    """
+    from forgepilot.providers.retrieve.grep import UnknownCheckout
+    from forgepilot.seams.refs import CodeRef, LineSpan
+
+    with pytest.raises(UnknownCheckout) as caught:
+        await retriever.open(
+            CodeRef(
+                repo=REPO,
+                path="src/login.py",
+                ref=WORKING_TREE,
+                root=str(tmp_path / "gone"),
+            ),
+            LineSpan(start=1, end=1),
+            constraints_for(REPO),
+        )
+
+    assert "not a directory" in str(caught.value)
     assert "falling back" in str(caught.value)

@@ -130,3 +130,13 @@ class CodeRef:
     repo: RepoRef
     path: str
     ref: str
+    #: Where the caller was working when this location was produced, if anywhere.
+    #:
+    #: A provider that greps a caller's working tree fills it in; a provider that
+    #: answers from a shared index leaves it ``None``, because an index has no
+    #: working tree. It is how `Retriever.open` reads *the same copy* the search
+    #: saw instead of the repository's configured checkout — the caller's tree and
+    #: the configured root are two different directories with two different
+    #: contents, and a slice opened from the wrong one is a confidently wrong
+    #: answer rather than a missing one.
+    root: str | None = None

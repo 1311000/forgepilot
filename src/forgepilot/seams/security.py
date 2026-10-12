@@ -29,6 +29,8 @@ __all__ = [
     "Sensitivity",
     "ExecutionConstraints",
     "normalise_relative",
+    "normalise_program",
+    "narrow_commands",
 ]
 
 
@@ -135,6 +137,22 @@ class ExecutionConstraints:
     permitted_operations: frozenset[Operation] = frozenset()
     #: Paths writable, relative to the workspace root. Empty means "none".
     writable_paths: tuple[str, ...] = ()
+    #: **Which programs a tool may start**, matched against the program name a
+    #: shell line resolves to (see :func:`forgepilot.runtime.commandline.programs`).
+    #:
+    #: ⚠️ ``None`` and ``frozenset()`` are **different statements**, which is why
+    #: this is not a plain set:
+    #:
+    #: - ``None`` — no policy declared a list, so nothing here restricts which
+    #:   programs run. ``run`` is still gated by :attr:`permitted_operations`;
+    #:   this field only narrows *what* it may start, never *whether* it may.
+    #: - ``frozenset()`` — a list was declared and it is empty: start nothing.
+    #:
+    #: Encoding "no policy" as the empty set would invert the narrowing rule
+    #: below: ``∅ ∩ {git}`` is ``∅``, so a grant that allowed only ``git`` would
+    #: come out of ``derive`` describing itself as unconstrained — the same
+    #: "patterns do not intersect as sets" failure :func:`derive` documents.
+    allowed_commands: frozenset[str] | None = None
     network: NetworkAccess = NetworkAccess.DENY
     budget: Budget = field(default_factory=Budget)
     issued_at: datetime | None = None
@@ -164,6 +182,11 @@ class ExecutionConstraints:
             "allowed_repo_prefixes": sorted(self.allowed_repo_prefixes),
             "permitted_operations": sorted(op.value for op in self.permitted_operations),
             "writable_paths": sorted(self.writable_paths),
+            "allowed_commands": (
+                None
+                if self.allowed_commands is None
+                else sorted({normalise_program(c) for c in self.allowed_commands})
+            ),
             "network": str(self.network),
             "budget": {
                 "max_tokens": self.budget.max_tokens,
@@ -218,6 +241,21 @@ class ExecutionConstraints:
     def allows_operation(self, operation: Operation) -> bool:
         return operation in self.permitted_operations
 
+    def allows_command(self, program: str) -> bool:
+        """Whether ``program`` may be started under these constraints.
+
+        ``None`` (no policy declared) allows every program: this field narrows
+        *what* a permitted operation may start, never *whether* it may run at all
+        — :meth:`allows_operation` is that decision, and it has not moved.
+
+        An **empty** declared set allows nothing, which is the difference
+        ``None`` exists to preserve.
+        """
+        if self.allowed_commands is None:
+            return True
+        allowed = {normalise_program(entry) for entry in self.allowed_commands}
+        return normalise_program(program) in allowed
+
     def allows_write_to(self, relative_path: str) -> bool:
         """Whether ``relative_path`` (from the workspace root) may be modified.
 
@@ -269,6 +307,7 @@ class ExecutionConstraints:
             writable_paths=tuple(
                 p for p in self.writable_paths if other.allows_write_to(p)
             ),
+            allowed_commands=narrow_commands(self.allowed_commands, other.allowed_commands),
             network=(
                 NetworkAccess.ALLOW
                 if self.network is NetworkAccess.ALLOW and other.network is NetworkAccess.ALLOW
@@ -343,3 +382,51 @@ def _earliest(a: datetime | None, b: datetime | None) -> datetime | None:
     if b is None:
         return a
     return min(a, b)
+
+
+#: Suffixes that name a *packaging*, not a program: `git` and `git.exe` are the
+#: same answer to "may this start". Dropped on both sides of the comparison so a
+#: deployment can write either spelling.
+_PROGRAM_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
+
+
+def normalise_program(name: str) -> str:
+    """The comparable form of a program name.
+
+    Takes the basename — an absolute path names a *copy* of the program, and a
+    policy is a statement about the program — casefolds, and drops a Windows
+    executable suffix. Both sides of an allow-list check go through here, so a
+    grant written ``Git`` and a command line written
+    ``C:\\tools\\Git\\cmd\\git.exe`` agree.
+
+    It deliberately does **not** strip a version: ``python3`` and ``python`` are
+    different programs on many hosts, and a policy that cannot tell them apart is
+    not expressing what it thinks it is.
+    """
+    cleaned = name.strip().strip("\"'").strip()
+    cleaned = cleaned.replace("\\", "/").rsplit("/", 1)[-1]
+    lowered = cleaned.casefold()
+    for suffix in _PROGRAM_SUFFIXES:
+        if lowered.endswith(suffix) and len(lowered) > len(suffix):
+            return lowered[: -len(suffix)]
+    return lowered
+
+
+def narrow_commands(
+    grant: frozenset[str] | None, policy: frozenset[str] | None
+) -> frozenset[str] | None:
+    """Intersect two command allow-lists, reading ``None`` as "unstated".
+
+    ``None`` is the identity for this operation, not the empty set: a grant that
+    names ``git`` narrowed by a project that says nothing must still name ``git``,
+    and a project that names ``git`` narrowed by a silent grant must still name
+    ``git``. Two stated lists intersect — and ``{git} ∩ ∅`` is ``∅``, which means
+    *start nothing*, not *no policy*. That distinction is the whole reason this is
+    not a plain set intersection.
+    """
+    if grant is None:
+        return policy
+    if policy is None:
+        return grant
+    return grant & policy
+

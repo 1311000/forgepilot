@@ -14,6 +14,7 @@ guards the security boundary rather than one input among several.
 from forgepilot.runtime.guards.builtin import (
     USAGE_SERVICE,
     UsageTracker,
+    command_scope_guard,
     default_guards,
     make_budget_guard,
     path_scope_guard,
@@ -42,5 +43,6 @@ __all__ = [
     "make_budget_guard",
     "path_scope_guard",
     "repo_scope_guard",
+    "command_scope_guard",
     "default_guards",
 ]

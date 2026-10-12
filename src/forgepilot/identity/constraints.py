@@ -28,6 +28,7 @@ from forgepilot.seams.security import (
     NetworkAccess,
     Operation,
     Principal,
+    narrow_commands,
 )
 
 __all__ = ["ProjectPolicy", "derive"]
@@ -46,6 +47,9 @@ class ProjectPolicy:
     repo_prefixes: frozenset[str] = frozenset()
     allowed_operations: frozenset[Operation] = frozenset()
     writable_paths: tuple[str, ...] = ()
+    #: Programs the project permits starting. ``None`` (the default) means the
+    #: project states no list, which is **not** the same as an empty list.
+    commands: frozenset[str] | None = None
     network: NetworkAccess = NetworkAccess.DENY
     budget: Budget = Budget(
         max_tokens=200_000, max_tool_calls=200, max_wall_seconds=1800.0, max_cost_usd=10.0
@@ -103,6 +107,10 @@ def derive(
         # which is the failure this function exists to prevent, inverted.
         allowed_repo_prefixes=_narrowed_prefixes(grant.repo_prefixes, policy.repo_prefixes),
         writable_paths=_narrowed_paths(grant.writable_paths, policy.writable_paths),
+        # Commands are program names, so they intersect as sets — except that
+        # "no list declared" (None) is the identity here, not the empty set. An
+        # unstated grant must not erase a stated project list, and vice versa.
+        allowed_commands=narrow_commands(grant.commands, policy.commands),
         network=(
             NetworkAccess.ALLOW
             if grant.network is NetworkAccess.ALLOW and policy.network is NetworkAccess.ALLOW

@@ -40,6 +40,10 @@ class Grant:
     repos: frozenset[RepoRef] = frozenset()
     repo_prefixes: frozenset[str] = frozenset()
     writable_paths: tuple[str, ...] = ()
+    #: Programs this principal may start. ``None`` means the credential states no
+    #: list — see ``ExecutionConstraints.allowed_commands`` for why that is not
+    #: the same statement as ``frozenset()``.
+    commands: frozenset[str] | None = None
     network: NetworkAccess = NetworkAccess.DENY
 
 
@@ -143,6 +147,14 @@ class PrincipalServicePlugin(PluginService):
             ),
             repo_prefixes=frozenset(str(p) for p in entry.get("repo_prefixes") or ()),
             writable_paths=tuple(str(p) for p in entry.get("writable_paths") or ()),
+            # Absent means "this credential states no command list", which is not
+            # the same as an empty list: one leaves the decision to the project,
+            # the other says *start nothing*.
+            commands=(
+                None
+                if entry.get("commands") is None
+                else frozenset(str(c) for c in entry.get("commands") or ())
+            ),
             network=NetworkAccess(str(entry.get("network", "deny"))),
         )
 

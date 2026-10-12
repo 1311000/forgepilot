@@ -76,7 +76,7 @@ everything downstream behaves as though the check happened.
 | `SandboxExecutionPolicy.mode` | accepted and never read (fixed — `PolicyNotEnforceable`) |
 | `PullRequestDraft.draft` | set in one place, read in none, while the code did the opposite |
 | `Vcs.capabilities()` | declared by every provider, read by nothing |
-| `ResourceTargets.commands` | extracted by the `run` tool's `describe_targets`, read by no guard — the guards look at `repos` and `paths` only |
+| `ResourceTargets.commands` | extracted by the `run` tool's `describe_targets`, read by no guard — the guards looked at `repos` and `paths` only. **Closed at M14**: the reader is `command_scope_guard` (`runtime/guards/builtin.py`), registered as `command-scope` in `default_guards`. It abstains until a deployment *declares* a list, and a line it cannot decompose into programs is refused rather than waved through |
 | `_narrowed_paths` | a **filter** where the operation is an **intersection** — a grant of `"."` behind a project limited to `src/` produced *nothing writable*. Fixed at P1-11; every existing test used the same set on both sides, which is the one case the two agree on |
 | `UsageTracker.cost_usd` / `wall_seconds` | the budget guard read both; **nothing wrote either, on any path**. Two of four budget dimensions were unreachable limits. Fixed — see `docs/notes/agent-loop.md` |
 | `ForgePilotAgent.tracker` | `field(default_factory=UsageTracker)` and `create()` never passed one, so the loop counted into the agent's private tracker while the **guard** watched the scope's. The per-step check in `turn.py` used the agent's and worked, which is why it looked fine |
@@ -119,13 +119,42 @@ enforced authority was `ExecutionConstraints` plus the guards plus
 per-operation allow/ask/deny design was built, tested to the letter and never
 connected. See `docs/notes/task-delivery.md`.
 
-`ResourceTargets.commands` is the same kind of **gap**: nothing reads it, because
-**there is no command guard** — `permitted_operations` decides whether `run` may
-execute at all, and no policy anywhere constrains *which* commands. That is a
-policy feature nobody has asked for, not an oversight. It matters here only
-because `run` now reaches a shell: if a deployment ever wants a command
-allow-list, this is the field it reads, and it will need the shell to be part of
-what it inspects rather than a wrapper it never sees.
+`ResourceTargets.commands` was a **gap** of the same kind for most of this
+project's life: nothing read it, because **there was no command guard** —
+`permitted_operations` decided whether `run` may execute at all, and no policy
+anywhere constrained *which* commands. That was a policy feature nobody had asked
+for, not an oversight. **M14 closed it**, and the reason it was finally worth
+closing is the one this paragraph used to give for leaving it: `run` reaches a
+shell, so "may execute" was always a weaker sentence than it sounded.
+
+`ExecutionConstraints.allowed_commands` is the list, `derive` narrows it
+(`None` means *no policy declared*, and an empty set means *nothing permitted* —
+the two cannot be one value, because narrowing is an intersection and
+`∅ ∩ {git}` is `∅`), and `command_scope_guard` decomposes each line into the
+programs it would start with `runtime/commandline.py::programs`, refusing any the
+list does not name. **A line that cannot be decomposed is refused**: an allow-list
+that cannot read a line must not bless it. With no list declared the guard
+abstains, so every deployment that never asked for a command policy behaves
+exactly as before.
+
+Three limits, stated rather than implied (D5 of `~/.claude/plans/m14-command-guard-and-worktree-root.md`):
+
+- **It does not inspect arguments.** A listed `git` may still be asked to push, and
+  a listed `python` may still be handed `-c`. Which programs may start is this
+  guard's question; what they do afterwards is the sandbox's.
+- **A shell built-in or alias is just a name.** `cd`, `source` and `type` are
+  compared like any other program and refused when the list does not name them —
+  fail-closed and explainable, rather than a special-case list that would have to
+  be kept right.
+- **No command substitution.** `$(…)` and backticks make a line unattributable, so
+  a declared list refuses it.
+
+⚠️ **`run_checks` never goes through this guard, and that is deliberate.** The
+`build`/`test`/`lint` lines in `project.yaml` are written by a human and handed
+straight to the sandbox by `runtime/repair.py`; they are not tool calls, so no
+guard sees them. `project.yaml`'s `commands:` is a *different* key from `test:`
+for the same reason — one is context the harness executes, the other is a
+permission the project grants a model.
 
 
 ## Unverified claim in the design doc

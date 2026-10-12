@@ -104,6 +104,12 @@ class ProjectConfig:
     lint: tuple[str, ...] = ()
     allowed_operations: frozenset[Operation] = frozenset()
     writable_paths: tuple[str, ...] = ()
+    #: Programs a `run` call in this project may start. ⚠️ **Absent is not the
+    #: same as empty**: ``commands:`` with no value (or no key at all) means the
+    #: project states no list, while ``commands: []`` states a list that permits
+    #: nothing. Only the second one refuses every command. See
+    #: ``ExecutionConstraints.allowed_commands``.
+    commands: tuple[str, ...] | None = None
     network: NetworkAccess = NetworkAccess.DENY
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     budget: Budget = field(default_factory=Budget)
@@ -143,12 +149,19 @@ class ProjectConfig:
         Note what does **not** cross over: build/test commands and notes are
         context, not permission, and a project cannot widen a caller's grant by
         describing itself generously.
+
+        ``commands`` **does** cross over, and it is a different thing from those
+        three: ``build``/``test``/``lint`` are lines this project runs itself,
+        while ``commands`` is the list of programs a *model's* ``run`` call may
+        start. One is context the harness executes; the other is a permission the
+        project grants, and only the second belongs on the policy.
         """
         return ProjectPolicy(
             repos=frozenset(self.repos),
             repo_prefixes=frozenset(self.repo_prefixes),
             allowed_operations=self.allowed_operations,
             writable_paths=tuple(self.writable_paths),
+            commands=None if self.commands is None else frozenset(self.commands),
             network=self.network,
             budget=self.budget,
         )
@@ -209,6 +222,23 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
             return (value,)
         return tuple(str(v) for v in value)
 
+    def _command_allow_list() -> tuple[str, ...] | None:
+        """``commands``: absent is "no list", ``[]`` is "nothing permitted".
+
+        Conflating the two would make ``commands: []`` mean "unrestricted",
+        which is the opposite of what someone writing it intends.
+        """
+        value = raw.get("commands")
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return (value,)
+        if not isinstance(value, (list, tuple)):
+            raise ConfigError(
+                f"'commands' must be a list of program names, not {value!r}"
+            )
+        return tuple(str(v) for v in value)
+
     return ProjectConfig(
         name=str(raw.get("name", name)),
         repos=tuple(repos),
@@ -219,6 +249,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         lint=_commands("lint"),
         allowed_operations=permitted,
         writable_paths=tuple(str(p) for p in raw.get("writable_paths") or ()),
+        commands=_command_allow_list(),
         network=NetworkAccess(str(raw.get("network", "deny"))),
         retry=RetryPolicy(
             max_attempts=int(retry_raw.get("max_attempts", 2)),

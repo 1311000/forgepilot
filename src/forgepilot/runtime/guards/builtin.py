@@ -14,14 +14,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from forgepilot.runtime.commandline import UnparsableCommand, programs
 from forgepilot.runtime.guards.registry import Guard, GuardDecision, GuardResult, GuardView
-from forgepilot.seams.security import normalise_relative
+from forgepilot.seams.security import normalise_program, normalise_relative
 from forgepilot.seams.tools import ToolEffect
 
 __all__ = [
     "operation_guard",
     "repo_scope_guard",
     "path_scope_guard",
+    "command_scope_guard",
     "UsageTracker",
     "USAGE_SERVICE",
     "make_budget_guard",
@@ -117,6 +119,78 @@ def _escapes_workspace(path: str) -> bool:
     return normalise_relative(path) is None
 
 
+def command_scope_guard(view: GuardView) -> GuardResult:
+    """Refuse a command line that would start a program the caller may not start.
+
+    This is the reader ``ResourceTargets.commands`` never had. ``run`` extracts
+    the line it is about to hand to a shell, and until this guard existed nothing
+    looked at it: ``permitted_operations`` decided whether ``run`` could execute
+    at all, and no policy anywhere constrained *which programs* it started.
+
+    Three cases, and the difference between them is the whole design:
+
+    - **No command in the call** — abstain. This guard has an opinion about
+      ``run`` and nothing else.
+    - **No list declared** (``allowed_commands is None``) — abstain, which is
+      today's behaviour and keeps this from being a breaking change for every
+      deployment that never asked for a command policy.
+    - **A list declared** — every program on the line must be on it, and a line
+      the decomposition cannot attribute is *refused* rather than waved through.
+      An allow-list that cannot be enforced against a line it does not understand
+      is a suggestion.
+
+    What it does **not** do is inspect arguments: a listed ``git`` may still be
+    asked to push, and a listed ``python`` may still be handed ``-c``. The
+    sandbox is the boundary for what a program does; this one is about which
+    programs may be launched.
+    """
+    if not view.targets.commands:
+        return GuardResult()
+
+    allowed = view.constraints.allowed_commands
+    if allowed is None:
+        return GuardResult()
+
+    named = ", ".join(sorted({normalise_program(entry) for entry in allowed}))
+    for command in view.targets.commands:
+        try:
+            found = programs(command)
+        except UnparsableCommand as exc:
+            return GuardResult(
+                decision=GuardDecision.DENY,
+                reason=(
+                    f"cannot check {command!r} against the caller's command list "
+                    f"({named or 'nothing is permitted'}): {exc}"
+                ),
+                guard="command-scope",
+            )
+        for program in found:
+            if not view.constraints.allows_command(program):
+                name = normalise_program(program)
+                # Show the spelling the caller used when it differs from the one
+                # the list is compared against: `C:\tools\Python\python.exe` and
+                # `python` are the same program, and a refusal that silently
+                # rewrites it makes the caller hunt for a difference that is not
+                # there.
+                subject = (
+                    f"{name!r}"
+                    if name == program
+                    else f"{name!r} (the line spells it {program!r})"
+                )
+                return GuardResult(
+                    decision=GuardDecision.DENY,
+                    # Named, for the same reason the path refusal names its set: a
+                    # refusal that does not say what *would* have been allowed
+                    # leaves the caller guessing at spellings.
+                    reason=(
+                        f"program {subject} is not in the caller's command list "
+                        f"({named or 'nothing is permitted'})"
+                    ),
+                    guard="command-scope",
+                )
+    return GuardResult()
+
+
 @dataclass
 class UsageTracker:
     """Running totals for one turn. Owned by the loop; read by the budget guard."""
@@ -200,11 +274,14 @@ def default_guards(tracker: UsageTracker | None = None) -> list[tuple[str, Guard
 
     Repo and path scope come first: refusing a call that was never permitted is
     more informative than refusing it for budget, and the reason the caller sees
-    should be the most fundamental one.
+    should be the most fundamental one. Command scope follows them — it is still
+    "was this permitted", but it applies to one tool and only when a deployment
+    declared a list.
     """
     return [
         ("operation", operation_guard),
         ("repo-scope", repo_scope_guard),
         ("path-scope", path_scope_guard),
+        ("command-scope", command_scope_guard),
         ("budget", make_budget_guard(tracker or UsageTracker())),
     ]

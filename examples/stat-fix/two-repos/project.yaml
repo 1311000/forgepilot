@@ -53,6 +53,29 @@ allowed_operations:
 writable_paths:
   - "."
 
+# The programs a model's `run` call may start in this deployment (M14, item 6).
+# `ResourceTargets.commands` had no reader until the `command-scope` guard
+# existed; this is what a list looks like when a deployment wants one, and the
+# guard refuses anything else — including a line it cannot decompose
+# (`git log $(cat x)`, `bash -c …`), because an allow-list that cannot read a line
+# must not bless it.
+#
+# ⚠️ **A deployment's choice, and deliberately only here.** The single-repository
+# `../project.yaml` declares none, so the guard abstains there — which is what
+# "no policy" means, and it is what keeps a permission added in M14 from moving
+# any number a previous era recorded. `commands` is not the same thing as
+# `test:` above: those lines are run by the harness itself and never go through
+# the tool pipeline, while this is about what a *model* may launch.
+#
+# Names are compared by basename, case-insensitively, with a Windows extension
+# dropped — `.venv/Scripts/python.exe` and `python` are one entry — but a version
+# is kept, so `python3` is a different program from `python`.
+commands:
+  - python
+  - python3
+  - pytest
+  - git
+
 # `allow` for the same reason as `../project.yaml`: this deployment runs checks
 # through `bundles/local_exec`, which contains nothing, and a backend that cannot
 # deny the network refuses a policy that asks it to rather than accepting it.

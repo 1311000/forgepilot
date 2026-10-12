@@ -297,7 +297,12 @@ class GrepRetrieverPlugin(PluginService):
         column = self._column(text, int(submatch.get("start", 0)))
 
         return CodeHit(
-            location=CodeRef(repo=repo, path=path, ref=ref),
+            # `root` travels with the hit so `open` can read the copy this search
+            # actually saw: the caller's working tree when `query.root` named one,
+            # and the configured checkout otherwise. Without it, `open` reads the
+            # configured root and answers a question about the working tree with
+            # content from somewhere else.
+            location=CodeRef(repo=repo, path=path, ref=ref, root=str(root)),
             line=line,
             column=column,
             text=text,
@@ -326,7 +331,12 @@ class GrepRetrieverPlugin(PluginService):
     async def open(
         self, location: CodeRef, span: LineSpan, constraints: ExecutionConstraints
     ) -> FileSlice:
-        root = self._root(location.repo, constraints)
+        # `location.root` is the working tree the hit came from, when it came from
+        # one. `_root` resolves and validates it (a working tree that is not there
+        # raises `UnknownCheckout` rather than falling back to the configured
+        # checkout), so reading "the same copy the search saw" is structural here
+        # instead of a convention the caller has to remember.
+        root = self._root(location.repo, constraints, location.root)
 
         # The caller is given the ref that was *actually* read, so "I asked for
         # my branch and got trunk" is detectable rather than silent.
@@ -341,7 +351,12 @@ class GrepRetrieverPlugin(PluginService):
         start = max(1, span.start)
         end = min(len(lines), span.end) if span.end else len(lines)
         return FileSlice(
-            location=CodeRef(repo=location.repo, path=location.path, ref=ref),
+            location=CodeRef(
+                repo=location.repo,
+                path=location.path,
+                ref=ref,
+                root=str(root),
+            ),
             span=LineSpan(start=start, end=end),
             text="\n".join(lines[start - 1 : end]),
         )

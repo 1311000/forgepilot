@@ -557,10 +557,27 @@ configured path" and "search the working tree" were the same instruction and no
 test in the suite could tell them apart. They are now deliberately different, and
 reverting the tool's `root=` argument turns 9 of the 12 `code_search` tests red.
 
-**Known gap: `Retriever.open()` still reads the configured root**, so a slice
-opened from a working-tree hit would come from the repository's own copy. Nothing
-in `src/` calls `open` — only tests do — so this is the `ensure_mirror` situation
-again: a seam method with no consumer. Threading the root through it means
-carrying it on `CodeRef`, which is a value-object change deserving its own
-decision rather than a rider on this one.
+**`Retriever.open()` used to read the configured root**, so a slice opened from a
+working-tree hit came from the repository's own copy — the same path, different
+content, and an answer that looks exactly like an answer. It was left as a
+documented gap here because threading the root through it means carrying it on
+`CodeRef`, which is a value-object change deserving its own decision. **M14 made
+that decision**: `CodeRef` gained `root: str | None = None`, `grep.py::_hit` fills
+it in from the root the search actually read, and `open` hands it back to `_root`
+— which already refused a working tree that is not there instead of falling back,
+so "the same copy the search saw" is structural here rather than a convention. An
+index-backed provider leaves `root` as `None`, which is the honest answer for
+something with no working tree, and still reads the configured checkout.
+
+⚠️ **Falsified rather than asserted.** Putting `open` back to
+`self._root(location.repo, constraints)` turns
+`tests/providers/test_grep_retriever.py::test_open_reads_the_copy_the_search_saw`
+red — `AssertionError: assert 'edited in this session' in 'MAX_ATTEMPTS = 3\n'`,
+the slice silently reading the configured checkout while every inspection says it
+read the hit.
+
+⚠️ **One residual, unchanged: `open` still has no caller in `src/`.** Only tests
+call it. Adding the root made the method *correct*; it did not give it a consumer,
+and the `ensure_mirror` shape noted just above still applies to it — a seam method
+nothing reaches is a seam method nobody has tested against a real caller.
 
