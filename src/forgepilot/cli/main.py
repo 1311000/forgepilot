@@ -388,6 +388,12 @@ def _sandbox_check(args: argparse.Namespace) -> int:
 
     try:
         actual = sandbox.probe()
+        # A backend that can say *why* is asked for it, and one that cannot is not
+        # required to: several failures share one `probe` value and one exit code,
+        # and the difference decides the fix. N2's whole complaint was a message
+        # that named the wrong one, so the answer is printed rather than left to a
+        # downstream guess.
+        outcome = sandbox.diagnose() if hasattr(sandbox, "diagnose") else None
         result = asyncio.run(run_one())
     except Exception as exc:  # noqa: BLE001 - a backend that cannot answer is the answer
         print(
@@ -406,6 +412,12 @@ def _sandbox_check(args: argparse.Namespace) -> int:
         print(f"sandbox      : service {service_name!r} (no row here is named that)")
     print(f"claim        : read_scope: {claim}")
     print(f"probe        : {actual.value}")
+    if outcome is not None:
+        print(f"mechanism    : {outcome.mechanism.value if outcome.mechanism else 'none proved'}")
+        print(
+            "cause        : "
+            f"{outcome.cause.value if outcome.cause else 'none — the claim was verified'}"
+        )
     print(f"required     : {required.value}")
     if result.executed:
         print(f"shell        : ran, exit code {result.exit_code}")

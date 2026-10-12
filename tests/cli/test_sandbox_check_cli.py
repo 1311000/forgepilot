@@ -150,6 +150,33 @@ def test_the_check_names_the_row_and_the_claim_it_makes(
     assert "probe        : " in out
 
 
+def test_the_check_says_why_the_boundary_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``probe: none`` has several causes, and the operator's next step depends on which.
+
+    The launcher here is named and absent, so this is decidable on any host: the
+    namespace provider reports the cause it *observed*, instead of the AppArmor
+    explanation it used to print unconditionally — on a kernel, in N2's
+    measurement, where that file does not exist at all.
+    """
+    patch = a_sandbox_patch(
+        tmp_path,
+        "- id: sandbox\n"
+        "  plugin: forgepilot.providers.sandbox.namespace:NamespaceSandboxPlugin\n"
+        "  config:\n"
+        "    enter: [definitely-not-a-real-launcher-xyz]\n",
+    )
+
+    code, out, _ = check(capsys, "--patch", str(patch))
+
+    assert code == 1
+    assert "mechanism    : none proved" in out
+    assert "cause        : no_launcher" in out
+    assert "is not on PATH" in out
+    assert "apparmor" not in out.lower()
+
+
 def test_a_profile_without_a_sandbox_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

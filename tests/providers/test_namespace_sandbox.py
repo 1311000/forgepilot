@@ -195,7 +195,9 @@ async def _load(config: dict):
         await dispose_fiber(fiber)
 
 
-def a_launcher(tmp_path: Path, *, exit_code: int, stdout: str = "") -> list[str]:
+def a_launcher(
+    tmp_path: Path, *, exit_code: int, stdout: str = "", stderr: str = ""
+) -> list[str]:
     """A stand-in for `unshare`, so the probe can be observed without patching.
 
     `enter` is a command line, not a binary name, precisely so this is possible:
@@ -206,8 +208,11 @@ def a_launcher(tmp_path: Path, *, exit_code: int, stdout: str = "") -> list[str]
     command it was handed; this one does not, so whatever that command would have
     printed appears here instead. Empty means "it ran and said nothing", which is
     deliberately **not** the same answer as "it hid the canary".
+
+    `stderr` is how a launcher that *refuses* is simulated — `unshare` explains
+    itself there, and the refusal is supposed to quote it rather than paraphrase.
     """
-    stamp = hashlib.sha256(stdout.encode("utf-8")).hexdigest()[:8]
+    stamp = hashlib.sha256(f"{stdout}{stderr}".encode()).hexdigest()[:8]
     script = tmp_path / f"launcher-{exit_code}-{stamp}.py"
     log = tmp_path / f"argv-{exit_code}-{stamp}.txt"
     script.write_text(
@@ -216,6 +221,7 @@ def a_launcher(tmp_path: Path, *, exit_code: int, stdout: str = "") -> list[str]
                 "import sys, pathlib",
                 f"pathlib.Path({str(log)!r}).write_text(chr(10).join(sys.argv[1:]))",
                 f"sys.stdout.write({stdout!r})",
+                f"sys.stderr.write({stderr!r})",
                 f"sys.exit({exit_code})",
                 "",
             ]
@@ -584,6 +590,137 @@ async def test_a_non_root_host_that_forbids_userns_is_none_not_a_root_argv(
     assert result.enforcement is SandboxEnforcement.NONE
     recorded = log.read_text(encoding="utf-8").splitlines()
     assert recorded[:2] == ["-U", "-r"], "the one attempt made was the one that could work"
+
+
+# ---------------------------------------------------------------------------
+# The refusal names the cause the probe saw — and only that one
+# ---------------------------------------------------------------------------
+def _sysctl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str | None) -> None:
+    """Point the AppArmor check at a file we control — or at one that is not there.
+
+    ``None`` is the Docker Desktop kernel N2 was measured on, and it is the input
+    the old unconditional message got wrong: absent is not ``0``.
+    """
+    path = tmp_path / "apparmor_restrict_unprivileged_userns"
+    if contents is not None:
+        path.write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(
+        "forgepilot.providers.sandbox.namespace._APPARMOR_USERNS_SYSCTL", path, raising=True
+    )
+
+
+async def test_a_missing_launcher_is_told_apart_from_a_launcher_that_cannot_isolate() -> None:
+    """The first of the two failures with one exit code: nothing to enter with.
+
+    Nothing here is about namespaces, so nothing here may mention them — the fix
+    is "install the launcher", and the old message sent the reader to a sysctl.
+    """
+    from forgepilot.providers.sandbox.namespace import SandboxCause
+
+    async for plugin in _load({"enter": ["definitely-not-a-real-launcher-xyz"]}):
+        outcome = plugin.diagnose()
+
+        assert outcome.enforcement is SandboxEnforcement.NONE
+        assert outcome.cause is SandboxCause.NO_LAUNCHER
+        assert outcome.mechanism is None
+        refusal = plugin._refusal(outcome)
+
+    assert "is not on PATH" in refusal
+    assert "apparmor" not in refusal.lower()
+
+
+async def test_a_launcher_that_ran_and_failed_quotes_it_and_names_what_was_tried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider's own paraphrase was the defect; the evidence replaces it.
+
+    `unshare: unshare failed: Operation not permitted` is the line N2 measured, so
+    this is what the message must carry — not this codebase's description of it,
+    which is the part that can drift from the machine.
+    """
+    from forgepilot.providers.sandbox.namespace import SandboxCause
+
+    _sysctl(monkeypatch, tmp_path, None)
+    enter, _ = a_launcher(
+        tmp_path, exit_code=1, stderr="unshare: unshare failed: Operation not permitted"
+    )
+
+    async for plugin in _load({"enter": enter, "userns": "auto"}):
+        outcome = plugin.diagnose()
+        refusal = plugin._refusal(outcome)
+
+    assert outcome.cause is SandboxCause.CANNOT_CREATE_NAMESPACE
+    assert "the launcher said: unshare: unshare failed: Operation not permitted" in refusal
+    assert "tried: map-root" in refusal
+    assert "apparmor" not in refusal.lower()
+
+
+@pytest.mark.parametrize(
+    ("contents", "cause_name", "names_the_sysctl"),
+    [
+        ("1\n", "APPARMOR_RESTRICTS_USERNS", True),
+        ("0\n", "CANNOT_CREATE_NAMESPACE", False),
+        (None, "CANNOT_CREATE_NAMESPACE", False),
+    ],
+)
+async def test_three_inputs_give_three_messages_and_only_one_names_apparmor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contents: str | None,
+    cause_name: str,
+    names_the_sysctl: bool,
+) -> None:
+    """The pin this phase exists for: no cause is claimed without evidence.
+
+    `1` / `0` / absent are three different machines, and the message has to say
+    which one it is looking at. The `0` and absent rows are the ones that used to
+    be wrong: both printed the AppArmor explanation, and the absent one is exactly
+    the Docker Desktop kernel N2 was measured on.
+    """
+    from forgepilot.providers.sandbox.namespace import SandboxCause
+
+    _sysctl(monkeypatch, tmp_path, contents)
+    enter, _ = a_launcher(tmp_path, exit_code=1, stderr="unshare: unshare failed")
+
+    async for plugin in _load({"enter": enter, "userns": "auto"}):
+        outcome = plugin.diagnose()
+        refusal = plugin._refusal(outcome)
+
+    assert outcome.cause is SandboxCause[cause_name]
+    assert ("kernel.apparmor_restrict_unprivileged_userns" in refusal) is names_the_sysctl
+    assert "Refusing to run uncontained" in refusal
+
+
+async def test_the_two_shapes_of_an_unverified_read_claim_read_differently(
+    tmp_path: Path,
+) -> None:
+    """`PARTIAL` covers "it leaked" and "it said nothing", and they are not the same sentence.
+
+    The old text asserted the leak in both cases, which is the same defect one
+    level down: a message that explains a cause the probe did not observe.
+    """
+    from forgepilot.providers.sandbox.namespace import (
+        _READ_PROBE_LEAK,
+        _READ_PROBE_MARKER,
+        SandboxCause,
+    )
+
+    refusals: dict[str, str] = {}
+    for label, stdout in (
+        ("silent", ""),
+        ("leaked", f"{_READ_PROBE_LEAK}\n{_READ_PROBE_MARKER}\n"),
+    ):
+        enter, _ = a_launcher(tmp_path, exit_code=0, stdout=stdout)
+        async for plugin in _load({"enter": enter, "read_scope": "workspace"}):
+            outcome = plugin.diagnose()
+            assert outcome.enforcement is SandboxEnforcement.PARTIAL
+            assert outcome.cause is SandboxCause.READ_CLAIM_UNVERIFIED
+            refusals[label] = plugin._refusal(outcome)
+
+    assert "produced no evidence either way" in refusals["silent"]
+    assert "reached a file outside its workspace" not in refusals["silent"]
+    assert "reached a file outside its workspace" in refusals["leaked"]
+    assert refusals["silent"] != refusals["leaked"]
 
 
 # ---------------------------------------------------------------------------

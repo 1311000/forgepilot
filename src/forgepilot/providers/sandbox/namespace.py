@@ -66,7 +66,10 @@ __all__ = [
     "NamespaceSandboxPlugin",
     "MountKind",
     "MountRule",
+    "ProbeOutcome",
+    "SandboxCause",
     "UserNamespace",
+    "apparmor_restricts_userns",
     "build_argv",
     "mount_rules",
     "userns_from",
@@ -217,6 +220,68 @@ def _effective_uid() -> int | None:
     """
     geteuid = getattr(os, "geteuid", None)
     return None if geteuid is None else int(geteuid())
+
+
+#: Where Ubuntu 23.10+ states whether it restricts unprivileged user namespaces.
+#:
+#: Existence is the point: on a kernel without the sysctl the file is absent, and
+#: absent is **not** ``0`` — reporting the AppArmor explanation there is the false
+#: sentence this period removes (N2, ``docs/notes/gates-on-linux.md``, measured on
+#: the Docker Desktop kernel where the file does not exist at all).
+_APPARMOR_USERNS_SYSCTL = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+
+
+def apparmor_restricts_userns() -> bool:
+    """Whether the kernel *says* it blocks unprivileged user namespaces.
+
+    Only ``1`` counts. A missing file, an unreadable one, and a ``0`` all mean
+    "this kernel did not say that", and the caller must then find another cause
+    rather than repeat a plausible-sounding one.
+    """
+    try:
+        return _APPARMOR_USERNS_SYSCTL.read_text(encoding="utf-8", errors="replace").strip() == "1"
+    except OSError:
+        return False
+
+
+class SandboxCause(StrEnum):
+    """Why a probe fell short of ``FULL`` — the cause this process could observe.
+
+    A refusal that names the wrong cause is worse than one that names none: it
+    sends the operator to a fix that cannot work, and it teaches them the message
+    is boilerplate. Every value here is something the probe can point at, and
+    :func:`NamespaceSandboxPlugin._refusal` may claim **only** the one it observed.
+    """
+
+    #: The configured launcher is not on ``PATH`` — nothing to create namespaces with.
+    NO_LAUNCHER = "no_launcher"
+    #: The launcher is there and ran, and the namespaces were still not created.
+    CANNOT_CREATE_NAMESPACE = "cannot_create_namespace"
+    #: ``kernel.apparmor_restrict_unprivileged_userns`` exists and reads ``1``.
+    APPARMOR_RESTRICTS_USERNS = "apparmor_restricts_userns"
+    #: A ``read_scope: workspace`` claim the probe could not verify.
+    READ_CLAIM_UNVERIFIED = "read_claim_unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeOutcome:
+    """Everything the probe learned, in one object.
+
+    One object rather than three attributes because the defect being avoided is
+    *disagreement*: ``probe()`` answering ``none`` while ``run()`` builds the argv
+    that needs root, or a refusal explaining a cause the probe never saw. Both
+    read this, and only this.
+    """
+
+    enforcement: SandboxEnforcement
+    #: ``None`` exactly when ``enforcement`` is ``FULL``.
+    cause: SandboxCause | None = None
+    #: The mechanism the probe **proved**, and therefore the one a run may use.
+    mechanism: UserNamespace | None = None
+    #: What was tried, in order, for a message that can say so.
+    attempted: tuple[UserNamespace, ...] = ()
+    #: Evidence for a refusal — the launcher's own words, or what the read probe saw.
+    observed: str = ""
 
 
 def mount_rules(
@@ -558,6 +623,19 @@ def _read_probe_scratch() -> Path | None:
     return None
 
 
+def _observed(stderr: str) -> str:
+    """The launcher's own words, trimmed to the line that explains the failure.
+
+    Quoted in the refusal so the operator reads what the launcher said instead of
+    this provider's paraphrase — the paraphrase is exactly what was wrong before,
+    and it is the part a newer wrong paraphrase could creep back into.
+    """
+    for line in reversed(stderr.splitlines()):
+        if line.strip():
+            return f"the launcher said: {line.strip()[:200]}"
+    return ""
+
+
 class NamespaceSandboxPlugin(PluginService):
     """Serves ``sandbox`` with Linux namespaces and read-only bind mounts.
 
@@ -584,13 +662,24 @@ class NamespaceSandboxPlugin(PluginService):
         self._read_scope = read_scope_from(cfg.get("read_scope", ReadScope.HOST.value))
         self._userns = userns_from(cfg.get("userns", UserNamespace.AUTO.value))
         self.max_output_bytes = int(cfg.get("max_output_bytes", MAX_OUTPUT_BYTES))
-        self._probed: SandboxEnforcement | None = None
-        #: What the probe measured, as opposed to what was configured. ``None``
-        #: means "no mechanism was shown to work", which is not the same as "the
-        #: configured one", and :func:`build_argv` refuses to guess between them.
-        self._resolved: UserNamespace | None = None
+        #: What the probe measured — enforcement, cause, and the mechanism it
+        #: proved. ``None`` means nothing has been measured yet; one object
+        #: because `probe()`, `run()` and the refusal must not be able to disagree
+        #: about what happened.
+        self._outcome: ProbeOutcome | None = None
 
     # -- probe -------------------------------------------------------------
+    def diagnose(self) -> ProbeOutcome:
+        """The probe's whole answer: what it enforced, why not, and what it proved.
+
+        The refusal is built from *this* object, which is what makes "the message
+        names the cause the probe saw" a structural property rather than a
+        promise: there is no second place that decides why the probe failed.
+        """
+        if self._outcome is None:
+            self._outcome = self._probe_now()
+        return self._outcome
+
     def probe(self) -> SandboxEnforcement:
         """``FULL`` only for a claim that was verified — never a guess.
 
@@ -617,21 +706,54 @@ class NamespaceSandboxPlugin(PluginService):
         ``none`` and says why, rather than quietly running the argv that needs
         root.
         """
-        if self._probed is None:
-            self._probed = self._probe_now()
-        return self._probed
+        return self.diagnose().enforcement
 
-    def _probe_now(self) -> SandboxEnforcement:
+    def _probe_now(self) -> ProbeOutcome:
+        attempted = self._candidates()
         if shutil.which(self._enter[0]) is None:
-            return SandboxEnforcement.NONE
-        for candidate in self._candidates():
-            enforcement = self._probe_with(candidate)
+            return ProbeOutcome(
+                enforcement=SandboxEnforcement.NONE,
+                cause=SandboxCause.NO_LAUNCHER,
+                attempted=attempted,
+            )
+        observed = ""
+        for candidate in attempted:
+            enforcement, evidence = self._probe_with(candidate)
             if enforcement is not SandboxEnforcement.NONE:
-                self._resolved = candidate
-                return enforcement
-        # Nothing worked, so nothing is recorded: `build_argv` refuses an
-        # unresolved mechanism, and every later call goes through the refusal.
-        return SandboxEnforcement.NONE
+                return ProbeOutcome(
+                    enforcement=enforcement,
+                    # A PARTIAL answer is its own cause: the launcher works and
+                    # the *claim* is what could not be verified.
+                    cause=(
+                        SandboxCause.READ_CLAIM_UNVERIFIED
+                        if enforcement is SandboxEnforcement.PARTIAL
+                        else None
+                    ),
+                    mechanism=candidate,
+                    attempted=attempted,
+                    observed=evidence,
+                )
+            observed = observed or evidence
+        # Nothing worked, so no mechanism is recorded: `_mechanism()` refuses an
+        # unresolved one, and every later call goes through the refusal.
+        return ProbeOutcome(
+            enforcement=SandboxEnforcement.NONE,
+            cause=self._failure_cause(),
+            attempted=attempted,
+            observed=observed,
+        )
+
+    def _failure_cause(self) -> SandboxCause:
+        """Which refusal this is — and AppArmor is claimed **only** on evidence.
+
+        Both failures wear the same exit code and the same "it did not work", and
+        the difference decides the fix: one is "install the launcher", the other
+        is "this host will not let your user create a namespace". The kernel's own
+        sysctl is the only thing allowed to move this to the AppArmor answer.
+        """
+        if apparmor_restricts_userns():
+            return SandboxCause.APPARMOR_RESTRICTS_USERNS
+        return SandboxCause.CANNOT_CREATE_NAMESPACE
 
     def _candidates(self) -> tuple[UserNamespace, ...]:
         """The mechanisms to try, in order, for what was configured.
@@ -648,12 +770,12 @@ class NamespaceSandboxPlugin(PluginService):
             return (UserNamespace.MAP_ROOT, UserNamespace.REQUIRE_ROOT)
         return (UserNamespace.MAP_ROOT,)
 
-    def _probe_with(self, userns: UserNamespace) -> SandboxEnforcement:
+    def _probe_with(self, userns: UserNamespace) -> tuple[SandboxEnforcement, str]:
         if self._read_scope is ReadScope.WORKSPACE:
             return self._probe_reads(userns)
         return self._probe_writes(userns)
 
-    def _probe_writes(self, userns: UserNamespace) -> SandboxEnforcement:
+    def _probe_writes(self, userns: UserNamespace) -> tuple[SandboxEnforcement, str]:
         """The claim ``host`` makes: a read-only ``/`` refuses the write.
 
         Nothing here says anything about reads, and nothing here can — that is
@@ -666,10 +788,12 @@ class NamespaceSandboxPlugin(PluginService):
         )
         completed = self._run_probe(["true"], policy=probe_policy, cwd=Path("/"), userns=userns)
         if completed is None:
-            return SandboxEnforcement.NONE
-        return SandboxEnforcement.FULL if completed.returncode == 0 else SandboxEnforcement.NONE
+            return SandboxEnforcement.NONE, ""
+        if completed.returncode == 0:
+            return SandboxEnforcement.FULL, ""
+        return SandboxEnforcement.NONE, _observed(completed.stderr or "")
 
-    def _probe_reads(self, userns: UserNamespace) -> SandboxEnforcement:
+    def _probe_reads(self, userns: UserNamespace) -> tuple[SandboxEnforcement, str]:
         """The claim ``workspace`` makes: a read *outside* the workspace fails.
 
         The canary is placed outside the workspace **and outside `/tmp`** on
@@ -689,7 +813,11 @@ class NamespaceSandboxPlugin(PluginService):
         scratch = _read_probe_scratch()
         if scratch is None:
             # No canary, no evidence — and no evidence must never read as FULL.
-            return SandboxEnforcement.PARTIAL
+            return (
+                SandboxEnforcement.PARTIAL,
+                "no canary could be placed outside the workspace, so the claim was "
+                "never tested",
+            )
         try:
             canary = scratch / "canary"
             canary.write_text(_READ_PROBE_LEAK, encoding="utf-8")
@@ -709,8 +837,22 @@ class NamespaceSandboxPlugin(PluginService):
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         if completed is None:
-            return SandboxEnforcement.NONE
-        return _read_probe_verdict(completed.returncode, completed.stdout or "")
+            return SandboxEnforcement.NONE, ""
+        stdout = completed.stdout or ""
+        verdict = _read_probe_verdict(completed.returncode, stdout)
+        if verdict is SandboxEnforcement.FULL:
+            return verdict, ""
+        if verdict is SandboxEnforcement.NONE:
+            return verdict, _observed(completed.stderr or "")
+        if _READ_PROBE_LEAK in stdout:
+            return verdict, (
+                "a sandboxed command still reached a file outside its workspace, so this "
+                "boundary confines writes and not reads"
+            )
+        return verdict, (
+            "the probe command produced no evidence either way, so the read claim is "
+            "unverified rather than met"
+        )
 
     def _run_probe(
         self,
@@ -749,37 +891,60 @@ class NamespaceSandboxPlugin(PluginService):
         remove, which is why it raises instead of defaulting to the configured
         value.
         """
-        if self._resolved is None:
+        outcome = self.diagnose()
+        if outcome.mechanism is None:
             raise RuntimeError(
                 "no namespace mechanism was verified on this host, so there is no argv to "
                 "build: ask probe() first, and only a full answer records one."
             )
-        return self._resolved
+        return outcome.mechanism
 
-    def _refusal(self, enforcement: SandboxEnforcement) -> str:
-        """Why the command was not run, in the terms of *this* provider.
+    def _refusal(self, outcome: ProbeOutcome) -> str:
+        """Why the command was not run, naming **only** the cause the probe saw.
 
-        Two different failures wear the same ``126``, and conflating them sends
-        the reader to the wrong fix: one is a host that cannot isolate anything,
-        the other is a boundary that isolates writes and not reads while the
-        deployment claims ``workspace``.
+        One exit code (``126``) covers several failures, and conflating them sends
+        the reader to a fix that cannot work: a missing launcher, a host that will
+        not let this user create a namespace, a host that says so through
+        AppArmor, and a boundary that confines writes but not reads are four
+        different problems. The old message named the AppArmor one unconditionally
+        — on a kernel where that file does not exist (N2).
         """
-        if enforcement is SandboxEnforcement.PARTIAL:
+        if outcome.enforcement is SandboxEnforcement.PARTIAL:
             return (
                 "this deployment claims reads are confined to the workspace "
-                f"(read_scope={self._read_scope.value!r}) and the probe could not "
-                "verify it: a sandboxed command still reached a file outside its "
-                "workspace, so this boundary confines writes and not reads. Refusing "
-                "to run uncontained. Either enforce the claim or set "
-                "read_scope='host' and accept that reads are not confined "
-                "(finding 20, docs/notes/evals.md)."
+                f"(read_scope={self._read_scope.value!r}) and the probe could not verify it: "
+                f"{outcome.observed or 'the probe produced no evidence either way'}. Refusing "
+                "to run uncontained. Either enforce the claim or set read_scope='host' and "
+                "accept that reads are not confined (finding 20, docs/notes/evals.md)."
             )
+        if outcome.cause is SandboxCause.NO_LAUNCHER:
+            return (
+                f"the Linux namespace sandbox is not available on this host: "
+                f"{self._enter[0]!r} is not on PATH, so there is nothing to create the "
+                "namespaces with. Refusing to run uncontained: install util-linux (or point "
+                "`enter` at a launcher that exists — bwrap, nsenter), or use a provider that "
+                "does not claim a boundary."
+            )
+        if outcome.cause is SandboxCause.APPARMOR_RESTRICTS_USERNS:
+            return (
+                "the Linux namespace sandbox is not available on this host: it refuses to "
+                "create a user namespace for this user, and "
+                "kernel.apparmor_restrict_unprivileged_userns is 1, so Ubuntu 23.10+ / 24.04 is "
+                "restricting unprivileged user namespaces and even the argv that asks for one "
+                "cannot run. Refusing to run uncontained: `sudo sysctl -w "
+                "kernel.apparmor_restrict_unprivileged_userns=0` at the host (a deployment "
+                "decision, not something this process may take), or run as root, or use a "
+                "provider that does not claim a boundary."
+            )
+        # The launcher is installed and ran, and the namespaces still were not
+        # created. Say that, quote what it said, and name what was tried.
+        tried = ", ".join(mechanism.value for mechanism in outcome.attempted) or "nothing"
+        evidence = f" {outcome.observed}." if outcome.observed else ""
         return (
-            "the Linux namespace sandbox is not available on this host "
-            f"({self._enter[0]!r} missing, or it cannot create namespaces — "
-            "Ubuntu 24.04's AppArmor policy blocks unprivileged user "
-            "namespaces by default). Refusing to run uncontained: install a "
-            "working sandbox, or use a provider that does not claim one."
+            f"the Linux namespace sandbox is not available on this host: {self._enter[0]!r} is "
+            f"present, but it could not create the namespaces this boundary needs (tried: "
+            f"{tried}).{evidence} Refusing to run uncontained: install a working sandbox, or "
+            "use a provider that does not claim one."
         )
 
     # -- run ---------------------------------------------------------------
@@ -801,8 +966,8 @@ class NamespaceSandboxPlugin(PluginService):
             # than dressed up: `enforcement` says what this execution had.
             return await self._unsandboxed(argv, policy, cwd, env, timeout_s, stdin, started)
 
-        enforcement = self.probe()
-        if enforcement is not SandboxEnforcement.FULL:
+        enforcement = self.diagnose()
+        if enforcement.enforcement is not SandboxEnforcement.FULL:
             # Refused, not degraded. Running the command anyway and reporting a
             # weaker `enforcement` would be the silent fallback this provider
             # exists to avoid — the caller asked for a boundary and would not get
@@ -814,7 +979,7 @@ class NamespaceSandboxPlugin(PluginService):
                 # What the boundary actually had, so a caller reading only the
                 # result can tell "no sandbox on this host" from "a sandbox that
                 # does not meet the claim this deployment made".
-                enforcement=enforcement,
+                enforcement=enforcement.enforcement,
                 executed=False,
             )
 
