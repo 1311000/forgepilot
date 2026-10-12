@@ -15,6 +15,13 @@ it. Tightening before setting up would make the mounts impossible; Codex's
 ``codex-linux-sandbox`` splits the same way (an outer bubblewrap stage, an inner
 seccomp stage, then ``execvp``).
 
+**The capability is obtained, not assumed.** Those namespace flags need
+``CAP_SYS_ADMIN`` in the user namespace the caller is *already* in, which a
+non-root deployment does not have — so the shipped argv used to require root or a
+privileged container while the bundle claimed no operator had to lower anything
+(N2, ``docs/notes/gates-on-linux.md``). :class:`UserNamespace` is where "how the
+capability is obtained" is stated, and the probe is what decides it.
+
 **The logic here is pure.** :func:`mount_rules` and :func:`build_argv` decide
 everything and are tested on any platform; only :meth:`run` touches syscalls.
 That split is deliberate — "written but never run" is how this project has found
@@ -59,8 +66,10 @@ __all__ = [
     "NamespaceSandboxPlugin",
     "MountKind",
     "MountRule",
+    "UserNamespace",
     "build_argv",
     "mount_rules",
+    "userns_from",
 ]
 
 #: Paths that stay read-only even inside a writable workspace.
@@ -115,6 +124,15 @@ _READ_PROBE_LEAK = "FORGEPILOT-READ-PROBE-LEAKED"
 
 class MountKind(StrEnum):
     BIND = "bind"
+    #: Change the mode of a mount that **already exists**, instead of making a new
+    #: one over it. Only ``/`` needs this, and it is not an optimisation: inside a
+    #: user namespace every mount that came from outside it is ``MNT_LOCKED``, so
+    #: ``mount --bind / /`` is refused — measured as ``mount: /: wrong fs type, bad
+    #: option, bad superblock on /`` — while ``mount -o remount,bind,ro /``, which
+    #: is all a read-only root ever needed, is permitted. With ``set -e`` the
+    #: refused self-bind aborted the launcher, so an unprivileged caller could not
+    #: enter the boundary at all even with ``-U -r``.
+    REMOUNT = "remount"
     TMPFS = "tmpfs"
     #: Replace every top-level entry the boundary does not name with a tmpfs (a
     #: directory) or ``/dev/null`` (a file). This is what a *read* claim costs: a
@@ -149,6 +167,58 @@ class MountRule:
     keep: tuple[Path, ...] = ()
 
 
+class UserNamespace(StrEnum):
+    """How the launcher obtains the capability to create namespaces.
+
+    ``--mount --pid --ipc --uts`` need ``CAP_SYS_ADMIN`` **in the user namespace
+    the caller is already in**. A deployment running as an ordinary user has no
+    such capability, so the shipped argv failed there on every distro —
+    ``unshare: unshare failed: Operation not permitted`` — while
+    ``bundles/kernel_sandbox/patch.yaml`` said no operator had to lower anything
+    (N2, ``docs/notes/gates-on-linux.md``). ``-U -r`` creates a user namespace and
+    maps the caller to root *inside it*, which is where the capability comes from.
+
+    Three values, and the difference is what happens when the mechanism is not
+    available:
+
+    - ``map-root`` — the argv carries ``-U -r``. Where the host forbids
+      unprivileged user namespaces the probe says ``none`` and nothing runs; the
+      refusal then names *that*, rather than blaming something else.
+    - ``require-root`` — the argv as it has always been: correct exactly for a
+      deployment that runs as root or inside a privileged container.
+    - ``auto`` (the default) — the probe tries ``map-root`` first and falls back
+      to ``require-root`` **only when the effective uid is 0**, then records what
+      it used. The same profile has to work both on a Linux deployment and in a
+      root container, and neither should have to write the other's setting.
+
+    ``auto`` is deliberately **not** a value :func:`build_argv` accepts: an argv
+    nobody measured is the "the probe proved A and the run used B" defect this
+    period exists to fix, so :meth:`NamespaceSandboxPlugin.probe` resolves it
+    against the machine first and the builder refuses the unresolved one out loud.
+    """
+
+    AUTO = "auto"
+    MAP_ROOT = "map-root"
+    REQUIRE_ROOT = "require-root"
+
+
+#: The launcher flags that obtain the capability by mapping the caller to root
+#: inside a new user namespace. ``-r`` implies ``-U``; both are spelled out so the
+#: argv explains itself to whoever is reading a refusal.
+_USERNS_FLAGS: tuple[str, ...] = ("-U", "-r")
+
+
+def _effective_uid() -> int | None:
+    """The caller's uid, or ``None`` where the platform has no such concept.
+
+    ``os.geteuid`` is POSIX-only. The value only decides whether the *fallback*
+    mechanism is worth trying, and Windows — where this provider cannot create a
+    namespace at all — must not answer it by claiming to be root.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    return None if geteuid is None else int(geteuid())
+
+
 def mount_rules(
     policy: SandboxExecutionPolicy, *, read_scope: ReadScope = ReadScope.HOST
 ) -> tuple[MountRule, ...]:
@@ -156,7 +226,9 @@ def mount_rules(
 
     Later overrides earlier, so the sequence *is* the policy:
 
-    1. ``/`` read-only — the broad rule, and everything a ``host`` claim needs;
+    1. ``/`` read-only — the broad rule, and everything a ``host`` claim needs. It
+       is a :attr:`MountKind.REMOUNT` rather than a bind, because ``/`` is already a
+       mount point and an unprivileged caller may not bind one it does not own;
     2. with ``read_scope: workspace``, every top-level entry outside the toolchain
        set is **masked**, which is what makes a read outside the workspace fail;
     3. the workspace writable, if the mode allows writing — re-bound from the
@@ -174,7 +246,7 @@ def mount_rules(
     command cannot know (see :class:`ReadScope`).
     """
     confined = read_scope is ReadScope.WORKSPACE
-    rules: list[MountRule] = [MountRule(target=Path("/"), read_only=True)]
+    rules: list[MountRule] = [MountRule(target=Path("/"), read_only=True, kind=MountKind.REMOUNT)]
 
     # `danger-full-access` asks for no boundary and never reaches here through
     # `run()`, so a read claim has nothing to add to it.
@@ -305,6 +377,14 @@ def _mount_script(rules: Sequence[MountRule], cwd: Path, argv: Sequence[str]) ->
         if rule.kind is MountKind.BIND_FROM_CWD:
             lines.extend(_bind_from_cwd(quoted, read_only=rule.read_only))
             continue
+        if rule.kind is MountKind.REMOUNT:
+            # The mount is already there; only its mode changes. `bind` is what
+            # tells the kernel to change this mount's flags rather than ask the
+            # superblock to remount, which for an overlay root would either fail or
+            # affect the host.
+            mode = "ro" if rule.read_only else "rw"
+            lines.append(f"mount -o remount,bind,{mode} {quoted}")
+            continue
         bind = [f"mount --bind {quoted} {quoted}"]
         # ⚠️ **Every** bind states its mode explicitly, including the writable
         # ones. This is not symmetry for its own sake: after `/` has been
@@ -349,6 +429,7 @@ def build_argv(
     cwd: Path,
     enter: Sequence[str] = ("unshare",),
     read_scope: ReadScope = ReadScope.HOST,
+    userns: UserNamespace = UserNamespace.REQUIRE_ROOT,
 ) -> tuple[str, ...]:
     """The full command line that runs ``command`` inside the boundary.
 
@@ -361,8 +442,21 @@ def build_argv(
 
     ``read_scope`` decides whether the script only *binds* the filesystem
     read-only (``host``) or also **masks** what it does not name (``workspace``).
+
+    ``userns`` says how the launcher is allowed to obtain the capability:
+    ``map-root`` prepends ``-U -r``, ``require-root`` (the default) is the argv as
+    it has always been. ``auto`` is refused — :class:`UserNamespace` explains why.
     """
+    if userns is UserNamespace.AUTO:
+        raise ValueError(
+            "userns='auto' cannot be built into an argv: the probe asks the machine which "
+            "mechanism works and must record the answer first, or the run would use an argv "
+            "nothing measured. Pass map-root or require-root."
+        )
+
     flags = ["--mount", "--pid", "--ipc", "--uts", "--fork", "--mount-proc"]
+    if userns is UserNamespace.MAP_ROOT:
+        flags[0:0] = list(_USERNS_FLAGS)
     if policy.network is not NetworkAccess.ALLOW:
         flags.append("--net")
 
@@ -392,6 +486,24 @@ def read_scope_from(value: Any) -> ReadScope:
         valid = ", ".join(sorted(scope.value for scope in ReadScope))
         raise ValueError(
             f"unknown sandbox read_scope {value!r}; this boundary can claim one of: {valid}"
+        ) from None
+
+
+def userns_from(value: Any) -> UserNamespace:
+    """Parse a configured capability mechanism, **loudly**.
+
+    Same reason as :func:`read_scope_from`: ``userns: maproot`` must not resolve to
+    something else. Here it would not weaken a claim, it would silently choose
+    between "works for this deployment" and "requires root" — and the deployment
+    would only find out when a command was refused.
+    """
+    try:
+        return UserNamespace(str(value))
+    except ValueError:
+        valid = ", ".join(sorted(mode.value for mode in UserNamespace))
+        raise ValueError(
+            f"unknown sandbox userns {value!r}; this launcher can obtain the capability "
+            f"by one of: {valid}"
         ) from None
 
 
@@ -453,11 +565,14 @@ class NamespaceSandboxPlugin(PluginService):
 
         enter: ["unshare"]        # how the boundary is entered; bwrap also works
         read_scope: host          # what it claims about reads (see ReadScope)
+        userns: auto              # how the capability is obtained (see UserNamespace)
         max_output_bytes: 64000   # per stream, so one command cannot fill the log
 
     ``probe()`` runs at first use rather than reading a flag, and it checks the
     claim in ``read_scope`` rather than a fixed one: ``host`` is verified by a
     *write* the boundary must refuse, ``workspace`` by a *read* it must refuse.
+    With ``userns: auto`` it also **decides** the mechanism, and records it: the
+    argv the probe proved is the argv :meth:`run` uses, or nothing runs.
     """
 
     provide = SERVICE_NAME
@@ -467,8 +582,13 @@ class NamespaceSandboxPlugin(PluginService):
         cfg = dict(config or {})
         self._enter: tuple[str, ...] = tuple(cfg.get("enter") or ("unshare",))
         self._read_scope = read_scope_from(cfg.get("read_scope", ReadScope.HOST.value))
+        self._userns = userns_from(cfg.get("userns", UserNamespace.AUTO.value))
         self.max_output_bytes = int(cfg.get("max_output_bytes", MAX_OUTPUT_BYTES))
         self._probed: SandboxEnforcement | None = None
+        #: What the probe measured, as opposed to what was configured. ``None``
+        #: means "no mechanism was shown to work", which is not the same as "the
+        #: configured one", and :func:`build_argv` refuses to guess between them.
+        self._resolved: UserNamespace | None = None
 
     # -- probe -------------------------------------------------------------
     def probe(self) -> SandboxEnforcement:
@@ -489,6 +609,13 @@ class NamespaceSandboxPlugin(PluginService):
         workspace`` by a *read* it must refuse — because a write test cannot tell
         a boundary from a boundary that hides nothing, and reporting ``FULL`` for
         the second is exactly what finding 20 measured.
+
+        **With ``userns: auto`` it also picks the mechanism, by trying.** The
+        order is :meth:`_candidates`, the first mechanism that verifies is the one
+        recorded, and a run can only use a mechanism the probe proved — so a
+        non-root deployment on a kernel that forbids user namespaces reports
+        ``none`` and says why, rather than quietly running the argv that needs
+        root.
         """
         if self._probed is None:
             self._probed = self._probe_now()
@@ -497,11 +624,36 @@ class NamespaceSandboxPlugin(PluginService):
     def _probe_now(self) -> SandboxEnforcement:
         if shutil.which(self._enter[0]) is None:
             return SandboxEnforcement.NONE
-        if self._read_scope is ReadScope.WORKSPACE:
-            return self._probe_reads()
-        return self._probe_writes()
+        for candidate in self._candidates():
+            enforcement = self._probe_with(candidate)
+            if enforcement is not SandboxEnforcement.NONE:
+                self._resolved = candidate
+                return enforcement
+        # Nothing worked, so nothing is recorded: `build_argv` refuses an
+        # unresolved mechanism, and every later call goes through the refusal.
+        return SandboxEnforcement.NONE
 
-    def _probe_writes(self) -> SandboxEnforcement:
+    def _candidates(self) -> tuple[UserNamespace, ...]:
+        """The mechanisms to try, in order, for what was configured.
+
+        ``auto`` tries ``map-root`` first because it is the one that works for a
+        deployment that is not root — and "no ``--allow-uncontained-exec``" has to
+        mean that, not "run me as root". Falling back to ``require-root`` is only
+        honest for a process that is already root: for anyone else it guarantees
+        the same failure again, one process spawn later, with a worse message.
+        """
+        if self._userns is not UserNamespace.AUTO:
+            return (self._userns,)
+        if _effective_uid() == 0:
+            return (UserNamespace.MAP_ROOT, UserNamespace.REQUIRE_ROOT)
+        return (UserNamespace.MAP_ROOT,)
+
+    def _probe_with(self, userns: UserNamespace) -> SandboxEnforcement:
+        if self._read_scope is ReadScope.WORKSPACE:
+            return self._probe_reads(userns)
+        return self._probe_writes(userns)
+
+    def _probe_writes(self, userns: UserNamespace) -> SandboxEnforcement:
         """The claim ``host`` makes: a read-only ``/`` refuses the write.
 
         Nothing here says anything about reads, and nothing here can — that is
@@ -512,12 +664,12 @@ class NamespaceSandboxPlugin(PluginService):
             workspace_root=Path("/"),
             session_id=SessionId("sandbox-probe"),
         )
-        completed = self._run_probe(["true"], policy=probe_policy, cwd=Path("/"))
+        completed = self._run_probe(["true"], policy=probe_policy, cwd=Path("/"), userns=userns)
         if completed is None:
             return SandboxEnforcement.NONE
         return SandboxEnforcement.FULL if completed.returncode == 0 else SandboxEnforcement.NONE
 
-    def _probe_reads(self) -> SandboxEnforcement:
+    def _probe_reads(self, userns: UserNamespace) -> SandboxEnforcement:
         """The claim ``workspace`` makes: a read *outside* the workspace fails.
 
         The canary is placed outside the workspace **and outside `/tmp`** on
@@ -553,7 +705,7 @@ class NamespaceSandboxPlugin(PluginService):
                 "-c",
                 f"cat {shlex.quote(canary.as_posix())} 2>/dev/null; echo {_READ_PROBE_MARKER}",
             ]
-            completed = self._run_probe(command, policy=policy, cwd=workspace)
+            completed = self._run_probe(command, policy=policy, cwd=workspace, userns=userns)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         if completed is None:
@@ -561,7 +713,12 @@ class NamespaceSandboxPlugin(PluginService):
         return _read_probe_verdict(completed.returncode, completed.stdout or "")
 
     def _run_probe(
-        self, command: Sequence[str], *, policy: SandboxExecutionPolicy, cwd: Path
+        self,
+        command: Sequence[str],
+        *,
+        policy: SandboxExecutionPolicy,
+        cwd: Path,
+        userns: UserNamespace,
     ) -> subprocess.CompletedProcess[str] | None:
         argv = build_argv(
             command,
@@ -569,6 +726,7 @@ class NamespaceSandboxPlugin(PluginService):
             cwd=cwd,
             enter=self._enter,
             read_scope=self._read_scope,
+            userns=userns,
         )
         try:
             return subprocess.run(  # noqa: S603 - entering the namespace is the point
@@ -582,6 +740,21 @@ class NamespaceSandboxPlugin(PluginService):
             )
         except (OSError, subprocess.SubprocessError):
             return None
+
+    def _mechanism(self) -> UserNamespace:
+        """The mechanism the probe *proved*, and never a guess.
+
+        ``run()`` asks this after ``probe()`` answered ``FULL``, so reaching the
+        error means the two disagreed — the shape of defect this period exists to
+        remove, which is why it raises instead of defaulting to the configured
+        value.
+        """
+        if self._resolved is None:
+            raise RuntimeError(
+                "no namespace mechanism was verified on this host, so there is no argv to "
+                "build: ask probe() first, and only a full answer records one."
+            )
+        return self._resolved
 
     def _refusal(self, enforcement: SandboxEnforcement) -> str:
         """Why the command was not run, in the terms of *this* provider.
@@ -651,6 +824,7 @@ class NamespaceSandboxPlugin(PluginService):
             cwd=cwd,
             enter=self._enter,
             read_scope=self._read_scope,
+            userns=self._mechanism(),
         )
         return await self._spawn(full, argv, policy, cwd, env, timeout_s, stdin, started)
 

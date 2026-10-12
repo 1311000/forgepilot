@@ -50,6 +50,14 @@
     # How the boundary is entered, as a command line. `unshare` ships with
     # util-linux; `["bwrap", ...]` works too once bubblewrap is installed.
     enter: [unshare]
+    # How that command-line obtains the capability, which is a separate question
+    # from which program to run: `auto` asks the machine (`-U -r` first, which
+    # needs no privilege; the shipped argv only when already root), `map-root`
+    # always uses `-U -r`, `require-root` is the argv that needs CAP_SYS_ADMIN —
+    # what a container that runs as root *is* entitled to. `auto` is not a guess:
+    # the answer is the mechanism the probe actually ran, and a run is built from
+    # that and nothing else.
+    userns: auto
     # What this boundary claims about reads: `host` (writes confined, reads reach
     # the whole filesystem) or `workspace` (reads confined to the workspace).
     # Claiming more than the boundary enforces is refused, not ignored.

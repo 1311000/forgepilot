@@ -183,7 +183,11 @@ async def _load(config: dict):
     root = create_root()
     fiber = await root.plugin(
         resolve_plugin("forgepilot.providers.sandbox.namespace:NamespaceSandboxPlugin"),
-        config,
+        # Every test here drives `probe()`/`run()` through a stand-in launcher, so
+        # the mechanism is named explicitly: `auto` tries `-U -r` first, and a
+        # python script is not a namespace launcher. The mechanism has its own
+        # tests below, where it is the subject rather than the scaffolding.
+        {"userns": "require-root", **config},
     )
     try:
         yield root.sandbox
@@ -366,6 +370,220 @@ def test_read_scope_does_not_silently_fall_back_to_host() -> None:
 
     with pytest.raises(ValueError, match="workspce"):
         read_scope_from("workspce")
+
+
+# ---------------------------------------------------------------------------
+# How the capability is obtained (N2, docs/notes/gates-on-linux.md)
+# ---------------------------------------------------------------------------
+def test_the_root_is_remounted_rather_than_rebound() -> None:
+    """An unprivileged caller may not bind a mount it does not own.
+
+    Measured inside `unshare -U -r`: every mount that came from outside the new
+    user namespace is `MNT_LOCKED`, so the launcher's first rule —
+    `mount --bind / /` — is refused with `mount: /: wrong fs type, bad option, bad
+    superblock on /`, and `set -e` aborts before anything runs. That is why the
+    mechanism alone was not enough: with `-U -r` the argv got the capability and
+    then died on rule one. A read-only `/` is a flag change, and changing flags is
+    permitted where binding is not.
+    """
+    from forgepilot.providers.sandbox.namespace import MountKind, build_argv, mount_rules
+
+    root = mount_rules(policy(SandboxMode.WORKSPACE_WRITE))[0]
+
+    assert root.target == Path("/")
+    assert root.read_only is True
+    assert root.kind is MountKind.REMOUNT
+
+    argv = build_argv(
+        ["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE
+    )
+    script = argv[argv.index("-c") + 1]
+
+    assert "mount --bind / /" not in script
+    assert "mount -o remount,bind,ro /" in script
+
+
+def test_map_root_is_the_flags_that_need_no_root() -> None:
+    """`-U -r` is where the capability comes from for a deployment that is not root.
+
+    Without it, `--mount --pid --ipc --uts` need `CAP_SYS_ADMIN` in the user
+    namespace the caller is *already* in — measured: uid 1000 exits 1 with
+    `unshare: unshare failed: Operation not permitted` while `-U -r` exits 0.
+    """
+    from forgepilot.providers.sandbox.namespace import UserNamespace, build_argv
+
+    argv = build_argv(
+        ["true"],
+        policy=policy(SandboxMode.WORKSPACE_WRITE),
+        cwd=WORKSPACE,
+        userns=UserNamespace.MAP_ROOT,
+    )
+
+    assert list(argv[:3]) == ["unshare", "-U", "-r"]
+    assert "--mount" in argv and "--mount-proc" in argv
+
+
+def test_require_root_is_the_argv_that_was_always_shipped() -> None:
+    """The regression gate: a root deployment keeps exactly the argv it had.
+
+    A new parameter that quietly changed the default would move every deployment
+    at once, including the privileged-container path this project measures
+    containment against.
+    """
+    from forgepilot.providers.sandbox.namespace import UserNamespace, build_argv
+
+    default = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
+    explicit = build_argv(
+        ["true"],
+        policy=policy(SandboxMode.WORKSPACE_WRITE),
+        cwd=WORKSPACE,
+        userns=UserNamespace.REQUIRE_ROOT,
+    )
+
+    assert default == explicit
+    assert "-U" not in default and "-r" not in default
+
+
+def test_auto_is_refused_rather_than_guessed() -> None:
+    """`auto` is a question for the machine, not a default for the builder.
+
+    Building an unmeasured argv is how "the probe proved A and the run used B"
+    happens. Refusing it here makes that unrepresentable rather than unlikely.
+    """
+    from forgepilot.providers.sandbox.namespace import UserNamespace, build_argv
+
+    with pytest.raises(ValueError, match="auto"):
+        build_argv(
+            ["true"],
+            policy=policy(SandboxMode.WORKSPACE_WRITE),
+            cwd=WORKSPACE,
+            userns=UserNamespace.AUTO,
+        )
+
+
+def test_userns_does_not_silently_fall_back() -> None:
+    """`userns: maproot` must not resolve to something else.
+
+    Here the wrong value does not weaken a claim, it picks between "works for this
+    deployment" and "requires root" — and the deployment would only find out when
+    a command was refused.
+    """
+    from forgepilot.providers.sandbox.namespace import UserNamespace, userns_from
+
+    assert userns_from("auto") is UserNamespace.AUTO
+    assert userns_from("map-root") is UserNamespace.MAP_ROOT
+    assert userns_from("require-root") is UserNamespace.REQUIRE_ROOT
+
+    with pytest.raises(ValueError, match="maproot"):
+        userns_from("maproot")
+
+
+async def test_auto_records_the_mechanism_the_probe_proved(tmp_path: Path) -> None:
+    """The recorded answer is the one `run` builds — not the configured one.
+
+    `build_argv` refuses an unresolved `auto`, so a run can only happen through a
+    mechanism `probe()` actually exercised; this asserts the whole way through, on
+    the argv the launcher was handed.
+    """
+    enter, log = a_launcher(tmp_path, exit_code=0)
+
+    async for plugin in _load({"enter": enter, "userns": "auto"}):
+        assert plugin.probe() is SandboxEnforcement.FULL
+        result = await plugin.run(
+            ["echo", "hello"],
+            policy=policy(SandboxMode.WORKSPACE_WRITE),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert result.executed is True
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded[:2] == ["-U", "-r"], "the run used an argv the probe never proved"
+
+
+def a_launcher_that_refuses_userns(tmp_path: Path) -> tuple[list[str], Path]:
+    """Stands in for a kernel that forbids unprivileged user namespaces.
+
+    It fails exactly when the argv asks for one, which is what
+    `kernel.apparmor_restrict_unprivileged_userns=1` (or a kernel built without
+    `CONFIG_USER_NS`) does to a real `unshare` — so the fallback can be observed
+    rather than described.
+    """
+    script = tmp_path / "launcher-no-userns.py"
+    log = tmp_path / "argv-no-userns.txt"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys, pathlib",
+                f"pathlib.Path({str(log)!r}).write_text(chr(10).join(sys.argv[1:]))",
+                'sys.exit(1 if "-U" in sys.argv else 0)',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return [sys.executable, str(script)], log
+
+
+async def test_auto_falls_back_to_require_root_only_when_already_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback is honest for root and a lie for anyone else.
+
+    As root the fallback runs the shipped argv and verifies it; as an ordinary
+    user it would guarantee the same failure again, one process spawn later, with
+    a message about the wrong cause — so `auto` does not try it.
+    """
+    monkeypatch.setattr(
+        "forgepilot.providers.sandbox.namespace._effective_uid", lambda: 0, raising=True
+    )
+    enter, log = a_launcher_that_refuses_userns(tmp_path)
+
+    async for plugin in _load({"enter": enter, "userns": "auto"}):
+        assert plugin.probe() is SandboxEnforcement.FULL
+        result = await plugin.run(
+            ["echo", "hello"],
+            policy=policy(SandboxMode.WORKSPACE_WRITE),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert result.executed is True
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert "-U" not in recorded, "the fallback mechanism is the one without a user namespace"
+
+
+async def test_a_non_root_host_that_forbids_userns_is_none_not_a_root_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No mechanism is recorded, so nothing runs — the failure is not hidden.
+
+    This is today's non-root deployment: the launcher is present and refuses. The
+    point of the test is that the provider does not fall back to an argv that
+    needs root, and does not report anything above `none` for a host that cannot
+    contain.
+    """
+    monkeypatch.setattr(
+        "forgepilot.providers.sandbox.namespace._effective_uid", lambda: 1000, raising=True
+    )
+    enter, log = a_launcher_that_refuses_userns(tmp_path)
+
+    async for plugin in _load({"enter": enter, "userns": "auto"}):
+        assert plugin.probe() is SandboxEnforcement.NONE
+        result = await plugin.run(
+            ["echo", "hello"],
+            policy=policy(SandboxMode.WORKSPACE_WRITE),
+            cwd=tmp_path,
+            env={},
+            timeout_s=5.0,
+        )
+
+    assert result.executed is False
+    assert result.enforcement is SandboxEnforcement.NONE
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded[:2] == ["-U", "-r"], "the one attempt made was the one that could work"
 
 
 # ---------------------------------------------------------------------------

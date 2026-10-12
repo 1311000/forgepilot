@@ -47,10 +47,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
+from forgepilot.providers.sandbox.namespace import UserNamespace
 from forgepilot.seams.refs import SessionId
 from forgepilot.seams.sandbox import ReadScope, SandboxExecutionPolicy, SandboxMode
 
@@ -178,6 +180,21 @@ def confined_scriptfile(tmp_path_factory) -> Path:
     return path
 
 
+def _verdict(completed: subprocess.CompletedProcess[str]) -> dict[str, str]:
+    line = next(
+        (
+            candidate
+            for candidate in completed.stdout.splitlines()
+            if candidate.startswith("workspace_root=")
+        ),
+        "",
+    )
+    assert line, (
+        f"the launcher produced no verdict.\nstdout: {completed.stdout}\nstderr: {completed.stderr}"
+    )
+    return dict(part.split("=", 1) for part in line.split())
+
+
 def run_in_container(script: Path) -> dict[str, str]:
     completed = subprocess.run(
         [
@@ -193,16 +210,75 @@ def run_in_container(script: Path) -> dict[str, str]:
         timeout=600,
         check=False,
     )
-    line = next(
-        (
-            candidate
-            for candidate in completed.stdout.splitlines()
-            if candidate.startswith("workspace_root=")
-        ),
-        "",
+    return _verdict(completed)
+
+
+def run_argv_as_nobody(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """The real thing: the provider's argv, run by a caller with no privilege.
+
+    Four choices, each load-bearing and each measured rather than assumed:
+
+    - `--user 1000:1000` — the caller N2 is about. A container that runs as root
+      would answer a different question and answer it green.
+    - `--security-opt seccomp=unconfined` — Docker's default seccomp profile is
+      what refuses `clone(CLONE_NEWUSER)`, so leaving it on would make this a
+      measurement of the container runtime instead of the kernel
+      (`docs/notes/gates-on-linux.md`, N2's caveat).
+    - `--tmpfs /ws` — as uid 1000 there is no workspace to seed, and the launcher
+      would fail for a reason that has nothing to do with namespaces. `mode=1777`
+      is what lets an unprivileged caller write in it.
+    - the wrapper seeds `/ws` *outside* the boundary, because `.git` and `src` have
+      to exist before the launcher's `only_if_present` rules can protect them —
+      the ordering `scriptfile` gets by running its prelude in a privileged
+      container. Then `exec "$@"` hands the process over, so what is measured is
+      the argv and not a shell around it.
+
+    Deliberately **not** `--privileged`, and not `--cap-add=SYS_ADMIN`: either would
+    let the shipped argv succeed as well, erasing the contrast the two tests below
+    rest on.
+    """
+    return subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "--user", "1000:1000",
+            "--security-opt", "seccomp=unconfined",
+            "--tmpfs", "/ws:mode=1777",
+            IMAGE,
+            "sh", "-c",
+            'mkdir -p /ws/.git /ws/src; echo seed > /ws/keep.txt; exec "$@"',
+            "sh", *argv,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        check=False,
     )
-    assert line, f"the launcher produced no verdict.\nstdout: {completed.stdout}\nstderr: {completed.stderr}"
-    return dict(part.split("=", 1) for part in line.split())
+
+
+def launcher_argv(*, userns: UserNamespace) -> list[str]:
+    """`build_argv`'s own output, with the checks as the command *inside* it.
+
+    ⚠️ The **whole** argv, `unshare` included — the one difference from
+    `generated_script`, which strips the launcher because a privileged container
+    is already the boundary. Here the caller is uid 1000 and that launcher is the
+    thing under measurement, so leaving it out would measure the container.
+    """
+    from forgepilot.providers.sandbox.namespace import build_argv
+
+    return list(
+        build_argv(
+            ["sh", "-c", CHECKS],
+            policy=SandboxExecutionPolicy(
+                mode=SandboxMode.WORKSPACE_WRITE,
+                workspace_root=WORKSPACE,
+                session_id=SessionId("userns"),
+            ),
+            cwd=WORKSPACE,
+            userns=userns,
+        )
+    )
 
 
 def test_the_workspace_is_writable_and_everything_else_is_not(scriptfile: Path) -> None:
@@ -246,3 +322,66 @@ def test_a_read_claim_hides_what_it_does_not_name(confined_scriptfile: Path) -> 
     # tmpfs, so writes land in memory and the host's `/outside` is neither read
     # nor altered — which is why the read above, not this write, is the evidence.
     assert verdict["outside_write"] == "writable-mask", verdict
+
+
+def test_the_shipped_argv_cannot_contain_a_non_root_caller() -> None:
+    """N2 as a negative control: the argv that passes as root fails as uid 1000.
+
+    This is what makes the next test mean something. Without it, a green result
+    there could be explained by the container being permissive enough for
+    anything, and the period would rest on a measurement with no negative case —
+    the same shape as the *other* N1 defect, where a test that measured nothing
+    reported itself as a pass.
+    """
+    completed = run_argv_as_nobody(launcher_argv(userns=UserNamespace.REQUIRE_ROOT))
+    combined = completed.stdout + completed.stderr
+
+    assert "workspace_root=" not in combined, (
+        "the shipped argv contained a non-root caller, which contradicts N2: " + combined
+    )
+    assert "Operation not permitted" in combined, combined
+    assert completed.returncode != 0, combined
+
+
+def test_a_non_root_caller_is_contained_by_a_user_namespace() -> None:
+    """The mechanism, measured rather than assumed: `-U -r` as uid 1000.
+
+    Identical launcher, identical assertions, one different flag — so a pass here
+    is the user namespace and nothing else. This is the row M12 exists for: before
+    it the provider's own bundle could not contain a non-root deployment at all,
+    and its refusal named the wrong cause.
+    """
+    verdict = _verdict(run_argv_as_nobody(launcher_argv(userns=UserNamespace.MAP_ROOT)))
+
+    assert verdict["workspace_root"] == "writable", verdict
+    assert verdict["subdir"] == "writable", verdict
+    assert verdict["outside"] == "read-only", verdict
+    assert verdict["git"] == "read-only", verdict
+    assert verdict["tmp"] == "writable", verdict
+    assert verdict["existing"] == "readable", verdict
+
+
+def test_the_write_probe_succeeds_for_a_non_root_caller() -> None:
+    """The probe's own argv, run the way the probe runs it: exit 0, so `FULL`.
+
+    `_probe_writes` is what decides the verdict `arm` trusts, and it asks by
+    running `["true"]` under a read-only policy. Measuring *it* rather than
+    inferring it from the boundary test above is the difference between "a
+    non-root deployment can be contained" and "a non-root deployment probes
+    `full`" — the second is the claim the bundle makes.
+    """
+    from forgepilot.providers.sandbox.namespace import UserNamespace, build_argv
+
+    argv = build_argv(
+        ["true"],
+        policy=SandboxExecutionPolicy(
+            mode=SandboxMode.READ_ONLY,
+            workspace_root=Path("/"),
+            session_id=SessionId("userns-probe"),
+        ),
+        cwd=Path("/"),
+        userns=UserNamespace.MAP_ROOT,
+    )
+    completed = run_argv_as_nobody(argv)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
