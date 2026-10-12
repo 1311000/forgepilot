@@ -36,7 +36,7 @@ from forgepilot.identity import (
     verify,
 )
 from forgepilot.identity.principal import principal_of
-from forgepilot.runtime.commandline import UnparsableCommand, programs
+from forgepilot.runtime.commandline import UnparsableCommand, programs, split_command
 from forgepilot.runtime.guards import (
     GuardDecision,
     GuardSnapshot,
@@ -45,7 +45,7 @@ from forgepilot.runtime.guards import (
     default_guards,
     make_view,
 )
-from forgepilot.seams.security import ExecutionConstraints
+from forgepilot.seams.security import ExecutionConstraints, normalise_program
 from forgepilot.seams.tools import ResourceTargets, ToolEffect
 
 KEY = b"test-signing-key"
@@ -226,17 +226,24 @@ def test_a_launcher_is_followed_to_the_program_it_starts() -> None:
 
 
 def test_the_same_program_is_recognised_in_the_spelling_the_caller_used() -> None:
-    """Normalisation is about *the same program*, not about a version."""
+    """Normalisation is about *the same program*, not about a version.
+
+    The rule is a pure function of the token, so it is asserted directly. The
+    guard then sees whichever token **this** platform's shell would build:
+    ``/usr/bin/PYTHON`` is portable, while ``C:\\tools\\Python\\python.exe`` is
+    not — see :func:`test_a_windows_path_is_kept_whole_where_backslashes_are_not_escapes`.
+    """
     python_only = derived(frozenset({"python"}))
 
-    assert command_scope_guard(
-        view(r"C:\tools\Python\python.exe -m pytest -q", python_only)
-    ).decision is GuardDecision.ABSTAIN
+    assert normalise_program(r"C:\tools\Python\python.exe") == "python"
+    assert normalise_program("/usr/bin/PYTHON") == "python"
+
     assert command_scope_guard(
         view("/usr/bin/PYTHON -m pytest -q", python_only)
     ).decision is GuardDecision.ABSTAIN
 
     # `python3` is a different program and is deliberately not folded into it.
+    assert normalise_program("python3") == "python3"
     result = command_scope_guard(view("python3 -m pytest -q", python_only))
     assert result.decision is GuardDecision.DENY
     assert "'python3'" in result.reason
@@ -244,12 +251,12 @@ def test_the_same_program_is_recognised_in_the_spelling_the_caller_used() -> Non
 
 def test_the_refusal_shows_the_spelling_the_caller_used() -> None:
     result = command_scope_guard(
-        view(r"C:\tools\Python\python.exe x.py", derived(GIT_ONLY))
+        view("/usr/bin/PYTHON x.py", derived(GIT_ONLY))
     )
 
     assert result.decision is GuardDecision.DENY
     assert "python" in result.reason
-    assert "C:\\\\tools\\\\Python\\\\python.exe" in result.reason
+    assert "/usr/bin/PYTHON" in result.reason
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +363,31 @@ def test_the_decomposer_refuses_what_it_cannot_attribute() -> None:
             programs(command)
 
 
-def test_the_decomposer_keeps_a_windows_path_whole() -> None:
-    """``split_command`` is platform-aware for this reason, and this is where it shows."""
-    assert programs(r"C:\tools\Python\python.exe -m pytest -q") == (
-        r"C:\tools\Python\python.exe",
-    )
+def test_a_windows_path_is_kept_whole_where_backslashes_are_not_escapes() -> None:
+    """``split_command`` is platform-aware, and this test asks it instead of assuming.
+
+    On Windows ``posix=False`` keeps a path such as ``C:\\tools\\Python\\python.exe``
+    intact, because that is what the shell there does. On POSIX the very same line
+    means something else — ``\\`` is an escape — and the token really is
+    ``C:toolspythonpython.exe``. ⚠️ **A test that pinned the Windows spelling would
+    be asserting that POSIX reads a backslash differently from `sh`**, which is how
+    this file's first version went red on CI while passing here.
+
+    Both readings are fine, and the direction that matters is the same in both: a
+    name the list does not contain is **refused**, never waved through.
+    """
+    line = r"C:\tools\Python\python.exe -m pytest -q"
+    token = split_command(line)[0]
+
+    assert programs(line) == (token,)
+
+    if "\\" in token:  # Windows: the path survived as one token.
+        assert token == r"C:\tools\Python\python.exe"
+        assert command_scope_guard(
+            view(line, derived(frozenset({"python"})))
+        ).decision is GuardDecision.ABSTAIN
+    else:  # POSIX: `\` was consumed as an escape, exactly as the shell would.
+        assert token == "C:toolspythonpython.exe"
+        assert command_scope_guard(
+            view(line, derived(frozenset({"python"})))
+        ).decision is GuardDecision.DENY
