@@ -8,8 +8,10 @@ point, because `arm` refuses `exec` on a host reporting below `full`. With it,
 
 **The logic is a pure function.** Which mounts, in which order, with which
 namespace flags is decided by `mount_rules` and `build_argv`, and those are tested
-everywhere. Only the syscalls are Linux-only, and those are exercised through WSL
-(below) rather than left as a comment.
+everywhere. Only the syscalls are Linux-only, and those are exercised against a
+real kernel — through `unshare` on a Linux runner, or through WSL on this Windows
+box when the transport is named explicitly (`FORGEPILOT_SANDBOX_TRANSPORT=wsl`)
+— rather than left as a comment.
 
 Ordering is the load-bearing part. Later mounts override earlier ones, so a rule
 list is really a precedence order: the workspace is made writable after `/` is
@@ -21,8 +23,11 @@ specificity.
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -39,9 +44,17 @@ from forgepilot.seams.security import NetworkAccess
 WORKSPACE = Path("/srv/checkouts/svc-a")
 
 
-def policy(mode: SandboxMode, network: NetworkAccess = NetworkAccess.DENY):
+def policy(
+    mode: SandboxMode,
+    network: NetworkAccess = NetworkAccess.DENY,
+    *,
+    workspace_root: Path = WORKSPACE,
+):
     return SandboxExecutionPolicy(
-        mode=mode, workspace_root=WORKSPACE, session_id=SessionId("s-1"), network=network
+        mode=mode,
+        workspace_root=workspace_root,
+        session_id=SessionId("s-1"),
+        network=network,
     )
 
 
@@ -100,13 +113,31 @@ def test_tmp_is_always_a_fresh_writable_tmpfs() -> None:
 
     Giving them the real `/tmp` instead would let one command read another's
     leftovers, so it is a fresh tmpfs per execution.
+
+    ⚠️ **Last, in every configuration, and that is a rule rather than an accident
+    of ordering.** Rule ordering is precedence; a `/tmp` rule anywhere but the end
+    would let a later bind put something back under the tmpfs — which is exactly
+    the bug N1 found in the test that was supposed to prove containment, where the
+    workspace lived under `/tmp`. Anything the boundary must be able to see has to
+    be prepared outside it.
     """
     from forgepilot.providers.sandbox.namespace import MountKind, mount_rules
 
-    for mode in (SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE):
-        tmp = next(r for r in mount_rules(policy(mode)) if r.target == Path("/tmp"))
-        assert tmp.kind is MountKind.TMPFS
-        assert tmp.read_only is False
+    for mode in (
+        SandboxMode.READ_ONLY,
+        SandboxMode.WORKSPACE_WRITE,
+        SandboxMode.DANGER_FULL_ACCESS,
+    ):
+        for read_scope in (ReadScope.HOST, ReadScope.WORKSPACE):
+            rules = mount_rules(policy(mode), read_scope=read_scope)
+            tmp = next(r for r in rules if r.target == Path("/tmp"))
+            assert tmp.kind is MountKind.TMPFS
+            assert tmp.read_only is False
+            assert rules[-1] is tmp, (
+                f"the /tmp tmpfs is not the last rule for {mode.value}/{read_scope.value}: "
+                "a rule after it can put a path back under a filesystem that has "
+                "just been replaced"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -746,96 +777,202 @@ async def test_run_refuses_when_the_boundary_is_unavailable(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# It really contains — through WSL, because this host has no Linux syscalls
+# It really contains — on a Linux kernel, through a transport the host names
 # ---------------------------------------------------------------------------
-ON_LINUX = sys.platform.startswith("linux")
-
-
 def wsl_enter() -> list[str]:
     return ["wsl", "-d", "docker-desktop", "--", "unshare"]
 
 
-@pytest.mark.skipif(
-    not ON_LINUX,
-    reason=(
-        "this host has no Linux syscalls, and wsl.exe cannot carry this argv. "
-        "Measured, in order of discovery: it rewrites POSIX-looking arguments into "
-        "Windows paths (`/bin/sh` arrived at the kernel as "
-        "`D:/software/Git/usr/bin/sh`, so `unshare` could not exec it), and it "
-        "drops every positional parameter after the first operand following `-c` "
-        "(`sh -c 'echo n=$#; echo $@' sh printf hi` reports n=0). The argv this "
-        "provider builds ends in `sh -c <script> sh <command...>`, so the command "
-        "cannot arrive. "
-        "What *was* verified by hand on the WSL kernel, with `sh` substituted for "
-        "`/bin/sh` to get past the rewrite and the mount script taken verbatim from "
-        "`_mount_script`: `unshare --mount --pid --ipc --uts --fork --mount-proc "
-        "--net sh -c '<script>' sh` -> a write into the read-only root is refused "
-        "(`Read-only file system`), and `--net` yields `0 /proc/net/route`. The "
-        "containment is real; only its automation is blocked. Production is Linux, "
-        "and this is the test that runs there."
-    ),
-)
+@dataclass(frozen=True)
+class Transport:
+    """How this process reaches a Linux kernel, and how its filesystem is touched.
+
+    The transport is **named** rather than inferred, because the two candidates
+    fail in different ways and the failure is what the reason line has to say:
+
+    * ``unshare`` — what ``src/forgepilot/bundles/kernel_sandbox/patch.yaml`` ships
+      and what a production Linux deployment has. Its filesystem *is* this
+      process's filesystem, so preparing the workspace is an ordinary ``mkdir``.
+    * ``wsl`` — this Windows box's only route to a real kernel, kept as a **manual**
+      option (``FORGEPILOT_SANDBOX_TRANSPORT=wsl``) and not as the default. Its
+      filesystem is a separate VM, so preparing there needs ``wsl.exe``; and
+      ``wsl.exe`` still cannot carry the argv this provider builds — measured: it
+      rewrites POSIX-looking arguments into Windows paths (``/bin/sh`` arrived at
+      the kernel as ``D:/software/Git/usr/bin/sh``) and drops every positional
+      parameter after the first operand following ``-c``, so the trailing
+      ``sh -c <script> sh <command…>`` cannot arrive. The containment itself *was*
+      verified by hand on that kernel (read-only write refused, ``--net`` yielding
+      ``0 /proc/net/route``); only its automation is blocked.
+    """
+
+    name: str
+    enter: list[str]
+    workspace: Path
+
+    def prepare(self) -> None:
+        """Make the workspace root exist where the launcher will see it.
+
+        ⚠️ **Not under ``/tmp``, in either transport.** ``mount_rules`` replaces
+        ``/tmp`` with a fresh tmpfs as its last rule, so a workspace prepared there
+        is bound and then hidden, and the launcher's ``cd`` exits 126 — measured,
+        and the reason this fixture lives in the home directory instead.
+        """
+        raise NotImplementedError
+
+    def cleanup(self) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NativeTransport(Transport):
+    """``unshare`` on this filesystem — the transport a Linux runner uses."""
+
+    def prepare(self) -> None:
+        self.workspace.mkdir(parents=True, exist_ok=True)
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.workspace, ignore_errors=True)
+
+
+@dataclass(frozen=True)
+class WslTransport(Transport):
+    """This Windows box reaching the WSL kernel: manual, and documented as such."""
+
+    def prepare(self) -> None:
+        subprocess.run([*self.enter[:-1], "--", "mkdir", "-p", self.workspace.as_posix()], check=True)
+
+    def cleanup(self) -> None:
+        subprocess.run([*self.enter[:-1], "--", "rm", "-rf", self.workspace.as_posix()], check=True)
+
+
+def transport() -> Transport:
+    """The transport this run is testing, chosen by name rather than by platform.
+
+    ``FORGEPILOT_SANDBOX_TRANSPORT`` exists so the same test can be pointed at the
+    WSL kernel by hand; the default is the shipped one, and it is the default
+    because the earlier version hardcoded WSL, which is why this test had never
+    run anywhere. A test whose transport is a constant can only ever skip.
+    """
+    name = os.environ.get("FORGEPILOT_SANDBOX_TRANSPORT", "unshare").strip() or "unshare"
+    if name == "wsl":
+        return WslTransport(
+            name="wsl", enter=wsl_enter(), workspace=Path("/root/forgepilot-sandbox-workspace")
+        )
+    if name != "unshare":
+        raise AssertionError(f"unknown FORGEPILOT_SANDBOX_TRANSPORT {name!r}: expected unshare or wsl")
+    return NativeTransport(
+        name="unshare",
+        enter=["unshare"],
+        workspace=Path.home() / "forgepilot-sandbox-workspace",
+    )
+
+
+# No `skipif` on the platform: whether the boundary can be built is a fact the
+# probe *measures*, and a test that decides it from `sys.platform` skips on the
+# host where the answer is genuinely "no" for a reason nobody then sees. It is
+# still skipped off Linux — but by the probe, with the reason line naming the
+# transport and the cause.
+def test_the_transport_is_named_rather_than_assumed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A constant transport is why this test had never run anywhere.
+
+    `skipif(not ON_LINUX)` and a hardcoded `wsl_enter()` meant the containment
+    assertion could only ever be skipped on the box that wrote it *and* on the box
+    that would have run it. The default is now what `kernel_sandbox` ships.
+    """
+    monkeypatch.delenv("FORGEPILOT_SANDBOX_TRANSPORT", raising=False)
+    shipped = transport()
+
+    assert shipped.name == "unshare"
+    assert shipped.enter == ["unshare"], "the bundled launcher, not a developer's"
+    assert str(shipped.workspace) != "/tmp" and "/tmp/" not in f"{shipped.workspace}/", (
+        "the workspace is under /tmp, which the last mount rule replaces with a tmpfs"
+    )
+
+    monkeypatch.setenv("FORGEPILOT_SANDBOX_TRANSPORT", "wsl")
+    assert transport().name == "wsl" and transport().enter == wsl_enter()
+
+    monkeypatch.setenv("FORGEPILOT_SANDBOX_TRANSPORT", "nsenter")
+    with pytest.raises(AssertionError, match="nsenter"):
+        transport()
+
+
+def test_preparation_and_cleanup_are_a_round_trip(tmp_path: Path) -> None:
+    """`prepare` may only be called on a host the probe has already vouched for.
+
+    The first version prepared first, on a host whose transport did not exist, so a
+    `PermissionError` on a Windows home directory arrived in place of the skip it
+    was supposed to print — the same ordering defect the test itself had, one level
+    up in its fixture. This pins that `prepare`/`cleanup` are at least a usable
+    round trip where they *are* called.
+    """
+    native = NativeTransport(name="unshare", enter=["unshare"], workspace=tmp_path / "ws")
+
+    assert not native.workspace.exists()
+    native.prepare()
+    assert native.workspace.is_dir()
+    native.cleanup()
+    assert not native.workspace.exists()
+
+
 async def test_a_write_outside_the_workspace_is_refused() -> None:
     """The boundary, asserted rather than described.
 
-    `/` is bound read-only, so a write anywhere but the workspace fails. This is
-    the assertion the provider exists for, and it runs against a real Linux
+    `/` is remounted read-only, so a write anywhere but the workspace fails. This
+    is the assertion the provider exists for, and it runs against a real Linux
     kernel rather than remaining a comment about what one would do.
 
-    The workspace is a path **inside** the WSL filesystem, not a Windows temp
-    directory: a namespace on that kernel cannot bind a path its own mount table
-    has never heard of, and `/mnt/c/...` is a different filesystem with different
-    permissions semantics.
+    ⚠️ **Two things this test used to get wrong were both in its own setup, not in
+    the boundary** (N1): the cwd it handed the launcher was `/tmp/forgepilot-sandbox-test`
+    while the writable mount is ``policy.workspace_root``, and that path is under
+    ``/tmp`` — which the last mount rule replaces with a fresh tmpfs. So the first
+    real run would have measured "the workspace I prepared is not there" and
+    reported it as a containment result. The workspace root is now the same path
+    in all three places and lives outside ``/tmp``.
 
     ⚠️ **The preparation happens *after* the probe, and here the order is the whole
-    difference between a skip and a crash.** It used to run first, and `wsl` exists
-    only on the host where this test is *skipped* — on the host that runs it,
-    `subprocess.run(["wsl", …], check=True)` raised `FileNotFoundError` before the
-    guard written to handle exactly that case could answer. The test could not pass
+    difference between a skip and a crash.** It used to run first, and the
+    transport exists only on the host where this test is *skipped* — on the host
+    that runs it, the preparation call raised `FileNotFoundError` before the guard
+    written to handle exactly that case could answer. The test could not pass
     anywhere, and — worse for the job it exists to do — it could not say *why*
-    either. Read, not measured: the first Linux run is what confirms the reason
-    line names the transport rather than the kernel.
+    either.
     """
-    workspace = Path("/tmp/forgepilot-sandbox-test")
+    transport_ = transport()
+    workspace = transport_.workspace
 
-    async for plugin in _load({"enter": wsl_enter()}):
-        if plugin.probe() is not SandboxEnforcement.FULL:
+    async for plugin in _load({"enter": transport_.enter, "userns": "auto"}):
+        outcome = plugin.diagnose()
+        if outcome.enforcement is not SandboxEnforcement.FULL:
+            mechanism = outcome.mechanism.value if outcome.mechanism else "none"
             pytest.skip(
-                "no namespace boundary on this host: the transport "
-                f"{wsl_enter()[0]!r} is missing, or it cannot create namespaces for "
-                "this user (see `_probe_now`)"
+                f"no namespace boundary through the {transport_.name!r} transport "
+                f"on this host: probe={outcome.enforcement.value} "
+                f"cause={outcome.cause.value if outcome.cause else 'none'} "
+                f"mechanism={mechanism}"
+                + (f"; {outcome.observed}" if outcome.observed else "")
             )
 
-        # Reachable only where the transport exists, so this call's precondition is
-        # the guard above rather than an assumption about which host is running.
-        subprocess.run(
-            ["wsl", "-d", "docker-desktop", "--", "mkdir", "-p", workspace.as_posix()],
-            capture_output=True,
-            check=True,
-        )
-
-        # ⚠️ Two things about this step are **read, not measured**, and both have to
-        # be settled before this test can pass on a host whose probe says `FULL`:
-        # the writable mount is `policy.workspace_root` — `/srv/checkouts/svc-a`,
-        # unconditionally bound (`namespace.py:116`) — while the cwd written to
-        # below is `/tmp/forgepilot-sandbox-test`; and `/tmp` is replaced by a fresh
-        # tmpfs last (`namespace.py:129`), which hides anything prepared under it and
-        # makes the launcher's `cd` exit 126. So the first real run of this test
-        # measures its own setup as much as the boundary.
-        inside = await plugin.run(
-            ["sh", "-c", "echo ok > inside.txt && cat inside.txt"],
-            policy=policy(SandboxMode.WORKSPACE_WRITE),
-            cwd=workspace,
-            env={"PATH": "/usr/bin:/bin"},
-            timeout_s=60.0,
-        )
-        outside = await plugin.run(
-            ["sh", "-c", "echo nope > /etc/forgepilot-should-not-exist"],
-            policy=policy(SandboxMode.WORKSPACE_WRITE),
-            cwd=workspace,
-            env={"PATH": "/usr/bin:/bin"},
-            timeout_s=60.0,
-        )
+        # Only now — on a host that just proved it can build the boundary. Preparing
+        # first is the defect this ordering exists to prevent: it ran a command only
+        # the host that *skips* can run, and raised before the guard could answer.
+        transport_.prepare()
+        try:
+            inside = await plugin.run(
+                ["sh", "-c", "echo ok > inside.txt && cat inside.txt"],
+                policy=policy(SandboxMode.WORKSPACE_WRITE, workspace_root=workspace),
+                cwd=workspace,
+                env={"PATH": "/usr/bin:/bin"},
+                timeout_s=60.0,
+            )
+            outside = await plugin.run(
+                ["sh", "-c", "echo nope > /etc/forgepilot-should-not-exist"],
+                policy=policy(SandboxMode.WORKSPACE_WRITE, workspace_root=workspace),
+                cwd=workspace,
+                env={"PATH": "/usr/bin:/bin"},
+                timeout_s=60.0,
+            )
+        finally:
+            transport_.cleanup()
 
     assert inside.exit_code == 0, inside.stderr
     assert "ok" in inside.stdout

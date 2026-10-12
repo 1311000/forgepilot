@@ -309,6 +309,16 @@ def mount_rules(
     ``read_scope`` is a parameter rather than a field of ``policy`` on purpose: it
     says how this deployment built its boundary, which a call site handing over a
     command cannot know (see :class:`ReadScope`).
+
+    ⚠️ **Nothing the launcher needs may be prepared under ``/tmp``.** Rule 5
+    replaces ``/tmp`` with a fresh tmpfs, so a workspace rooted there is bound at
+    rule 3 and then hidden again by the last rule: the mount happens, and the path
+    the process was told to ``cd`` into no longer exists. Measured — the containment
+    test used a ``/tmp`` workspace, the launcher's ``cd`` exited 126, and the test
+    that exists to prove containment was instead measuring its own setup (N1,
+    ``docs/notes/gates-on-linux.md``). The workspace root has to be somewhere the
+    tmpfs does not cover, which for a non-root deployment means its own home
+    directory rather than the conventional scratch path.
     """
     confined = read_scope is ReadScope.WORKSPACE
     rules: list[MountRule] = [MountRule(target=Path("/"), read_only=True, kind=MountKind.REMOUNT)]
