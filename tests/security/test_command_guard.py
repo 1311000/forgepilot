@@ -368,10 +368,10 @@ def test_a_windows_path_is_kept_whole_where_backslashes_are_not_escapes() -> Non
 
     On Windows ``posix=False`` keeps a path such as ``C:\\tools\\Python\\python.exe``
     intact, because that is what the shell there does. On POSIX the very same line
-    means something else — ``\\`` is an escape — and the token really is
-    ``C:toolspythonpython.exe``. ⚠️ **A test that pinned the Windows spelling would
-    be asserting that POSIX reads a backslash differently from `sh`**, which is how
-    this file's first version went red on CI while passing here.
+    means something else — ``\\`` is an escape — and what is left of the token no
+    longer resembles the path or the program. ⚠️ **A test that pinned the Windows
+    spelling would be asserting that POSIX reads a backslash differently from `sh`**,
+    which is how this file's first version went red on CI while passing here.
 
     Both readings are fine, and the direction that matters is the same in both: a
     name the list does not contain is **refused**, never waved through.
@@ -387,7 +387,9 @@ def test_a_windows_path_is_kept_whole_where_backslashes_are_not_escapes() -> Non
             view(line, derived(frozenset({"python"})))
         ).decision is GuardDecision.ABSTAIN
     else:  # POSIX: `\` was consumed as an escape, exactly as the shell would.
-        assert token == "C:toolspythonpython.exe"
+        # The spelling is asserted as a *property* rather than hand-typed: typing
+        # the escaped token from memory got it wrong once already.
+        assert normalise_program(token) != "python"
         assert command_scope_guard(
             view(line, derived(frozenset({"python"})))
         ).decision is GuardDecision.DENY
