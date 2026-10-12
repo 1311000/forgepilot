@@ -148,3 +148,114 @@ jobs:
       # Read the reason before reading anything into a green job.
       - name: the native kernel sandbox (a skip here is not a pass)
         run: python -m pytest tests/providers/test_namespace_sandbox.py -v -rs
+
+  # ⚠️ **The question neither job above can answer, asked on a host kernel instead of in a
+  # container.** Both of those run on `ubuntu-22.04`, and the containment they execute is
+  # bought with `--privileged` — so neither says whether an *unprivileged* process can build
+  # this boundary on the Ubuntu release a deployment is told to use. This job runs the native
+  # transport as a non-root user on a **24.04 host kernel**, once with AppArmor's
+  # unprivileged-user-namespace restriction at its default and once with it lifted, so the
+  # before/after pair comes out of one run rather than out of an argument.
+  #
+  # Written before it has run, and the split is deliberate: the "before" step records what
+  # this runner's kernel actually says and asserts **only** what follows from that reading —
+  # a kernel reporting `1` must produce a refusal that names the sysctl, and a 24.04 image
+  # that permits unprivileged user namespaces anyway is a finding (logged, not a red build).
+  # The "after" step is a gate: the containment test has to *run* there, and a skip is not a
+  # pass. See `docs/notes/gates-on-linux.md` for what the first run of this job said.
+  sandbox-nonroot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+
+      # Evidence first: which kernel is this, and does it claim to restrict unprivileged
+      # user namespaces? `|| echo absent` because the sysctl is *absent* on kernels that do
+      # not restrict them, and absent is not `0` — the distinction M12's Phase B is built on.
+      - name: the evidence — what this kernel says
+        run: |
+          uname -a
+          echo "apparmor_restrict_unprivileged_userns: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+
+      # Somewhere to write that is not `/tmp`: the boundary replaces `/tmp` with a fresh
+      # tmpfs as its last mount rule, so a workspace prepared there is bound and then hidden
+      # again, and the launcher's `cd` exits 126 (N1 — measured, and the reason the
+      # containment fixture now lives in a home directory).
+      - name: a non-root user, with a home to work in
+        run: |
+          sudo useradd --create-home --shell /bin/bash runner2
+          sudo install -d -o runner2 -g runner2 -m 700 /home/runner2/tmp
+          id runner2
+
+      # Not a gate: the point is the *pair* with the next step. What it does assert is the
+      # conditional one — if this kernel says `1` and the check fails, the refusal has to name
+      # `kernel.apparmor_restrict_unprivileged_userns` and report the AppArmor cause. That is
+      # acceptance row 4, and it is checkable wherever the condition holds.
+      - name: before — as shipped, as a non-root user on a 24.04 host
+        run: |
+          set +e
+          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
+            PYTHONPATH="$PWD/src" "$(command -v python)" -m forgepilot --config-dir configs \
+            --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          echo "sandbox-check exit: $code"
+
+          flag=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)
+          if [ "$flag" = "1" ] && [ "$code" != "0" ]; then
+            if ! echo "$out" | grep -q "kernel.apparmor_restrict_unprivileged_userns"; then
+              echo "::error::this kernel reports apparmor_restrict_unprivileged_userns=1 and the refusal does not name it"
+              exit 1
+            fi
+            if ! echo "$out" | grep -q "cause        : apparmor_restricts_userns"; then
+              echo "::error::the refusal's cause is not the AppArmor one, yet the sysctl reads 1"
+              exit 1
+            fi
+          elif [ "$code" = "0" ]; then
+            echo "::notice::unprivileged user namespaces are permitted here as shipped; the pair below will be identical"
+          fi
+
+      # The gate. `sysctl -w` is the host decision the refusal tells an operator to make, and
+      # doing it here is what turns "the message is right" into "the boundary is buildable".
+      - name: after — the same commands with the restriction lifted
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+          set +e
+          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
+            PYTHONPATH="$PWD/src" "$(command -v python)" -m pytest \
+            tests/providers/test_namespace_sandbox.py -v -rs -p no:cacheprovider --no-header 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" != "0" ]; then
+            echo "::error::the unprivileged run failed (exit $code)"
+            exit 1
+          fi
+          if [ "$(echo "$out" | grep -c SKIPPED || true)" != "0" ]; then
+            echo "::error::a test skipped in the unprivileged run — a skip here is not a pass"
+            exit 1
+          fi
+
+          set +e
+          out=$(sudo -u runner2 env PATH="$PATH" HOME=/home/runner2 TMPDIR=/home/runner2/tmp \
+            PYTHONPATH="$PWD/src" "$(command -v python)" -m forgepilot --config-dir configs \
+            --patch src/forgepilot/bundles/kernel_sandbox/patch.yaml --sandbox-check 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" != "0" ]; then
+            echo "::error::--sandbox-check exited $code for a non-root user whose boundary the probe just built"
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "mechanism    : map-root"; then
+            echo "::error::the check passed without saying how the capability was obtained"
+            exit 1
+          fi
