@@ -104,7 +104,10 @@ jobs:
       - run: python -m pip install -e ".[dev]"
 
       - name: containment, against a real kernel (privileged container)
-        run: python -m pytest tests/providers/test_namespace_sandbox_container.py -v
+        # `-rs`: on this host the two non-root tests **skip**, with the kernel's own refusal
+        # (`cannot change root filesystem propagation`) as the reason — and a skip without its
+        # reason is a count, which is the failure mode this job exists to make visible.
+        run: python -m pytest tests/providers/test_namespace_sandbox_container.py -v -rs
 
       # ⚠️ **The invariant that holds on every host.** The default profile's sandbox is the
       # *recording* one: it never executes, so it enforces nothing, and `--sandbox-check`

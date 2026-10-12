@@ -22,6 +22,20 @@ user namespaces. `arm` trusts this number, so a presence check would hand out
 provider obeys from the other end (it returns `NONE` unconditionally, and cannot
 be configured otherwise).
 
+**Asking is not enough if the answer is not actionable: the probe must also say *how*, and
+*why not*.** M12 made it return a `ProbeOutcome` — the enforcement level, the **mechanism** it
+actually proved (`map-root` for `unshare -U -r`, `require-root` for the argv that needs
+`CAP_SYS_ADMIN`), the **cause** when the answer is not `FULL` (`no_launcher`,
+`cannot_create_namespace`, `apparmor_restricts_userns`, `read_claim_unverified`), and the
+launcher's own last line as the evidence. The refusal is *built from that object*, so it cannot
+name a cause the probe did not see: measured on a `ubuntu-24.04` host kernel
+(`6.17.0-1022-azure`) as a non-root user, the message names
+`kernel.apparmor_restrict_unprivileged_userns` **only** when that file reads `1`; a host whose
+launcher is missing is told the launcher is missing; a launcher that ran and refused is quoted
+verbatim. `run()` builds its argv from the mechanism the probe recorded and from nothing else —
+`auto` in the config is resolved by measurement rather than by a guess about the machine, and
+`build_argv` refuses `auto` outright.
+
 **The mount list is a precedence order, not a set.** `/` read-only first, then the
 workspace writable, then `PROTECTED_SUBPATHS` (`.git`, `.codex`, `.claude`,
 `.agents`) read-only *after* it — because a later mount overrides an earlier one,
@@ -151,11 +165,14 @@ one on Windows:
 | host / profile | probe | required | shell | exit |
 |---|---|---|---|---|
 | Windows, default (`recording`) | `none` | `full` | refused | 1 |
-| Windows, `kernel_sandbox` | `none` (the provider's own refusal names the AppArmor policy) | `full` | refused | 1 |
+| Windows, `kernel_sandbox` | `none` (the refusal names the cause the probe saw — here, no launcher) | `full` | refused | 1 |
 | Linux, default (`recording`) | `none` | `full` | refused | 1 |
 | Linux, `kernel_sandbox`, `read_scope: host` | `full` | `full` | ran, 0 | 0 |
 | Linux, `kernel_sandbox`, `read_scope: workspace` | `full` | `full` | ran, 0 | 0 |
 | Linux, `read_scope: host` + `--allow-uncontained-exec` | `full` | `none` | ran, 0 | 0 |
+| Linux `ubuntu-24.04` **host**, non-root, sysctl default `1` | `none` (`cause: apparmor_restricts_userns`, naming the sysctl) | `full` | refused | 1 |
+| Linux `ubuntu-24.04` **host**, non-root, sysctl `0` | `full` (`mechanism: map-root`) | `full` | ran, 0 | 0 |
+| Linux `ubuntu-22.04` **host**, non-root `runner` | `full` (`mechanism: map-root`, no sysctl needed) | `full` | ran, 0 | 0 |
 
 The `workspace` row is the one worth keeping: the read claim that finding 20 measured
 as *unmet* is now verified from the CLI, on a real kernel, with no

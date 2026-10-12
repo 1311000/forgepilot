@@ -15,6 +15,17 @@ so a `-latest` that moved from 22.04 to 24.04 would change what a green run *mea
 with no edit to this repository. The pin is a decision about which host the claim is
 made on, so it is stated rather than inherited.
 
+**M12 measured what moving it would cost, and kept the pin.** On `ubuntu-24.04`
+(`6.17.0-1022-azure`, run 38250632723) a non-root user's boundary is refused outright
+while `kernel.apparmor_restrict_unprivileged_userns` sits at its default `1`, and the
+same command is contained as soon as that is `0`. So the main jobs stay on the platform
+whose **default** state builds the boundary, and a third job — **`sandbox-nonroot`, on
+`ubuntu-24.04`** — measures the host that would otherwise be a guess: it requires the
+refusal to name the sysctl *before*, then sets the sysctl to `0` and requires **zero
+skips** and `mechanism    : map-root` after. "Lower it" is a **deployment prerequisite**,
+written where a deployment reads it (`bundles/kernel_sandbox/patch.yaml`), not something
+the provider does to its host.
+
 Two things were found while preparing the first container run — a third while
 checking what the workflow actually installs, a fourth while auditing what
 actually skips, and two more while auditing what a Linux filesystem and a
@@ -25,8 +36,8 @@ yet measured* is worth more than one that quietly reads as verified:
 
 | # | What | Evidence | What settles it |
 |---|---|---|---|
-| **N1** | The only test that runs a command through the real boundary **cannot pass anywhere.** It is `skipif(not ON_LINUX)`, and on Linux its transport is `["wsl", "-d", "docker-desktop", "--", "unshare"]` — `wsl` does not exist there, so `probe()` returns `NONE` (`namespace.py:267`). ⚠️ **The skip is not what happens.** The test prepared its workspace *before* reaching that guard: `subprocess.run(["wsl", …], check=True)` at `:311` raised `FileNotFoundError`, so the `-rs` reason the `sandbox` job exists to print was never printed, and the `check` job (the whole suite) would have gone red on a test that measured nothing. Fixed by moving the preparation behind the guard — and **measured on Linux: it skips instead of crashing**. And when it *can* run, two read-not-measured inconsistencies stand in its way: the writable bind is `policy.workspace_root` (`/srv/checkouts/svc-a`, bound unconditionally at `namespace.py:116`) while the test writes in `/tmp/forgepilot-sandbox-test`, and `/tmp` is replaced by a fresh tmpfs **last** (`namespace.py:129`) — which hides anything prepared under it and makes the launcher's `cd` exit 126. Containment's executing instrument is the `--privileged` container test, whose image is now `ubuntu:24.04` (`redis:7.4.2-alpine` hung on `apk add util-linux` — see "The first Linux run"). On Windows the decorator skips it | `tests/providers/test_namespace_sandbox.py:271-279,311-319`; `tests/providers/test_namespace_sandbox_container.py:103-117` | **Measured.** On Linux that file was `16 passed, 1 skipped` in the hand-run container, and on the runner it is `31 passed, 1 skipped` (the file grew), and the reason at `:448` names the transport: `no namespace boundary on this host: the transport 'wsl' is missing, or it cannot create namespaces for this user`. The reorder is the whole difference between that skip and the `FileNotFoundError` that would have killed the job. ⚠️ The `/tmp`-vs-`workspace_root` inconsistency is **not** exercised on the skipping path, so it stays unmeasured; and switching the native transport to `unshare -U -r` is now supported by N2's measurement but is a decision, not a typo fix |
-| **N2** | `build_argv`'s flags are `["--mount","--pid","--ipc","--uts","--fork","--mount-proc"]` (+`--net`) — **no `-U`, no `-r`.** Creating a mount/pid/net namespace needs `CAP_SYS_ADMIN` in the *current* user namespace, so the bundled `enter: [unshare]` requires root or a privileged container. A non-root deployment fails on **every** distro, and the refusal message's explanation (Ubuntu 24.04's AppArmor policy) is not the operative cause for that caller | `src/forgepilot/providers/sandbox/namespace.py:212`; the claims it qualifies are `providers/sandbox/namespace.py:252-253` and `bundles/kernel_sandbox/patch.yaml:24-27` | **Measured** in a `--privileged` container on Docker Desktop's kernel (`6.18.40.1-microsoft-standard-WSL2`): as root both forms exit 0; as uid 1000 the shipped argv exits **1** (`unshare: unshare failed: Operation not permitted`) while `unshare -U -r …` exits **0** and `unshare -U true` exits **0**. The refusal message's AppArmor explanation is not the operative cause for this caller — `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` does not exist on that kernel. ⚠️ The AppArmor half needs an Ubuntu-23.10+/24.04 *host* and cannot be measured from inside a container, so the 22.04 pin stands |
+| **N1** | ~~The only test that runs a command through the real boundary **cannot pass anywhere.**~~ **Settled by M12 — it runs, and it goes red when the boundary is broken.** What reading had found, kept because each half was a real defect: the test was `skipif(not ON_LINUX)` with a hardcoded `wsl` transport, it prepared its workspace *before* reaching its own probe guard, and the workspace it prepared was under `/tmp` — which the rules replace with a fresh tmpfs **last** (`providers/sandbox/namespace.py:364`), i.e. *after* the writable workspace bind at `:351`, so the mount happened and the path the process was told to `cd` into was gone again. The three changes: (1) the transport is **named rather than assumed** — `transport()` reads `FORGEPILOT_SANDBOX_TRANSPORT` (default `unshare`; `wsl` still selectable, `tests/providers/test_namespace_sandbox.py:787-866`); (2) preparation runs **behind** the probe, so a host that cannot build the boundary prints the reason instead of raising — measured here as `PermissionError: [WinError 5] … 'C:\Users\Administrator\forgepilot-sandbox-workspace'`, the same defect shape as the one being fixed, one level up in its own fixture; (3) the native workspace is `Path.home() / "forgepilot-sandbox-workspace"`, outside the tmpfs, and the rule is written next to the mount list: **nothing the launcher needs may be prepared under `/tmp`.** Containment's executing instrument is still the `--privileged` container test (image `ubuntu:24.04`) | `tests/providers/test_namespace_sandbox.py:787-981` (`transport()`, `test_a_write_outside_the_workspace_is_refused` at `:917`); `tests/providers/test_namespace_sandbox_container.py:88-431`; `src/forgepilot/providers/sandbox/namespace.py:343-364` | **Measured, on three hosts.** Windows: `47 passed, 1 skipped`, and the skip is now the probe's own sentence — `no namespace boundary through the 'unshare' transport on this host: probe=none cause=no_launcher mechanism=none`. As **uid 1000** in `ubuntu:24.04`: **`48 passed, 0 skipped`**, i.e. the two assertions inside `test_a_write_outside_the_workspace_is_refused` (`inside.exit_code == 0`; `outside.exit_code != 0`) executed for the first time anywhere. In CI: the `sandbox` job's container is `3 passed, 2 skipped` (that kernel refuses the user namespace before the launcher runs — see N2) and `sandbox-nonroot` is `48 passed, 0 skipped`, **zero skips enforced in the workflow** ("a skip here is not a pass") |
+| **N2** | ~~`build_argv`'s flags are `["--mount","--pid","--ipc","--uts","--fork","--mount-proc"]` (+`--net`) — no `-U`, no `-r`.~~ **Settled by M12 — the capability is *obtained*, not assumed.** `class UserNamespace(StrEnum)` (`providers/sandbox/namespace.py:173`) has `auto` / `map-root` / `require-root`; `build_argv(..., userns: UserNamespace = UserNamespace.REQUIRE_ROOT)` (`:500`) inserts `_USERNS_FLAGS = ("-U", "-r")` (`:211`) at the front for `map-root`, and **refuses `auto`** (`ValueError: userns='auto' cannot be built into an argv`) because an argv must not depend on the machine that built it. `auto` is what the bundle ships: `probe()` walks `_candidates()` (`:768` — `-U -r` first, and `require-root` only when the caller is already root), records the mechanism it actually proved, and `run()` builds from that recorded value alone (`_mechanism()` raises rather than guess) | `src/forgepilot/providers/sandbox/namespace.py:173-214,500-544,721-796`; `src/forgepilot/bundles/kernel_sandbox/patch.yaml:43-60`; `src/forgepilot/cli/main.py:315-409` | **Measured on a real host kernel.** `ubuntu-24.04`, kernel `6.17.0-1022-azure`, as the non-root user `runner2` (run 38250632723): with `kernel.apparmor_restrict_unprivileged_userns=1` — the default — `probe()` is `none` with `cause=apparmor_restricts_userns`, and the refusal **names that sysctl**; with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` the same command is contained: `--sandbox-check` → `probe: full` / `mechanism    : map-root` / `result: OK`, exit 0, and the file is `48 passed, 0 skipped`. So the old sentence is retired: a non-root deployment no longer fails on every distro — where the user namespace is permitted, `-U -r` is enough. ⚠️ **Two caveats, both measured.** (1) Inside the **22.04 runner's container** the same argv is refused earlier with `unshare: cannot change root filesystem propagation: Permission denied`, so the two non-root container tests **skip with that line** there (`3 passed, 2 skipped`) rather than assert; `--propagation unchanged` was rejected as a fix, because leaving the tree shared lets this launcher's mounts propagate back into the host. (2) `/` is now a `MountKind.REMOUNT` (`mount -o remount,bind,ro /`), because a mount inherited from outside the new user namespace is `MNT_LOCKED` and `mount --bind / /` is refused — while the flag change is permitted. On Docker Desktop's `6.18.40.1-microsoft-standard-WSL2` both forms pass as root, so that refusal is the kernel's, not the flags' |
 | **N3** | The workflow installed `-e ".[dev]"`, and `[dev]` carries neither `web` nor `ast` — so on CI the **HTTP/SSE surface would not run either**: `tests/httpapi/conftest.py:28` is a module-level `pytest.importorskip("fastapi")`, and the production platform would have executed *less* than this Windows dev box (fastapi, uvicorn and sse-starlette are installed here). The AST test has the same shape from the other side — it needs `tree-sitter`, whose Wheel exists only on Linux, and `[dev]` does not ask for it, so the AST path would have run **nowhere at all** | `pyproject.toml:29-44` (`dev`), `:52-70` (`web`, `ast`); `tests/httpapi/conftest.py:28`; `tests/review/test_review_mode.py:331-334,356-364` | fixed in `ci.yml` to `-e ".[dev,web,ast]"`; **the first run of that job is the verification** — for the two extras *and* for the AST path, which may well be red, which is a finding rather than a broken pipeline |
 | **N4** | The skip inventory was wrong the first time, and the mistake is reusable: `@pytest.mark.skipif` finds the two decorator gates, but a **module** is gated by `pytestmark = pytest.mark.skipif(...)`, which no decorator pattern sees — and the wholesale disappearances are there. The gates in `tests/`: 2 module-level (`test_namespace_sandbox_container.py:61` on `_docker_usable()`; `test_github_vcs_live.py:39` on two env vars), 2 decorators (`test_namespace_sandbox.py:278` Linux; `test_review_mode.py:356` tree-sitter), 1 `importorskip` (`httpapi/conftest.py:28`), 3 per-test `pytest.skip` (`contract/test_import_graph.py:89,116,130`). So the Linux run newly executes the **container suite** (once a job exports `FORGEPILOT_SANDBOX_CONTAINER` **and** `docker` is on `PATH` — the `sandbox` job supplies both, which is why that job is where containment can first be *executed*), the **AST test**, and the **HTTP/SSE suite** (N3). ⚠️ `test_github_vcs_live.py` must **stay** skipped: it pushes a branch and opens a real pull request, so exporting those two variables into any job turns a gate into an outward-facing act | `tests/providers/test_namespace_sandbox_container.py:54-69`; `tests/providers/test_github_vcs_live.py:36-46` | `pytest tests/ -q -rs` on Linux, then compare the skip reasons against this list |
 | **N5** | Case sensitivity is **proved absent as a hazard, not sampled** — the one class of bug a Windows dev box cannot see at all. 934 intra-project `forgepilot.*` imports (405 `src/`, 499 `tests/`, 1 `tools/check.py:82`, 23 `evals/`, 6 `examples/`) plus 35 fixture-package, 15 `import harness\|arms\|report` and 3 `tests.*`; **zero relative (`from .`) imports exist anywhere**; no path component under `src/ tests/ tools/ evals/ examples/` carries an uppercase letter (glob of 9638 paths); the regex `forgepilot(\.[a-z0-9_]+)*\.[a-z0-9_]*[A-Z]` matches **0** imports (the ten hits are Sphinx docstring refs); no case-only twins; `pyproject.toml:83 testpaths = ["tests"]` matches the directory; no `pythonpath`, and no `pytest.ini`/`setup.cfg`/`tox.ini`; 43 `forgepilot.` module refs across 9 YAML files all exact-case | the proof itself, with its exclusions named (`.venv/`, `.forgepilot/`, `.git`) | nothing to run — but it *expires*: a new import path containing a capital, or a rename that leaves a case-only twin, invalidates it. Re-check when either happens |
@@ -69,20 +80,32 @@ which ships `util-linux` and passes in 1.6 s. It executed for the first time in 
 session — from the base interpreter rather than the venv's, for the integrity-label
 reason in "The first Linux run".
 
-**N2 holds**, and the *user namespace* is what makes Ubuntu 24.04's AppArmor restriction
-relevant — so a `ubuntu-24.04` job running
-`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` is now the *right*
-experiment rather than a guess, because the candidate fix (`unshare -U -r …`) is measured
-to work where the shipped argv does not. It is still not in `ci.yml`: what the container
-measured is the CAP_SYS_ADMIN half, and the AppArmor half needs an Ubuntu *host* kernel.
-The 22.04 pin is the honest default until a 24.04 host answers it.
+**N2 holds, and M12 has run the experiment this paragraph asked for.** The *user
+namespace* is what makes Ubuntu 24.04's AppArmor restriction relevant, and one
+`ubuntu-24.04` job now answers both halves with two steps: with
+`kernel.apparmor_restrict_unprivileged_userns` at its default `1`, a non-root caller is
+refused and the refusal **names that sysctl** (`cause: apparmor_restricts_userns`); after
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, the same command is
+contained — `probe: full`, `mechanism    : map-root`, exit 0 — and the boundary file
+reports **`48 passed, 0 skipped`**. The first of those is why **the 22.04 pin stands**: on
+24.04 the boundary exists only after a host decision, so the sysctl is a documented
+**deployment prerequisite** and the main jobs stay on the platform whose default state
+builds the boundary. The `::notice::` half of that step matters as much as the assertion —
+if a future image permits unprivileged user namespaces anyway, the job says so rather than
+going red, because a refusal that names a sysctl which is *not* the cause would be the
+defect rather than the fix.
 
 ⚠️ **A plain `docker run` container is not obviously a Linux host that can answer this.**
 Docker's default seccomp profile is *described* as refusing `clone(CLONE_NEWUSER)`, and
 an unprivileged container has no `CAP_SYS_ADMIN` — which is why the shipped container
-test runs `--privileged`. Whether that is genuinely required here is part of what the
-first container run measures; the verification command therefore is `docker run
---privileged …` (or `--cap-add=SYS_ADMIN --security-opt=seccomp=unconfined`).
+test runs `--privileged`. **Now measured, and the caveat turns out to be right for a
+different reason:** with `--security-opt=seccomp=unconfined` and no `CAP_SYS_ADMIN`,
+`unshare -U -r …` *does* start and build the boundary on Docker Desktop's kernel, while
+the shipped `require-root` argv is refused — but no container can answer the AppArmor half
+at all, because the sysctl that decides it lives in the **host's** `/proc/sys`. That is
+why the answer came from a `ubuntu-24.04` *runner* rather than from the local container,
+and why the container test keeps its conservative form (`docker run --privileged …`, or
+`--cap-add=SYS_ADMIN --security-opt=seccomp=unconfined`).
 
 ## The first Linux run
 
@@ -239,19 +262,56 @@ the transport 'wsl' is missing, or it cannot create namespaces for this user (se
 
 The file's docstring said the first Linux run would "confirm the reason line names the
 transport rather than the kernel" — it does, word for word. That is not a red build and not a
-silenced one: the test is hardcoded to the `wsl` transport, so on the production platform it
-still cannot run, and **the executing instrument remains the `--privileged` container test**
-(the `2 passed` above), which is what N1 already said it was. Whether some other transport
-would run there is **open, and it is not a matter of configuration**: `build_argv` builds
-mount/pid/net namespaces with **no user namespace**, so it needs root or `CAP_SYS_ADMIN` (N2).
-Making the native boundary reachable for an unprivileged runner is a change to
-`providers/sandbox/namespace.py` — the same size of change as finding 20's rule 1, and it needs
-its own milestone rather than a rider on the commit that switched CI on.
+silenced one: the test was hardcoded to the `wsl` transport, so on the production platform it
+could not run, and **the executing instrument was the `--privileged` container test** (the
+`2 passed` above), which is what N1 already said it was.
+
+✅ **The paragraph used to end there, with the question open** — "making the native boundary
+reachable for an unprivileged runner is a change to `providers/sandbox/namespace.py` … it needs
+its own milestone rather than a rider on the commit that switched CI on." **M12 is that
+milestone, and it closed the question:** the transport is named rather than hardcoded, the
+workspace is prepared behind the probe and outside `/tmp`, and the capability is *obtained* with
+a user namespace instead of assumed. The same file now reports **`48 passed, 0 skipped` in this
+very job on `ubuntu-22.04`** — as the non-root `runner`, with no sysctl touched — and
+`48 passed, 0 skipped` again on `ubuntu-24.04` once its sysctl is lowered. See "M12: the
+unprivileged runner, measured" below.
 
 ⚠️ **One annotation on both jobs, dated and not fatal:** `actions/checkout@v4` and
 `actions/setup-python@v5` target Node.js 20 and are being forced onto Node.js 24. Nothing to
 change today; it is written down because a future red build caused by an action's runtime is
 exactly the "gate that fails for a reason unrelated to the change" this file argues against.
+
+## M12: the unprivileged runner, measured
+
+"**A skip here is not a pass**" was the honest fallback for as long as building the boundary
+needed root. M12 changed *how the capability is obtained* and then asked a real 24.04 host —
+and **the first two runs of the new job both went red**, each for a reason worth keeping:
+
+| first failure | what it actually was |
+|---|---|
+| `sandbox` job, container suite (`2 failed, 3 passed`) | `unshare: cannot change root filesystem propagation: Permission denied`, before the launcher ran a line: that kernel refuses `unshare -U -r --mount` where Docker Desktop's 6.18 accepts it. Kernel-version dependent, so the two non-root container tests now **skip with that measured line** there instead of asserting — and `--propagation unchanged` was **rejected** as the fix rather than left untried, because leaving the propagation tree shared lets this launcher's mounts propagate back into the host |
+| `sandbox-nonroot` job, `before` step | `No module named forgepilot.__main__` from a CLI that *is* importable — and the cause was **permissions**: `/home/runner` is `drwxr-x---`, so `runner2` could not traverse into the checkout and the importer **silently skips** a directory it cannot stat. `PYTHONPATH` pointed straight at it and did nothing. Fixed by `sudo chmod o+x` on the two ancestors plus `o+rX` on the checkout — traversable without being listable |
+
+**Run [38250632723](https://github.com/1311000/forgepilot/actions/runs/38250632723) is the
+green one** — `check`, `sandbox`, `sandbox-nonroot`, in 51 s / 29 s / 51 s — and the numbers are
+again the interesting part:
+
+| job | measured |
+|---|---|
+| `check` (`ubuntu-22.04`) | `ruff check .` clean; **`1285 passed, 238 skipped in 35.98s`**; TOTAL 9409 statements, **1066 missed, 88.67%**; `All gates passed.` |
+| `sandbox` (`ubuntu-22.04`) | container suite **`3 passed, 2 skipped`** (the two non-root tests carrying the propagation line above; M12 added `-rs` to that step, because a skip whose reason is not printed is a count rather than a finding); `tests/providers/test_namespace_sandbox.py` → **`48 passed in 0.46s`**; both `--sandbox-check` verdicts as always — the default profile `probe none` / `refused` / exit 1, and the kernel-sandbox profile `claim read_scope: host`, `probe full`, `mechanism    : map-root`, `cause        : none — the claim was verified`, `shell ran, exit code 0` — **as the non-root `runner`, with no sysctl touched**, because the AppArmor restriction does not exist on that kernel |
+| `sandbox-nonroot` (`ubuntu-24.04`, kernel `6.17.0-1022-azure`) | **before** (sysctl `1`, as `runner2`): `probe none`, `cause apparmor_restricts_userns`, the refusal naming `kernel.apparmor_restrict_unprivileged_userns`, exit 1. **after** (`sysctl -w …=0`): `tests/providers/test_namespace_sandbox.py` → **`48 passed in 0.73s`, zero skips**; `--sandbox-check` → `probe full`, `mechanism    : map-root`, `cause        : none — the claim was verified`, `required full`, `shell ran, exit code 0`, exit 0 |
+
+So the two runners answer **different halves** of the claim, which is the reason to keep both:
+22.04 shows the mechanism works for an unprivileged caller on a kernel with nothing to lower,
+and 24.04 shows what a distro that *does* restrict user namespaces does about it — refuse, name
+the sysctl that would change its mind, and then work once a human changes it.
+
+**The pin was re-decided with a measurement in hand** (see the top of this file): 24.04 builds
+no boundary at its default sysctl, so the sysctl is a **deployment prerequisite** and the main
+jobs stay on 22.04. `sandbox-nonroot` is what keeps that from being an assumption — if a future
+image changes the default, the job's `::notice::` branch says so instead of the pin quietly
+becoming wrong.
 
 ## After the workspace documents left the repository
 

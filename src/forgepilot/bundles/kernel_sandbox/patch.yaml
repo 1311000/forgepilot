@@ -40,6 +40,17 @@
 # tmpfs and the workspace is re-bound from the cwd, which is the part that makes the
 # mask survivable.
 #
+# **A non-root caller now works — and on Ubuntu 23.10+/24.04 the host still has to say so.**
+# The argv is built from `userns` below: `-U -r` needs no privilege and is what `auto` tries
+# first, and `run()` uses the mechanism the probe actually proved. Measured on a `ubuntu-24.04`
+# host kernel (`6.17.0-1022-azure`) as a non-root user: with
+# `kernel.apparmor_restrict_unprivileged_userns=1` — the distribution default — the user
+# namespace is refused, `probe()` answers `none`, and the refusal names that sysctl; with it set
+# to `0` the same command is contained (`full`, `mechanism: map-root`, 48 passed / 0 skipped).
+# On `ubuntu-22.04` no sysctl is involved at all, which is why the CI pin sits there and a
+# separate job measures 24.04. Lowering it is a **host/deployment decision**, not something this
+# process may do for itself.
+#
 # `probe()` asks the machine by *running* a trivial sandbox, not by checking for
 # `unshare`: Ubuntu 24.04's default AppArmor policy blocks unprivileged user
 # namespaces, so a presence check reports `full` on a host that cannot isolate
