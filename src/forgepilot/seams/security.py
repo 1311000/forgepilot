@@ -46,6 +46,14 @@ class Operation(StrEnum):
     READ_TICKET = "read_ticket"
     COMMENT_TICKET = "comment_ticket"
     SPAWN_SUBAGENT = "spawn_subagent"
+    #: Forgetting: stop returning a memory, keep it and its evidence in the audit.
+    #: Separate from :attr:`PURGE_MEMORY` because they are different decisions with
+    #: different costs, and a policy that can only say yes to both is not a policy.
+    FORGET_MEMORY = "forget_memory"
+    #: Purging: really delete a memory's content. The only irreversible operation the
+    #: system has, which is why it is its own operation rather than a flag on the
+    #: other one, and why the shipped profile asks for a human before either.
+    PURGE_MEMORY = "purge_memory"
 
 
 class NetworkAccess(StrEnum):

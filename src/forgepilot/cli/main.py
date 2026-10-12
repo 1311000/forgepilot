@@ -165,6 +165,32 @@ def _build_parser() -> argparse.ArgumentParser:
             "before it is made"
         ),
     )
+    memory.add_argument(
+        "--forget",
+        default=None,
+        metavar="MEMORY_ID",
+        help=(
+            "stop recalling one memory and exit. It stays in the log with its "
+            "evidence, so this is reversible by hand; it needs approval, and no "
+            "answer is a refusal"
+        ),
+    )
+    memory.add_argument(
+        "--purge",
+        default=None,
+        metavar="MEMORY_ID",
+        help=(
+            "delete one memory's content and exit. Irreversible: afterwards only the "
+            "fact that it existed, who removed it and when remain. Needs approval "
+            "and a typed confirmation"
+        ),
+    )
+    memory.add_argument(
+        "--reason",
+        default="",
+        metavar="TEXT",
+        help="with --forget or --purge: why, recorded in the log and in the tombstone",
+    )
 
     serve = parser.add_argument_group("serve")
     serve.add_argument(
@@ -857,6 +883,159 @@ def _distill(args: argparse.Namespace) -> int:
         return 1
 
 
+def _forget_or_purge(args: argparse.Namespace) -> int:
+    """Stop recalling one memory, or delete it.
+
+    **The only place a person is asked.** Everywhere else an approval prompt is
+    answered by whatever front end is attached — the HTTP API installs one that asks
+    the workbench. Here the answerer is this process: it reads the terminal, and for
+    ``--purge`` it demands the memory id typed out in full rather than a yes, because
+    an approval that can be given by pressing return is one that gets given by
+    pressing return. Anything it cannot read — no terminal, nothing on stdin, a
+    broken pipe — is :attr:`ApprovalOutcome.UNAVAILABLE`, which refuses.
+
+    The events land in a maintenance session per tenant, not in the user's
+    conversation: whoever audits "who removed this memory" should not have to know
+    which chat it was noticed in.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.kernel import create_root
+    from forgepilot.runtime.memory_lifecycle import forget, purge
+    from forgepilot.runtime.session import Session
+    from forgepilot.seams.refs import MemoryId, SessionId
+
+    purge_requested = bool(args.purge)
+    memory_id = MemoryId(args.purge if purge_requested else args.forget)
+
+    if purge_requested and not args.reason:
+        print(
+            "error: --purge needs --reason. The tombstone keeps who removed the "
+            "memory and why; the content is gone, so 'why' cannot be reconstructed "
+            "afterwards from anything else.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    token = args.token or os.environ.get("FORGEPILOT_TOKEN")
+    if not token:
+        print(
+            "error: no credential. Both commands are decisions about what the system "
+            "keeps believing, so they need a principal: pass --token or set "
+            "FORGEPILOT_TOKEN.",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def run() -> int:
+        root = create_root()
+        try:
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        memory = getattr(root, "memory", None)
+        if memory is None:
+            print(
+                "error: this profile has no `memory` row, so there is nothing to "
+                "forget. `--dump-config` prints the resolved rows.",
+                file=sys.stderr,
+            )
+            return 5
+
+        try:
+            record = root.principal.resolve(token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+
+        # One maintenance log per tenant. Sharing one across tenants would file a
+        # removal in a session whose header names somebody else's tenant.
+        session_id = SessionId(f"memory-maintenance-{record.principal.tenant_id}")
+        try:
+            session = await Session.open(root.sessionPersistence, session_id)
+        except FileNotFoundError:
+            session = await Session.create(
+                root.sessionPersistence,
+                session_id,
+                tenant=str(record.principal.tenant_id),
+                principal=str(record.principal.principal_id),
+                cwd=str(Path.cwd()),
+            )
+
+        root.approval.set_answerer(
+            _interactive_answerer(str(memory_id), require_typed=purge_requested)
+        )
+
+        act = purge if purge_requested else forget
+        outcome = await act(
+            session,
+            memory=memory,
+            memory_id=memory_id,
+            policy=root.policy,
+            approval=root.approval,
+            principal=record.principal,
+            reason=args.reason or "",
+        )
+        await session.flush()
+
+        if not outcome.allowed:
+            print(f"refused: {outcome.reason or 'no reason given'}", file=sys.stderr)
+            return 3
+        if purge_requested:
+            print(f"purged {memory_id}: the content is gone, the tombstone remains.")
+            print(f"session: {session_id}  ·  approved by: {outcome.tombstone.approved_by}")
+        else:
+            print(f"forgot {memory_id}: it will not be recalled again.")
+            print("it is still in the log, so this can be undone by hand.")
+            print(f"session: {session_id}")
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
+def _interactive_answerer(memory_id: str, *, require_typed: bool):  # noqa: ANN202
+    """An approval answerer that asks this terminal, and refuses when it cannot."""
+
+    from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
+
+    async def answer(request: ApprovalRequest) -> ApprovalOutcome:
+        print()
+        print(f"approval required: {request.reason or request.tool_name}")
+        if require_typed:
+            print("This cannot be undone.")
+            print(f"Type the memory id to confirm — {memory_id} — anything else refuses:")
+        else:
+            print("Type 'yes' to confirm; anything else refuses:")
+        try:
+            typed = input().strip()
+        except (EOFError, KeyboardInterrupt, OSError):
+            # No terminal, nothing on stdin, or a broken pipe. There is nobody to
+            # ask, and "nobody answered" is a refusal everywhere in this system.
+            return ApprovalOutcome.UNAVAILABLE
+        if require_typed:
+            return (
+                ApprovalOutcome.ALLOWED_ONCE if typed == memory_id else ApprovalOutcome.REJECTED
+            )
+        return ApprovalOutcome.ALLOWED_ONCE if typed.casefold() in {"y", "yes"} else ApprovalOutcome.REJECTED
+
+    return answer
+
+
 def _task(args: argparse.Namespace) -> int:
     """Run one ticket end to end: plan, branch, work, check, repair, deliver.
 
@@ -1074,6 +1253,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("--chat", args.chat),
             ("--task", bool(args.task)),
             ("--distill", bool(args.distill)),
+            ("--forget", bool(args.forget)),
+            ("--purge", bool(args.purge)),
             ("--serve", args.serve),
         )
         if on
@@ -1095,6 +1276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _task(args)
     if args.distill:
         return _distill(args)
+    if args.forget or args.purge:
+        return _forget_or_purge(args)
     if args.serve:
         return _serve(args)
 

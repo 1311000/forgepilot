@@ -38,6 +38,7 @@ from typing import Any
 
 from forgepilot.kernel import PluginService
 from forgepilot.seams.memory import (
+    COMPETING_STATUSES,
     RECALLABLE_STATUSES,
     SERVICE_NAME,
     Confidence,
@@ -49,8 +50,10 @@ from forgepilot.seams.memory import (
     MemoryType,
     Provenance,
     ProvenanceKind,
+    PurgeTombstone,
     RecallQuery,
     RecallVerdict,
+    Resolution,
     confirm_record,
     content_hash_of,
     count_recall,
@@ -59,12 +62,15 @@ from forgepilot.seams.memory import (
     new_provisional_record,
     new_quarantined_record,
     new_recallable_record,
+    plan_resolution,
     promote_proposal,
     recall_verdict,
+    related_to,
     require_provisional_provenance,
     require_recallable_provenance,
     require_tenant,
     revoke_record,
+    siblings_of,
 )
 from forgepilot.seams.refs import MemoryId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints
@@ -91,12 +97,26 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS memories_content ON memories (content_hash);
 CREATE INDEX IF NOT EXISTS memories_audience
     ON memories (tenant_id, scope, scope_ref, type, status, subject);
+CREATE TABLE IF NOT EXISTS purged (
+    memory_id    TEXT PRIMARY KEY,
+    tenant_id    TEXT,
+    subject      TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    purged_at    TEXT NOT NULL,
+    approved_by  TEXT NOT NULL,
+    reason       TEXT NOT NULL DEFAULT ''
+);
 """
 
 #: The statuses a record can be recalled *from*. Kept as a tuple, sorted, because the
 #: same values are spliced into two SQL statements and a set's iteration order is not
 #: something to put in a query.
 _LIVE_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in RECALLABLE_STATUSES))
+#: What a resolution compares: an ACTIVE or CONFLICTED record is a belief the system
+#: holds. A PROPOSED one is a candidate (`seams/memory.py::COMPETING_STATUSES`).
+_COMPETING_STATUSES: tuple[str, ...] = tuple(
+    sorted(status.value for status in COMPETING_STATUSES)
+)
 
 _INSERT = """
 INSERT INTO memories
@@ -326,6 +346,47 @@ class SqliteMemoryStorePlugin(PluginService):
             ).fetchone()
         return decode_record(row[0]) if row is not None else None
 
+    def _load_quarantined(self, memory_id: MemoryId) -> MemoryRecord | None:
+        """A quarantined record by id — only ``purge`` looks outside the store.
+
+        Quarantined records are never recalled, but they are still content somebody
+        stored, so "forget this" has to be able to reach them.
+        """
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT record_json FROM memories WHERE id = ? AND quarantined = 1",
+                (memory_id,),
+            ).fetchone()
+        return decode_record(row[0]) if row is not None else None
+
+    def _neighbours(self, record: MemoryRecord) -> tuple[MemoryRecord, ...]:
+        """Live records in the same family: tenant, scope, scope_ref and type.
+
+        The SQL narrows on indexed columns only, and the subject comparison — the
+        exact conflict key and the fuzzy report — stays in the seam where both stores
+        share it. Every row this returns is re-checked by ``siblings_of`` or
+        ``related_to`` before anything is decided about it.
+
+        The status filter is :data:`COMPETING_STATUSES`, not the recallable set: a
+        ``PROPOSED`` neighbour is a candidate, not a belief, so it must reach neither
+        the comparison nor the report.
+        """
+        marks = ", ".join("?" * len(_COMPETING_STATUSES))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT record_json FROM memories WHERE quarantined = 0 AND tenant_id = ? "
+                f"AND scope = ? AND scope_ref = ? AND type = ? AND status IN ({marks}) "
+                f"ORDER BY rowid",
+                (
+                    record.tenant_id,
+                    record.candidate.scope.value,
+                    record.candidate.scope_ref,
+                    record.type.value,
+                    *_COMPETING_STATUSES,
+                ),
+            ).fetchall()
+        return tuple(decode_record(raw) for (raw,) in rows)
+
     @staticmethod
     def _next_id(prefix: str, digest: str) -> MemoryId:
         """An id derived from the claim, not counted per process.
@@ -424,8 +485,82 @@ class SqliteMemoryStorePlugin(PluginService):
     async def revoke(self, memory_id: MemoryId) -> None:
         record = self._load(memory_id)
         if record is None:
-            return
+            raise KeyError(f"no memory record {memory_id!r} is admitted")
         self._put(revoke_record(record, now=datetime.now(UTC)))
+
+    async def reconcile(
+        self, memory_id: MemoryId, *, now: datetime | None = None
+    ) -> tuple[Resolution, ...]:
+        """Compare a just-admitted record with the ones already on its subject.
+
+        The decision is :func:`plan_resolution` — shared with the in-memory store, so
+        the two cannot resolve the same pair differently; this method supplies the
+        neighbours and persists what the decision changed. Only an ``ACTIVE`` record
+        is judged: a proposal or a conflict is not the current belief, and an
+        admission does not get to settle the subject around it.
+        """
+        moment = now or datetime.now(UTC)
+        record = self._load(memory_id)
+        if record is None or record.status is not MemoryStatus.ACTIVE:
+            return ()
+        neighbours = self._neighbours(record)
+        changed, decisions = plan_resolution(
+            record, siblings_of(neighbours, record), now=moment
+        )
+        for updated in changed:
+            self._put(updated)
+        current = self._load(memory_id) or record
+        return (*decisions, *related_to(neighbours, current))
+
+    async def purge(
+        self,
+        memory_id: MemoryId,
+        *,
+        approved_by: str,
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> PurgeTombstone:
+        """Delete the record's row and leave the tombstone that says it existed.
+
+        The row goes rather than being blanked, because the record *is* the row's
+        ``record_json``: an ``UPDATE`` that cleared the JSON would leave the columns
+        that index it — subject, content hash, tenant — behind, which is most of what
+        "forget this" is asking to remove.
+        """
+        moment = now or datetime.now(UTC)
+        record = self._load(memory_id)
+        if record is None:
+            record = self._load_quarantined(memory_id)
+        if record is None:
+            raise KeyError(f"no memory record {memory_id!r} is admitted")
+        tombstone = PurgeTombstone(
+            memory_id=memory_id,
+            content_hash=record.content_hash,
+            subject=record.subject,
+            purged_at=moment,
+            approved_by=approved_by,
+            tenant_id=record.tenant_id,
+            reason=reason,
+        )
+        with closing(self._connect()) as conn:
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            conn.execute(
+                "INSERT INTO purged (memory_id, tenant_id, subject, content_hash, purged_at,"
+                " approved_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(memory_id) DO UPDATE SET purged_at = excluded.purged_at,"
+                " approved_by = excluded.approved_by, reason = excluded.reason",
+                (
+                    str(tombstone.memory_id),
+                    tombstone.tenant_id,
+                    tombstone.subject,
+                    tombstone.content_hash,
+                    tombstone.purged_at.isoformat(),
+                    tombstone.approved_by,
+                    tombstone.reason,
+                ),
+            )
+            conn.commit()
+        return tombstone
 
     # -- introspection for tests ------------------------------------------
     @property
@@ -443,3 +578,24 @@ class SqliteMemoryStorePlugin(PluginService):
                 "SELECT record_json FROM memories WHERE quarantined = 1 ORDER BY rowid"
             ).fetchall()
         return tuple(decode_record(raw) for (raw,) in rows)
+
+    @property
+    def tombstones(self) -> tuple[PurgeTombstone, ...]:
+        """What purging left: proof that a record existed, and nothing to read."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT memory_id, tenant_id, subject, content_hash, purged_at, approved_by,"
+                " reason FROM purged ORDER BY rowid"
+            ).fetchall()
+        return tuple(
+            PurgeTombstone(
+                memory_id=MemoryId(row[0]),
+                tenant_id=_tenant(row[1]),
+                subject=row[2],
+                content_hash=row[3],
+                purged_at=datetime.fromisoformat(row[4]),
+                approved_by=row[5],
+                reason=row[6],
+            )
+            for row in rows
+        )

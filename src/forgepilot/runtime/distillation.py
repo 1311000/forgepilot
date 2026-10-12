@@ -59,6 +59,7 @@ from typing import Any
 
 from forgepilot.errors import ForgePilotError
 from forgepilot.runtime.log_guard import guarded_complete
+from forgepilot.runtime.memory_lifecycle import record_resolutions
 from forgepilot.runtime.projection import build_distillation_request
 from forgepilot.runtime.session import Session
 from forgepilot.seams.distillation import (
@@ -447,6 +448,19 @@ async def distill(
             },
             surface=SurfaceOp.LOG_ONLY,
         )
+
+        # What the store just admitted may contradict something it already held about
+        # the same subject. The reconciliation happens here, on the write path, rather
+        # than at recall time: resolving two memories while a model is waiting would
+        # mean a turn's context depends on the order the store happened to be read in.
+        # `reconcile` is a no-op for a proposal (it is not the current belief), so the
+        # provisional path costs one call and decides nothing.
+        try:
+            resolutions = await memory.reconcile(memory_id)
+        except ForgePilotError as exc:
+            notes.append(f"{memory_id} was written but could not be reconciled: {exc}")
+            resolutions = ()
+        await record_resolutions(session, resolutions)
 
     watermark_after = watermark
     if not dry_run:

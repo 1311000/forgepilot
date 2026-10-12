@@ -108,11 +108,12 @@ because a field with none is this repository's recurring defect:
 | `type` (8 kinds) | where it may be recalled — `MEMORY_TYPE_MODES`; a `TASK_SUMMARY` is not recited back during a chat |
 | `confidence` | whether it is stated as fact at all (`MemoryRecord.is_verified`) |
 | `status` | whether it is served, and as what — `PROPOSED` is recallable *as a proposal* |
-| `subject` | conflict detection (Phase F), and half of the de-duplication key |
+| `subject` | conflict detection (Phase F's `conflict_key`), and half of the de-duplication key |
 | `content_hash` | one record per claim, however often distillation runs |
 | `tenant_id` | the outermost audience, checked before the repository |
 | `recall_count` / `last_recalled_at` | "was this ever used" — nothing else can answer it |
-| `expires_at` | a plan stops being current; a convention does not |
+| `supersedes` / `superseded_by` | the supersession chain Phase F builds: which claim replaced this one |
+| `expires_at` | a plan stops being current (`MEMORY_TYPE_EXPIRY_DAYS`), a convention does not |
 
 Two decisions inside that are worth not re-litigating:
 
@@ -360,5 +361,80 @@ choice, and the seam is where one would attach); recall happens once per turn, s
 written *during* a turn is not shown until the next one; and the block is not re-checked
 against the workspace between the recall and the model's use of it — the heading says so,
 which is the honest version of a guarantee this code cannot make.
+
+## Phase F — what stands, what is replaced, what is forgotten
+
+A store that only ever grows answers "what did we learn" and never "what do we currently
+believe". Phase F adds the second answer, in `seams/memory.py` (so both stores share one
+rule) plus `runtime/memory_lifecycle.py` (so the *authority* to remove something lives
+outside the store).
+
+**Three acts, and they are not the same act:**
+
+| Act | What it is | Authority |
+|---|---|---|
+| a resolution (`reconcile`) | bookkeeping between records that already exist | none — no store content is destroyed, and the losing record stays readable |
+| forgetting (`revoke`) | the record stops being served; the text and the audit stay | `Operation.FORGET_MEMORY`, `ask_operations` by default |
+| purging (`purge`) | the content is **really deleted**, a tombstone remains | `Operation.PURGE_MEMORY` plus a typed confirmation at the CLI |
+
+Order is fail-closed everywhere: authorise → act → log. A refusal writes no
+`memory/revoked` / `memory/purged` event, so "it was never asked" and "it was refused"
+cannot be confused in the log, and `ForgetOutcome.asked` means *a person saw the question*
+— an approval service with no answerer wired returns `UNAVAILABLE`, which is a refusal.
+
+**Which records compete.** `COMPETING_STATUSES = {ACTIVE, CONFLICTED}` — **not** the
+recallable set. A `PROPOSED` record is a candidate, not a belief the harness holds: it can
+neither outrank a claim nor be retired by one. Letting it be superseded would silently
+retire something a person might still confirm, the recall side already renders proposals in
+their own block, and (all three of `SUPERSEDED`/`REVOKED`/`EXPIRED` being terminal) it would
+have needed a new legal transition. This was found while writing the tests, not while
+designing the phase.
+
+**The order, and the one place it lives.** `TRUST_ORDER` (`HUMAN_VERIFIED > TEST_VERIFIED >
+TOOL_OBSERVED > MODEL_ASSERTED`) with `trust_rank`/`strength_of` as the total order; a
+strictly more trusted *kind* wins, then the later record, then — equal on both — a
+`CONFLICT` with `winner is None`, both records kept and marked `CONFLICTED` (still
+recallable, in the unconfirmed block). `plan_resolution()` is the shared order of
+application, so a store decides nothing: it finds neighbours, calls it, persists. Records
+are compared by their own `created_at` because an `EventRef` is a position in a log, not a
+time — inventing an order for cited events would be worse than comparing admissions, and
+the approximation is written down in the docstring.
+
+**Lexical neighbours only.** `conflict_key` is `(tenant, scope, scope_ref, type,
+normalized subject)`, and `subjects_are_related` (Jaccard over `text_tokens`, threshold
+`0.6`) reports a `RELATED` resolution **without changing any status**. That is a deliberate
+deviation from the plan's "词面相似度兜底": fuzzy matching is good enough to tell a person
+two subjects look alike and not good enough to demote a record the harness verified.
+
+**Expiry is per type, and something reads it.** `MEMORY_TYPE_EXPIRY_DAYS` gives `PLAN` and
+`TASK_SUMMARY` 90 days and nothing else a deadline, an explicit `candidate.expires_at`
+wins, and `expiry_for()` is applied *inside* the record factories — a policy table nothing
+consults is exactly the defect shape this repository keeps meeting.
+
+**Where the comparison runs:** on the write path, right after `memory/write` in
+`runtime/distillation.py`. Reconciling at recall time would put a store write in front of a
+model that is waiting and would make a turn's context depend on store read order.
+
+**Phase F measured, counterfactual included.** Making `resolve_against` prefer the newer
+record (`if incoming_rank != incumbent_rank and False`) turns
+`tests/contract/test_memory_model.py tests/memory` from `100 passed` into **`4 failed, 96
+passed`**: `test_a_conflict_names_both_records_and_a_supersession_names_the_winner`,
+`test_a_later_claim_does_not_replace_the_one_that_was_checked` (both stores) and
+`test_a_resolution_changes_what_the_next_turn_recalls` — i.e. a lower-trust conclusion really
+does take over when the order is removed, which is the property the phase exists for.
+`test_a_better_claim_written_later_replaces_the_weaker_one_and_says_so` still passes in the
+counterfactual; it does not distinguish the two rules and is not the evidence.
+
+**One trap worth carrying forward:** identical text is one record — `content_hash_of`
+de-duplicates — so a test *about conflict* must use different wording, or it silently
+asserts nothing (`admit_provisional` of a claim already stored likewise promotes the
+existing record rather than filing a competing proposal).
+
+**Phase F gaps, stated:** no embeddings, so two paraphrases of one subject are reported as
+unrelated unless their tokens overlap, and no merge of two `CONFLICTED` records — a human
+resolves it by confirming one; `purge` leaves a tombstone by design, so "purged" is
+supported as a *fact about the log*, not as an absence; and the DB rows for a purged id are
+deleted rather than blanked, because blanking `record_json` alone would leave the indexed
+columns (subject, tenant, type) behind — the very thing a purge is asked to remove.
 
 

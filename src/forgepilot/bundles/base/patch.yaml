@@ -119,6 +119,12 @@
       # together, because they are one step: nothing is pushed unless a pull
       # request is about to be opened.
       - open_pr
+      # Forgetting and purging a memory. Both need a human: the first because a
+      # memory that stops being recalled is a change to what the system believes
+      # it knows, and the second because it is the only irreversible act here —
+      # the content is gone and the audit can only say that it *was* there.
+      - forget_memory
+      - purge_memory
   tier: trusted
 
 # --- ticket understanding ---------------------------------------------------

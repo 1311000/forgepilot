@@ -32,13 +32,18 @@ import pytest
 
 from forgepilot.providers.memory.memory import UnprovenMemoryWrite
 from forgepilot.seams import (
+    COMPETING_STATUSES,
     CONFIDENCE_FOR_PROVENANCE,
+    MEMORY_TYPE_EXPIRY_DAYS,
     MEMORY_TYPE_MODES,
+    SUBJECT_SIMILARITY_THRESHOLD,
+    TRUST_ORDER,
     Confidence,
     EventRef,
     ExecutionConstraints,
     IllegalTransition,
     MemoryCandidate,
+    MemoryId,
     MemoryScope,
     MemoryStatus,
     MemoryStore,
@@ -52,14 +57,25 @@ from forgepilot.seams import (
     ProvenanceKind,
     RecallQuery,
     RepoRef,
+    ResolutionKind,
     SessionId,
     TenantId,
     UnattributableTenant,
     assert_transition,
     confidence_for,
+    conflict_key,
     content_hash_of,
+    expiry_for,
     normalize_subject,
+    resolve_against,
+    siblings_of,
+    subjects_are_related,
+    trust_rank,
 )
+
+#: The record factories are the seam's rules applied to a candidate; the stores call
+#: them, and the tie test below needs two records stamped with one clock.
+from forgepilot.seams.memory import new_recallable_record
 
 ACME = RepoRef(host="git.corp", namespace="team", name="svc-a")
 ACME_TENANT = TenantId("acme")
@@ -470,3 +486,302 @@ async def test_the_schema_is_exported_from_the_seam_namespace() -> None:
         "normalize_subject",
     ):
         assert name in seams.__all__, f"{name} is re-exported but unreachable"
+
+
+# ---------------------------------------------------------------------------
+# Phase F — which of two memories stands, when one stops being current, and what
+# forgetting costs. The plan's §六.
+# ---------------------------------------------------------------------------
+#
+# The reader of the new fields, named as the module docstring asks:
+#
+# * ``supersedes`` / ``superseded_by`` — the chain a replacement leaves behind, so a
+#   memory that changed has a history rather than a gap
+# * ``status = CONFLICTED``          — the harness refusing to pick between two claims
+#   it cannot separate, which is a *result*, not a failure to compute one
+# * ``expires_at`` (per type)        — a plan stops being current after 90 days; a
+#   convention does not stop being true
+# * the tombstone                    — the only thing left after ``purge``, and the
+#   only reason "who removed this?" is answerable at all
+
+
+def test_the_trust_order_is_total_and_starts_with_a_person() -> None:
+    """The order is the mechanism. Everything else in Phase F is bookkeeping."""
+    assert TRUST_ORDER[0] is ProvenanceKind.HUMAN_VERIFIED
+    assert TRUST_ORDER[-1] is ProvenanceKind.MODEL_ASSERTED
+    assert trust_rank(ProvenanceKind.HUMAN_VERIFIED) > trust_rank(ProvenanceKind.TEST_VERIFIED)
+    assert trust_rank(ProvenanceKind.TEST_VERIFIED) > trust_rank(ProvenanceKind.TOOL_OBSERVED)
+    assert trust_rank(ProvenanceKind.TOOL_OBSERVED) > trust_rank(ProvenanceKind.MODEL_ASSERTED)
+    assert len({trust_rank(kind) for kind in ProvenanceKind}) == len(TRUST_ORDER), (
+        "two kinds with one rank would make 'who wins' depend on dictionary order"
+    )
+
+
+def test_a_tie_at_equal_trust_is_a_conflict_and_not_a_coin_toss() -> None:
+    """Two claims the harness cannot separate are both kept and both marked.
+
+    Silent last-writer-wins is the failure this exists to prevent: the store would look
+    decisive and there would be nothing in the log to show a decision was ever made.
+    """
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    incumbent = new_recallable_record(
+        MemoryId("mem-1"),
+        candidate(text="the cap is 3"),
+        provenance(ProvenanceKind.TOOL_OBSERVED, ev(1)),
+        now=when,
+    )
+    incoming = new_recallable_record(
+        MemoryId("mem-2"),
+        candidate(text="the cap is 5"),
+        provenance(ProvenanceKind.TOOL_OBSERVED, ev(2)),
+        now=when,
+    )
+
+    decision = resolve_against(incumbent, incoming, now=when)
+
+    assert decision.kind is ResolutionKind.CONFLICT
+    assert decision.winner is None and decision.loser is None
+    assert "conflict" in decision.reason
+
+
+def test_a_conflict_names_both_records_and_a_supersession_names_the_winner() -> None:
+    """A resolution that cannot be read back is not an audit trail."""
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    checked = new_recallable_record(
+        MemoryId("mem-1"),
+        candidate(),
+        provenance(ProvenanceKind.TEST_VERIFIED, ev(1)),
+        now=when,
+    )
+    seen = new_recallable_record(
+        MemoryId("mem-2"),
+        candidate(),
+        provenance(ProvenanceKind.TOOL_OBSERVED, ev(2)),
+        now=when,
+    )
+
+    decision = resolve_against(checked, seen, now=when)
+
+    assert decision.kind is ResolutionKind.SUPERSEDED, "the incoming record is the one that loses"
+    assert decision.winner == MemoryId("mem-1") and decision.loser == MemoryId("mem-2")
+    assert str(checked.provenance.kind) in decision.reason
+    assert str(seen.provenance.kind) in decision.reason
+
+
+def test_a_subject_deadline_is_per_type_unless_the_candidate_names_one() -> None:
+    """``expiry_for`` is the reader of ``MEMORY_TYPE_EXPIRY_DAYS``.
+
+    The seam factory — not the caller — applies it, because a per-type default that
+    every write path has to remember is one that gets forgotten on the next write path.
+    """
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    plan = expiry_for(candidate(type=MemoryType.PLAN), now=now)
+    summary = expiry_for(candidate(type=MemoryType.TASK_SUMMARY), now=now)
+    convention = expiry_for(candidate(type=MemoryType.CONVENTION), now=now)
+
+    assert plan == now + timedelta(days=MEMORY_TYPE_EXPIRY_DAYS[MemoryType.PLAN])
+    assert summary == now + timedelta(days=90)
+    assert convention is None, "a convention does not stop being true"
+    explicit = now + timedelta(days=1)
+    assert expiry_for(candidate(type=MemoryType.PLAN, expires_at=explicit), now=now) == explicit
+
+
+async def test_a_plan_written_through_the_store_carries_its_deadline(container) -> None:
+    """The type policy is applied on the path everything actually uses."""
+    memory = container.memory
+    before = datetime.now(UTC)
+
+    plan = await memory.write(
+        candidate(type=MemoryType.PLAN, subject="the migration order"),
+        provenance(ProvenanceKind.HUMAN_VERIFIED, ev(1)),
+    )
+    fact = await memory.write(
+        candidate(subject="the retry cap"), provenance(ProvenanceKind.HUMAN_VERIFIED, ev(2))
+    )
+
+    by_id = {record.id: record for record in memory.records}
+    assert by_id[plan].expires_at is not None
+    assert by_id[plan].expires_at > before + timedelta(days=89)
+    assert by_id[fact].expires_at is None
+
+
+async def test_a_later_claim_does_not_replace_the_one_that_was_checked(container) -> None:
+    """The counterfactual the plan asks for: remove the order and this goes red.
+
+    ``TOOL_OBSERVED`` was written *second* and is therefore newer. By age it wins; by
+    anything worth relying on it does not, and the record that a check passed stays the
+    one that is served.
+    """
+    memory = container.memory
+    checked = await memory.write(
+        candidate(text="the retry loop needs a cap"),
+        provenance(ProvenanceKind.TEST_VERIFIED, ev(1)),
+    )
+    seen = await memory.write(
+        candidate(text="the retry loop needs no cap"),
+        provenance(ProvenanceKind.TOOL_OBSERVED, ev(2)),
+    )
+
+    decisions = await memory.reconcile(seen)
+
+    assert [decision.kind for decision in decisions] == [ResolutionKind.SUPERSEDED]
+    assert decisions[0].winner == checked
+    by_id = {record.id: record for record in memory.records}
+    assert by_id[checked].status is MemoryStatus.ACTIVE
+    assert by_id[seen].status is MemoryStatus.SUPERSEDED
+    assert by_id[seen].superseded_by == checked
+    served = await recall_all(memory)
+    assert [record.id for record in served] == [checked], "the loser is not served"
+
+
+async def test_a_better_claim_written_later_replaces_the_weaker_one_and_says_so(container) -> None:
+    """The other direction, and the chain it leaves: the old record is history, not gone.
+
+    The two claims differ in wording on purpose: the identical text would be *one*
+    record — that is what the content hash is for — and there would be nothing to
+    resolve.
+    """
+    memory = container.memory
+    seen = await memory.write(
+        candidate(text="the cap is three"), provenance(ProvenanceKind.TOOL_OBSERVED, ev(1))
+    )
+    checked = await memory.write(
+        candidate(text="the cap is five"), provenance(ProvenanceKind.TEST_VERIFIED, ev(2))
+    )
+
+    decisions = await memory.reconcile(checked)
+
+    assert [decision.kind for decision in decisions] == [ResolutionKind.SUPERSEDES]
+    by_id = {record.id: record for record in memory.records}
+    assert by_id[checked].supersedes == seen, "the replacement names what it replaced"
+    assert by_id[seen].status is MemoryStatus.SUPERSEDED
+    assert by_id[seen].superseded_by == checked
+    assert by_id[seen].candidate.text == "the cap is three", "history keeps the claim"
+    served = await recall_all(memory)
+    assert [record.id for record in served] == [checked]
+
+
+async def test_a_proposal_neither_wins_nor_is_retired(container) -> None:
+    """A candidate is not a belief: it cannot outrank a claim, and a claim does not
+    make it history. Superseding it would hide something a person might still confirm.
+    """
+    memory = container.memory
+    admitted = await memory.write(
+        candidate(text="the retry loop needs a cap"),
+        provenance(ProvenanceKind.TEST_VERIFIED, ev(1)),
+    )
+    proposed = await memory.admit_provisional(
+        candidate(text="the retry loop needs a cap of five"),
+        provenance(ProvenanceKind.MODEL_ASSERTED, ev(2)),
+    )
+
+    assert await memory.reconcile(proposed) == (), "a proposal resolves nothing"
+    assert await memory.reconcile(admitted) == (), "and is not resolved by anything"
+
+    by_id = {record.id: record for record in memory.records}
+    assert by_id[admitted].status is MemoryStatus.ACTIVE
+    assert by_id[proposed].status is MemoryStatus.PROPOSED
+    assert MemoryStatus.PROPOSED not in COMPETING_STATUSES, (
+        "a candidate is not a belief, and this set is what says so"
+    )
+
+
+async def test_two_subjects_that_look_alike_are_reported_and_nothing_is_demoted(container) -> None:
+    """词面相似度兜底, with the limit the plan does not state: it tells a person, and
+    it does not decide. A fuzzy match is not grounds to demote a verified record."""
+    memory = container.memory
+    first = await memory.write(
+        candidate(subject="retry loop cap"), provenance(ProvenanceKind.TEST_VERIFIED, ev(1))
+    )
+    second = await memory.write(
+        candidate(subject="the retry loop cap"), provenance(ProvenanceKind.TEST_VERIFIED, ev(2))
+    )
+
+    decisions = await memory.reconcile(second)
+
+    assert [decision.kind for decision in decisions] == [ResolutionKind.RELATED]
+    assert decisions[0].winner is None
+    by_id = {record.id: record for record in memory.records}
+    assert by_id[first].status is MemoryStatus.ACTIVE
+    assert by_id[second].status is MemoryStatus.ACTIVE
+
+
+def test_relatedness_is_a_threshold_over_the_same_folding_subjects_use() -> None:
+    assert subjects_are_related("retry loop cap", "the retry loop cap")
+    assert not subjects_are_related("retry loop cap", "the database migration order")
+    assert not subjects_are_related("retry loop cap", ""), "an empty subject relates to nothing"
+    assert subjects_are_related("Retry Loop Cap", "retry-loop-cap"), "case and punctuation fold"
+    assert subjects_are_related(
+        "retry loop cap", "the retry loop cap", threshold=SUBJECT_SIMILARITY_THRESHOLD
+    )
+    assert not subjects_are_related("retry loop cap", "the retry loop cap", threshold=0.9), (
+        "the threshold is a knob; the default is the one the report uses"
+    )
+
+
+def test_siblings_are_the_records_under_one_key() -> None:
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    here = new_recallable_record(
+        MemoryId("mem-1"), candidate(), provenance(ProvenanceKind.TEST_VERIFIED, ev(1)), now=when
+    )
+    same = new_recallable_record(
+        MemoryId("mem-2"), candidate(), provenance(ProvenanceKind.TEST_VERIFIED, ev(2)), now=when
+    )
+    other_subject = new_recallable_record(
+        MemoryId("mem-3"),
+        candidate(subject="something else"),
+        provenance(ProvenanceKind.TEST_VERIFIED, ev(3)),
+        now=when,
+    )
+    other_tenant = new_recallable_record(
+        MemoryId("mem-4"),
+        candidate(tenant_id=OTHER_TENANT),
+        provenance(ProvenanceKind.TEST_VERIFIED, ev(4)),
+        now=when,
+    )
+
+    assert conflict_key(here) == conflict_key(same)
+    assert {record.id for record in siblings_of((here, same, other_subject, other_tenant), here)} == {
+        MemoryId("mem-2")
+    }, "a subject means nothing across a tenant, a scope, a type or another subject"
+
+
+async def test_forgetting_keeps_the_record_and_purging_does_not(container) -> None:
+    """The two halves of 遗忘, which is the whole point of having two.
+
+    ``revoke`` is reversible and keeps the evidence; ``purge`` deletes the content and
+    leaves only what is needed to answer "who removed this, and when".
+    """
+    memory = container.memory
+    first = await memory.write(candidate(), provenance(ProvenanceKind.TEST_VERIFIED, ev(1)))
+    await memory.revoke(first)
+
+    forgotten = {record.id: record for record in memory.records}[first]
+    assert forgotten.status is MemoryStatus.REVOKED
+    assert forgotten.candidate.text == "retry loop needs a cap", "forgetting is not deleting"
+    assert await recall_all(memory) == ()
+
+    second = await memory.write(
+        candidate(text="the migration order"), provenance(ProvenanceKind.TEST_VERIFIED, ev(2))
+    )
+    before = {record.id: record for record in memory.records}[second]
+    tombstone = await memory.purge(second, approved_by="alice", reason="it named a customer")
+
+    assert tombstone.memory_id == second
+    assert tombstone.approved_by == "alice" and tombstone.reason == "it named a customer"
+    assert tombstone.content_hash == before.content_hash, "the tombstone names what was deleted"
+    assert tombstone.subject == before.subject
+    assert second not in {record.id for record in memory.records}, "the content is gone"
+    assert memory.tombstones and memory.tombstones[-1].memory_id == second
+    assert await recall_all(memory) == (), "a purged memory is not served, and not a corpse either"
+
+
+async def test_forgetting_or_purging_something_that_is_not_there_is_refused(container) -> None:
+    """A no-op would be reported as a successful removal, which is the worst of both."""
+    memory = container.memory
+    with pytest.raises(KeyError):
+        await memory.revoke(MemoryId("mem-nope"))
+    with pytest.raises(KeyError):
+        await memory.purge(MemoryId("mem-nope"), approved_by="alice")
+

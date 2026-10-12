@@ -24,6 +24,7 @@ from typing import Any
 
 from forgepilot.kernel import PluginService
 from forgepilot.seams.memory import (
+    COMPETING_STATUSES,
     RECALLABLE_STATUSES,
     SERVICE_NAME,
     EventRef,
@@ -31,10 +32,13 @@ from forgepilot.seams.memory import (
     MemoryRecord,
     MemoryStatus,
     Provenance,
+    PurgeTombstone,
     RecallQuery,
     RecallVerdict,
+    Resolution,
     UnprovenMemoryWrite,
     confirm_record,
+    conflict_key,
     content_hash_of,
     count_recall,
     expire_record,
@@ -42,12 +46,15 @@ from forgepilot.seams.memory import (
     new_provisional_record,
     new_quarantined_record,
     new_recallable_record,
+    plan_resolution,
     promote_proposal,
     recall_verdict,
+    related_to,
     require_provisional_provenance,
     require_recallable_provenance,
     require_tenant,
     revoke_record,
+    siblings_of,
 )
 from forgepilot.seams.refs import MemoryId
 from forgepilot.seams.security import ExecutionConstraints
@@ -68,6 +75,8 @@ class InMemoryMemoryStorePlugin(PluginService):
         # conversation cannot double the store. Only *live* records are indexed;
         # a superseded or revoked claim may be re-asserted later.
         self._by_hash: dict[str, MemoryId] = {}
+        #: What purging leaves behind (see ``PurgeTombstone``).
+        self._tombstones: list[PurgeTombstone] = []
         self._seq = 0
 
     def _next_id(self, prefix: str) -> MemoryId:
@@ -154,11 +163,73 @@ class InMemoryMemoryStorePlugin(PluginService):
     async def revoke(self, memory_id: MemoryId) -> None:
         record = self._records.get(memory_id)
         if record is None:
-            return
+            raise KeyError(f"no memory record {memory_id!r} is admitted")
         self._records[memory_id] = revoke_record(record, now=datetime.now(UTC))
         self._drop_hash(record.content_hash)
 
+    async def reconcile(
+        self, memory_id: MemoryId, *, now: datetime | None = None
+    ) -> tuple[Resolution, ...]:
+        """Compare a just-admitted record with the ones already on its subject.
+
+        The decisions are :func:`plan_resolution`; this method finds the neighbours,
+        stores what the decision changed, and reports what it decided. Only an
+        ``ACTIVE`` record is judged here — a proposal or a conflict is not the current
+        belief, so an admission does not get to resolve the subject around it.
+        """
+        moment = now or datetime.now(UTC)
+        record = self._records.get(memory_id)
+        if record is None or record.status is not MemoryStatus.ACTIVE:
+            return ()
+        neighbours = tuple(
+            other
+            for other in self._records.values()
+            if other.status in COMPETING_STATUSES
+            and conflict_key(other)[:4] == conflict_key(record)[:4]
+        )
+        changed, decisions = plan_resolution(
+            record, siblings_of(neighbours, record), now=moment
+        )
+        for updated in changed:
+            self._store(updated)
+        current = self._records.get(memory_id, record)
+        return (*decisions, *related_to(neighbours, current))
+
+    async def purge(
+        self,
+        memory_id: MemoryId,
+        *,
+        approved_by: str,
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> PurgeTombstone:
+        """Delete the record's content, keeping the tombstone that says it existed."""
+        moment = now or datetime.now(UTC)
+        record = self._records.pop(memory_id, None)
+        if record is None:
+            record = self._quarantined.pop(memory_id, None)
+        if record is None:
+            raise KeyError(f"no memory record {memory_id!r} is admitted")
+        self._drop_hash(record.content_hash)
+        tombstone = PurgeTombstone(
+            memory_id=memory_id,
+            content_hash=record.content_hash,
+            subject=record.subject,
+            purged_at=moment,
+            approved_by=approved_by,
+            tenant_id=record.tenant_id,
+            reason=reason,
+        )
+        self._tombstones.append(tombstone)
+        return tombstone
+
     # -- internals ---------------------------------------------------------
+    def _store(self, record: MemoryRecord) -> None:
+        """The single write path for an existing record (mirrors ``sqlite._put``)."""
+        self._records[record.id] = record
+        if record.status not in RECALLABLE_STATUSES:
+            self._drop_hash(record.content_hash)
+
     def _live_record(self, digest: str) -> MemoryRecord | None:
         """The recallable record for this content, if a live one exists."""
         memory_id = self._by_hash.get(digest)
@@ -181,3 +252,7 @@ class InMemoryMemoryStorePlugin(PluginService):
     @property
     def records(self) -> tuple[MemoryRecord, ...]:
         return tuple(self._records.values())
+
+    @property
+    def tombstones(self) -> tuple[PurgeTombstone, ...]:
+        return tuple(self._tombstones)

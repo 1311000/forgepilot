@@ -42,7 +42,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -88,13 +88,32 @@ __all__ = [
     "matches_text",
     "text_tokens",
     "recall_verdict",
+    "TRUST_ORDER",
+    "trust_rank",
+    "strength_of",
+    "expiry_for",
+    "ResolutionKind",
+    "Resolution",
+    "PurgeTombstone",
+    "conflict_key",
+    "siblings_of",
+    "subjects_are_related",
+    "resolve_against",
+    "related_to",
+    "plan_resolution",
+    "supersede_record",
+    "mark_conflicted",
+    "note_replacement",
     "RECALLABLE_PROVENANCE",
     "CONFIDENCE_FOR_PROVENANCE",
     "LEGAL_TRANSITIONS",
     "MEMORY_TYPE_MODES",
+    "MEMORY_TYPE_EXPIRY_DAYS",
+    "SUBJECT_SIMILARITY_THRESHOLD",
     "INDEPENDENT_EVIDENCE_FOR_RAISE",
     "REVOCABLE_STATUSES",
     "RECALLABLE_STATUSES",
+    "COMPETING_STATUSES",
 ]
 
 SERVICE_NAME = "memory"
@@ -638,7 +657,7 @@ def new_recallable_record(
         content_hash=content_hash_of(candidate),
         created_at=now,
         updated_at=now,
-        expires_at=candidate.expires_at,
+        expires_at=expiry_for(candidate, now=now),
     )
 
 
@@ -667,7 +686,7 @@ def new_provisional_record(
         content_hash=content_hash_of(candidate),
         created_at=now,
         updated_at=now,
-        expires_at=candidate.expires_at,
+        expires_at=expiry_for(candidate, now=now),
     )
 
 
@@ -760,6 +779,349 @@ def count_recall(record: MemoryRecord, *, now: datetime) -> MemoryRecord:
     Only the counter and the timestamp move.
     """
     return replace(record, recall_count=record.recall_count + 1, last_recalled_at=now)
+
+
+# -- conflicts, supersession, expiry -------------------------------------------
+#
+# Which of two memories about the same subject should be believed is a *decision*,
+# and it lives here with the others rather than in each store: a deployment that
+# swaps the store must not get a second, slightly different answer to "may this be
+# believed". A store's job is to find the records that share a key and to apply the
+# answer; the answer itself is :func:`resolve_against`.
+
+#: Most trusted first. The order *is* the disagreement policy: a record's kind
+#: decides, and recency only ever decides between equals. Removing the order — or
+#: comparing timestamps alone — is the counterfactual this phase is measured
+#: against, because "a conclusion a model guessed replaced one a test proved" is
+#: the failure the whole trust model exists to prevent.
+TRUST_ORDER: tuple[ProvenanceKind, ...] = (
+    ProvenanceKind.HUMAN_VERIFIED,
+    ProvenanceKind.TEST_VERIFIED,
+    ProvenanceKind.TOOL_OBSERVED,
+    ProvenanceKind.MODEL_ASSERTED,
+)
+
+
+def trust_rank(kind: ProvenanceKind) -> int:
+    """Higher is more trusted. Total, so no pair of kinds is unranked."""
+    return len(TRUST_ORDER) - 1 - TRUST_ORDER.index(kind)
+
+
+#: ``created_at`` is always set by the stores; this is the fallback that keeps the
+#: comparison total if one is ever missing, rather than raising inside a recall.
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+def strength_of(record: MemoryRecord) -> tuple[int, datetime]:
+    """How substantial a record is: trust first, then recency.
+
+    The same order :func:`resolve_against` uses. A store that picked the "strongest"
+    sibling by some other key would resolve one pair one way and then name a
+    different sibling as the one that supersedes it — the sort of divergence that
+    only shows up in the audit trail, months later.
+    """
+    return (trust_rank(record.provenance.kind), record.created_at or _EPOCH)
+
+
+#: How long a kind of memory stays current, in days — absent means "does not expire
+#: on its own". A plan and a task summary describe a state of the world that the next
+#: task invalidates; a convention or a preference is not dated that way. The deadline
+#: is *observed* when a record is recalled (see :func:`recall_verdict`) rather than
+#: swept by a timer, because a store has no clock to sweep with and a background
+#: timer would be a second thing that has to be running for the guarantee to hold.
+MEMORY_TYPE_EXPIRY_DAYS: Mapping[MemoryType, int] = {
+    MemoryType.PLAN: 90,
+    MemoryType.TASK_SUMMARY: 90,
+}
+
+
+def expiry_for(candidate: MemoryCandidate, *, now: datetime) -> datetime | None:
+    """When this candidate stops being current — an explicit deadline wins.
+
+    The policy is applied at admission rather than left to the caller, because a
+    per-type default that no code reads is the repeated defect shape: a field that
+    looks enforced and is not.
+    """
+    if candidate.expires_at is not None:
+        return candidate.expires_at
+    days = MEMORY_TYPE_EXPIRY_DAYS.get(candidate.type, 0)
+    return now + timedelta(days=days) if days else None
+
+
+class ResolutionKind(StrEnum):
+    """What one comparison decided."""
+
+    #: The newcomer is the one that stands; the incumbent is history.
+    SUPERSEDES = "supersedes"
+    #: The incumbent stands, and the newcomer goes to history.
+    SUPERSEDED = "superseded"
+    #: Indistinguishable by every rule there is, so nothing is chosen.
+    CONFLICT = "conflict"
+    #: Same subject, different key. Reported to a person; no status changes.
+    RELATED = "related"
+
+
+@dataclass(frozen=True, slots=True)
+class Resolution:
+    """The outcome of comparing one incoming record with one incumbent."""
+
+    kind: ResolutionKind
+    incoming: MemoryId
+    incumbent: MemoryId
+    subject: str
+    #: The record that stands, or ``None`` when the comparison could not choose.
+    winner: MemoryId | None
+    reason: str
+
+    @property
+    def loser(self) -> MemoryId | None:
+        if self.winner is None:
+            return None
+        return self.incumbent if self.winner == self.incoming else self.incoming
+
+
+def conflict_key(record: MemoryRecord) -> tuple[str, str, str, str, str]:
+    """What "the same subject" means, mechanically.
+
+    Tenant, scope, scope_ref and type have to match: two repositories' build commands
+    are not two opinions about one thing, and a fact and a preference about the same
+    two words are not in conflict either. The subject compared here is the
+    normalised one, so the variation the plan's fallback was aimed at (case,
+    punctuation, accents, spacing) has already been folded away before anything
+    reads these keys.
+    """
+    return (
+        str(record.tenant_id or ""),
+        str(record.candidate.scope),
+        record.candidate.scope_ref,
+        str(record.type),
+        record.subject,
+    )
+
+
+def siblings_of(
+    records: Sequence[MemoryRecord], record: MemoryRecord
+) -> tuple[MemoryRecord, ...]:
+    """The records that share this one's key — the only ones worth comparing."""
+    key = conflict_key(record)
+    return tuple(other for other in records if other.id != record.id and conflict_key(other) == key)
+
+
+#: The statuses that take part in a resolution at all.
+#:
+#: A ``PROPOSED`` record is a candidate the harness has not checked, not a belief it
+#: holds: it cannot outrank a claim, and it is **not** made history by one either.
+#: Superseding it would silently retire a candidate a person might still want to
+#: confirm, and the recall side already shows proposals in their own block, so it
+#: cannot be mistaken for a competing belief. ``EXPIRED``, ``REVOKED`` and
+#: ``SUPERSEDED`` are over — a resolution does not argue with the past.
+COMPETING_STATUSES: frozenset[MemoryStatus] = frozenset(
+    {MemoryStatus.ACTIVE, MemoryStatus.CONFLICTED}
+)
+
+
+#: Jaccard overlap at which two *different* subjects are worth mentioning to a
+#: person. Deliberately blunt: this number decides what gets *reported*, never what
+#: gets demoted.
+SUBJECT_SIMILARITY_THRESHOLD = 0.6
+
+
+def subjects_are_related(
+    left: str, right: str, *, threshold: float = SUBJECT_SIMILARITY_THRESHOLD
+) -> bool:
+    """Whether two different keys look like the same subject worded differently.
+
+    The plan's 词面相似度兜底, with the limit the plan does not state: a fuzzy match is
+    good enough to *tell a person* that two memories may be about one thing, and not
+    good enough to demote a memory the harness verified. So this feeds
+    :attr:`ResolutionKind.RELATED` — a report — and never a status change.
+    """
+    left_words = set(text_tokens(left))
+    right_words = set(text_tokens(right))
+    if not left_words or not right_words:
+        return False
+    return len(left_words & right_words) / len(left_words | right_words) >= threshold
+
+
+def resolve_against(
+    incumbent: MemoryRecord, incoming: MemoryRecord, *, now: datetime
+) -> Resolution:
+    """Which of two same-subject records stands — never simply the newer one.
+
+    1. A strictly more trusted *kind* wins. This is the rule the phase exists for.
+    2. Between equal kinds, the more recent record wins — a later observation about
+       the same subject is better information than an earlier one.
+    3. Equal on both ⇒ :attr:`ResolutionKind.CONFLICT`, with **both** records kept
+       and marked ``CONFLICTED``. Nothing here is a basis for choosing, and a silent
+       winner would be the system asserting something it cannot support.
+       ``CONFLICTED`` is still recallable, so a conflict reaches the model — in the
+       unconfirmed block, labelled as not checked.
+
+    ``now`` is only a fallback for a record with no ``created_at``; every store sets
+    one. Records are compared by their own timestamps rather than by the cited
+    events' times: an :class:`EventRef` carries a position in a log, not a time, and
+    inventing an order for them would be worse than comparing admissions.
+    """
+    incoming_kind = incoming.provenance.kind
+    incumbent_kind = incumbent.provenance.kind
+    subject = incoming.subject or incumbent.subject
+    incoming_rank = trust_rank(incoming_kind)
+    incumbent_rank = trust_rank(incumbent_kind)
+    if incoming_rank != incumbent_rank:
+        incoming_wins = incoming_rank > incumbent_rank
+        winner, loser = (incoming, incumbent) if incoming_wins else (incumbent, incoming)
+        return Resolution(
+            kind=ResolutionKind.SUPERSEDES if incoming_wins else ResolutionKind.SUPERSEDED,
+            incoming=incoming.id,
+            incumbent=incumbent.id,
+            subject=subject,
+            winner=winner.id,
+            reason=(
+                f"{winner.provenance.kind} outranks {loser.provenance.kind}: "
+                f"{winner.id} stands and {loser.id} is kept as history"
+            ),
+        )
+    incoming_at = incoming.created_at or now
+    incumbent_at = incumbent.created_at or now
+    if incoming_at != incumbent_at:
+        incoming_wins = incoming_at > incumbent_at
+        winner, loser = (incoming, incumbent) if incoming_wins else (incumbent, incoming)
+        return Resolution(
+            kind=ResolutionKind.SUPERSEDES if incoming_wins else ResolutionKind.SUPERSEDED,
+            incoming=incoming.id,
+            incumbent=incumbent.id,
+            subject=subject,
+            winner=winner.id,
+            reason=(
+                f"both records are {incoming_kind} about the same subject; the later one "
+                f"stands: {winner.id} replaces {loser.id}"
+            ),
+        )
+    return Resolution(
+        kind=ResolutionKind.CONFLICT,
+        incoming=incoming.id,
+        incumbent=incumbent.id,
+        subject=subject,
+        winner=None,
+        reason=(
+            f"{incoming.id} and {incumbent.id} are both {incoming_kind} about one subject "
+            f"with nothing to choose between them, so both are kept as conflicted"
+        ),
+    )
+
+
+def related_to(
+    records: Sequence[MemoryRecord],
+    record: MemoryRecord,
+    *,
+    threshold: float = SUBJECT_SIMILARITY_THRESHOLD,
+) -> tuple[Resolution, ...]:
+    """Same tenant, scope, scope_ref and type, a similar subject, a different key."""
+    key = conflict_key(record)
+    return tuple(
+        Resolution(
+            kind=ResolutionKind.RELATED,
+            incoming=record.id,
+            incumbent=other.id,
+            subject=record.subject,
+            winner=None,
+            reason=(
+                f"{record.id} and {other.id} are both {record.type} about similar subjects "
+                f"({record.subject!r} / {other.subject!r}); reported, not resolved"
+            ),
+        )
+        for other in records
+        if other.id != record.id
+        and conflict_key(other) != key
+        and conflict_key(other)[:4] == key[:4]
+        and subjects_are_related(other.subject, record.subject, threshold=threshold)
+    )
+
+
+def plan_resolution(
+    record: MemoryRecord, siblings: Sequence[MemoryRecord], *, now: datetime
+) -> tuple[tuple[MemoryRecord, ...], tuple[Resolution, ...]]:
+    """What to store, and what to report, when an admitted record meets its siblings.
+
+    The decisions are :func:`resolve_against` and :func:`related_to`; what is decided
+    *here* is the order to apply them in, which is what somebody reading
+    ``memory/resolved`` afterwards has to reconstruct. Both stores call this and only
+    persist the result, so the two cannot resolve the same pair differently:
+
+    1. **If any sibling outranks the newcomer**, the newcomer is the one that goes to
+       history, pointed at by the strongest of them. It resolves nothing else: a
+       record that is not the current belief cannot settle another.
+    2. **Otherwise, if any sibling ties with it**, both sides become ``CONFLICTED``
+       and neither is chosen. Siblings the newcomer outranks are left alone in this
+       case — marking them ``SUPERSEDED`` by a record that is itself in doubt would
+       move the doubt into their status.
+    3. **Otherwise the newcomer stands**, and every sibling it outranks becomes
+       ``SUPERSEDED`` by it, with its own ``supersedes`` naming the strongest.
+
+    Returns the records that changed — including ``record`` when it did — and one
+    :class:`Resolution` per comparison that decided something. The caller stores the
+    records and writes the resolutions to the log.
+    """
+    if not siblings:
+        return (), ()
+    compared = [(other, resolve_against(other, record, now=now)) for other in siblings]
+    losses = [pair for pair in compared if pair[1].kind is ResolutionKind.SUPERSEDED]
+    ties = [pair for pair in compared if pair[1].kind is ResolutionKind.CONFLICT]
+    wins = [pair for pair in compared if pair[1].kind is ResolutionKind.SUPERSEDES]
+    if losses:
+        best, resolution = max(losses, key=lambda pair: strength_of(pair[0]))
+        return (supersede_record(record, by=best.id, now=now),), (resolution,)
+    if ties:
+        changed = [mark_conflicted(record, now=now)]
+        changed.extend(mark_conflicted(other, now=now) for other, _ in ties)
+        return tuple(changed), tuple(resolution for _, resolution in ties)
+    if wins:
+        changed = tuple(supersede_record(other, by=record.id, now=now) for other, _ in wins)
+        best, _ = max(wins, key=lambda pair: strength_of(pair[0]))
+        return (
+            (note_replacement(record, replaces=best.id, now=now), *changed),
+            tuple(resolution for _, resolution in wins),
+        )
+    return (), ()
+
+
+def supersede_record(record: MemoryRecord, *, by: MemoryId, now: datetime) -> MemoryRecord:
+    """The record lost: it keeps its text and its evidence and stops being current."""
+    superseded = replace(record, status=MemoryStatus.SUPERSEDED, superseded_by=by, updated_at=now)
+    assert_transition(record.status, superseded.status)
+    return superseded
+
+
+def mark_conflicted(record: MemoryRecord, *, now: datetime) -> MemoryRecord:
+    """Kept, and marked as one of two records that cannot both be believed."""
+    conflicted = replace(record, status=MemoryStatus.CONFLICTED, updated_at=now)
+    assert_transition(record.status, conflicted.status)
+    return conflicted
+
+
+def note_replacement(record: MemoryRecord, *, replaces: MemoryId, now: datetime) -> MemoryRecord:
+    """The winner's pointer at what it replaced — the chain, read backwards."""
+    return replace(record, supersedes=replaces, updated_at=now)
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeTombstone:
+    """What is left after a memory's content is deleted.
+
+    Enough to answer "was there a memory here, and who removed it", and not enough to
+    reconstruct it — which is the point: a ``REVOKED`` record is a memory the system
+    still holds, and a "forget this" that leaves the text on disk has not forgotten
+    anything. What was purged cannot be audited afterwards, so the tombstone is
+    written where the audit lives.
+    """
+
+    memory_id: MemoryId
+    content_hash: str
+    subject: str
+    purged_at: datetime
+    approved_by: str
+    tenant_id: TenantId | None = None
+    reason: str = ""
 
 
 def may_recall(query: RecallQuery, constraints: ExecutionConstraints) -> bool:
@@ -936,5 +1298,63 @@ class MemoryStore(Protocol):
         """
         ...
 
-    async def revoke(self, memory_id: MemoryId) -> None: ...
+    async def revoke(self, memory_id: MemoryId) -> None:
+        """Stop returning a memory, keeping it and its evidence in the audit.
+
+        The soft half of forgetting, and the *only* half a session may do on its
+        own: the record is still there to be explained afterwards, which is what
+        makes it reversible and what makes it not a deletion. The caller is
+        ``runtime/memory_lifecycle.py::forget``, which asks for
+        ``Operation.FORGET_MEMORY`` first; calling this directly is a store-level
+        act with no authorisation behind it, which is why nothing in ``src/`` does.
+
+        Raises ``KeyError`` for an id that is not admitted, like :meth:`confirm` and
+        :meth:`purge`: a "forget" that silently did nothing is indistinguishable
+        from one that worked, and the two are reported to a person differently.
+        """
+        ...
+
+    async def reconcile(self, memory_id: MemoryId, *, now: datetime | None = None) -> tuple[Resolution, ...]:
+        """Compare a record with the ones already on its subject, and act on the answer.
+
+        Called right after an admission, and returns what each comparison decided —
+        the *caller* writes ``memory/resolved``, because a store has no log.
+
+        The comparisons, in one place so that a second store cannot decide them
+        differently (all of them :func:`resolve_against`, plus :func:`related_to` for
+        the fuzzy report):
+
+        * a same-key record this one outranks becomes ``SUPERSEDED`` by it;
+        * a same-key record that outranks this one makes *this* record
+          ``SUPERSEDED``, and the caller is told, because a memory that arrived and
+          immediately lost is something a person may need to see;
+        * a tie marks **both** ``CONFLICTED`` and chooses neither;
+        * similar-subject records under a different key are reported as
+          ``RELATED`` and changed in no way.
+
+        A no-op for a record that is not ``ACTIVE`` (only an admission is being
+        judged here) and for one with no siblings. Returns ``()`` in both cases,
+        rather than an empty "resolution", so that "nothing was compared" is not
+        written into the log as a decision.
+        """
+        ...
+
+    async def purge(
+        self, memory_id: MemoryId, *, approved_by: str, reason: str = "", now: datetime | None = None
+    ) -> PurgeTombstone:
+        """Delete a memory's content, keeping only proof that it existed.
+
+        The one destructive operation in the system, and destructive on purpose: a
+        record that is merely ``REVOKED`` is a memory the system still holds, so
+        "forget this" that leaves the text on disk has not forgotten it. What
+        survives is a :class:`PurgeTombstone` — the content hash, when, who approved
+        it and why — enough to say "there was a memory here and it was removed", and
+        not enough to reconstruct it.
+
+        ``approved_by`` is not optional and is not inferred: this is the operation
+        whose whole cost is the loss of the audit trail, so the record must name who
+        accepted that cost. The caller is ``runtime/memory_lifecycle.py::purge``,
+        behind ``Operation.PURGE_MEMORY`` and a typed confirmation.
+        """
+        ...
 

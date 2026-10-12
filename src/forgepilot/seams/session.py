@@ -143,6 +143,20 @@ class EventKind:
     #: it believe that?" becomes unanswerable. Carries the query, the ids and the
     #: exact text that went in.
     MEMORY_RECALLED = "memory/recalled"
+    #: A memory was replaced, a conflict was declared, or two memories may be about
+    #: one subject. Emitted by ``runtime/memory_lifecycle.py`` right after an
+    #: admission, one event per comparison that decided something.
+    #:
+    #: Log-only, deliberately: a model is not shown the bookkeeping of the store it
+    #: reads from. What it *is* shown is the consequence — the record that stands
+    #: appears in ``memory/recalled`` at the start of the next turn.
+    MEMORY_RESOLVED = "memory/resolved"
+    #: A memory was forgotten: still stored, no longer returned, still auditable.
+    MEMORY_REVOKED = "memory/revoked"
+    #: A memory was **purged** — its content is gone and this event is what is left
+    #: of it. The one destructive operation in the system, so the event carries the
+    #: tombstone: content hash, subject, when, who approved it and why.
+    MEMORY_PURGED = "memory/purged"
 
     # --- redaction --------------------------------------------------------
     # Emitted by the write path, never by a caller: they describe what the gate
