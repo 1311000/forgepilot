@@ -9,17 +9,23 @@
 
 ## Evaluation notes (`evals/`)
 
-Seven tasks, five arms, one JSONL row per attempt. **This cannot produce the doc's
+Ten tasks, eight arms, one JSONL row per attempt. **This cannot produce the doc's
 "+32% vs Claude Code" number** — there is no comparison arm here, and inventing
 one would be the same unfounded claim in a new place. What it answers instead is
 the question underneath: **does each mechanism earn its place**, by running the
 same tasks with one thing switched off at a time.
 
-**Four task shapes, because four off-by-one fixes would give four correlated
-numbers and one finding.** Each exists to exercise a *different* mechanism, and
-each carries its own offline solution so **a task whose own correct answer does
-not score is a broken task** — which is far cheaper to discover than from a live
-run:
+**Each shape exists to exercise a *different* mechanism, because ten off-by-one
+fixes would give ten correlated numbers and one finding.** Each carries its own
+offline solution so **a task whose own correct answer does not score is a broken
+task** — which is far cheaper to discover than from a live run. ⚠️ **The count is
+deliberately not written down here any more.** `evals/README.md` holds the current
+table, one row per task, and `tests/evals/test_the_docs_match_the_tasks.py` fails
+for a task directory with no row there *and* for a hand-counted "N tasks" phrase in
+that README — this file's own headline said "seven tasks, five arms" beside "four
+task shapes" for several milestones, which is what a duplicated count does.
+
+The four the set started with:
 
 | task | mechanism it exercises |
 |---|---|
@@ -27,6 +33,10 @@ run:
 | `feature` | the new test *is* the specification for something that does not exist yet |
 | `incomplete` | rules-first: no reproduction steps means `awaiting_info` with **zero** model calls |
 | `out-of-scope` | the permission boundary, with a legitimate fix next to the forbidden one |
+
+The six that came later — `find-the-bug`, `find-the-rule`, `two-attempts`,
+`no-failing-test`, `not-in-the-checkout`, `two-repos` — are described in
+`evals/README.md`'s table, which is the authoritative list.
 
 **`--scripted` measures the harness, not the agent**, and says so in the report.
 A replay model performs a fix because it was told to. It exists to prove the
@@ -264,6 +274,12 @@ this machine reached `~/.forgepilot` without any of this. **So: a scored sweep n
 writable scratch root outside the checkout; if the host will not give the spawned tree one,
 say so in the row's context rather than publishing the rate.**
 
+Hit again at M13 Phase E, on the first `two-repos` attempt, in the identical place
+(`PermissionError … eval-scratch\run-…\repo\.git\hooks\applypatch-msg.sample`) and cured by
+the same two variables — so the offline sweeps in this file name them up front rather than
+letting each new era rediscover the wall. The same confinement applies to `FORGEPILOT_HOME`
+(the session store), which is why both are moved together.
+
 ### ⚠️ The sandbox confined writes, not reads — measured, and an eval arm depended on it
 *(closed since: `ReadScope.WORKSPACE` masks every unnamed top-level entry, `probe()` verifies that
 claim with a read, and the eval's containment row claims it — see the last paragraph of this section
@@ -441,6 +457,57 @@ separate script (`run.py::_script_the_extraction`, with
 `tests/evals/test_the_memory_arms_can_learn.py::test_the_extraction_gets_its_own_answer` as
 the regression). **A scripted answer is only the next answer if nothing else is queued
 ahead of it.**
+
+### `two-repos`: the unit of delivery is a repository, not a ticket (M13 Phase E)
+
+The set's other nine tasks all run against one repository, and every one of them would
+pass against a runner that delivered to only the first of several. This task is the
+falsifier for that: **one ticket naming two repositories, and the row is a pass only if
+*each* one was delivered on its own** — its own tree, branch, commit and pull request, its
+own checks run in its own tree.
+
+Four pieces make it possible, and only the first is about this task:
+
+- **`EvalTask.extra_repos`** — `{slug, fixture, variable}`, with each `fixture` resolved
+  relative to the task directory exactly as the primary one is. `prepare_repos()` builds the
+  extra checkout as a **sibling** of the primary (`…/eval-scratch/run-*/repo` and
+  `…/reporting`), never inside it: a checkout inside the primary is a file the primary
+  repository owns — visible to `git status`, liable to land in the primary's diff, and
+  readable by an agent whose brief says it cannot see the sibling. `export_environment(…,
+  extras=)` then sets `FORGEPILOT_EXAMPLE_REPO_2` beside the three existing variables.
+- **`expect.deliveries`** (an int, or a list of slugs that must each have been attempted)
+  and **`expect.delivery_states`**, compared against the row's own per-repository records
+  rather than against the plan — a plan naming two repositories and a run delivering one is
+  exactly the state this task exists to catch, and comparing the plan against itself would
+  miss it.
+- **A script with four steps for two deliveries.** ⚠️ One delivery's single attempt is a
+  whole turn, and the scripted model has to *finish* that turn: `write A` / `say …` /
+  `write B` / `say …`. A two-write script leaves the first delivery waiting for a text turn
+  that never comes, which reads as a hang or a budget failure rather than as the script
+  being one entry short. `script_turns` pads four more `say "nothing further"` entries for
+  the repair path, so the padding is what makes the omission look like anything but itself.
+- **`evals/report.py`'s `deliv` column** — the median number of deliveries per row, and `-`
+  for a row written before the key existed. **Absent is not zero**: a pre-M13 row has no
+  `deliveries` key at all, while a row that recorded an empty tuple planned no repository,
+  and printing `0` for the first would read as "this task delivered nothing" — the same
+  distinction `_pass_at` draws between a missing number and a failure.
+
+Measured, offline, 2026-10-12: `two-repos` → `pass ready 2 calls 2.5s`, the row recording
+`deliveries=2`, `turns=2`, `changed=stats.py,reporting/windows.py`, and two deliveries —
+`git.local/demo/stats ready branch=forgepilot/session-…/git.local-demo-stats
+changed=stats.py checks=True` and `git.local/demo/reporting ready
+branch=…/git.local-demo-reporting changed=reporting/windows.py checks=True`. Two trees, two
+branches, each check run where its file lives. The whole offline set is then **10/10**
+(`evals/results/20261012T134035-scripted.jsonl`).
+
+⚠️ **The task's own second repository is self-contained, and that is a finding about the
+design, not a shortcut.** The plan (D8) said "a small package that imports
+`stats.moving_average`", and that cannot run: each delivery's checks run in its own tree and
+there is no merged checkout, so an `import stats` fails with `ImportError` for a reason that
+is not the bug. `reporting` therefore carries its **own copy** of the same off-by-one — which
+is also what makes two independent deliveries the honest shape, because the defect really is
+in both places. The gap this leaves is written down in `docs/notes/task-delivery.md`: an
+integration suite that needs both repositories in one directory has no home yet.
 
 ## Where a search looks, and why that is not where a repository lives
 

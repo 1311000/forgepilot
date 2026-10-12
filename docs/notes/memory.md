@@ -295,7 +295,14 @@ a place the obvious implementation is wrong:
   `ExecutionConstraints` rather than `Principal` is the right source. Several repos
   gets the same `None`, because "which repository is this about?" has no answer and a
   guess would be a wrong-tenant-style leak in slow motion. Task mode knows its repo and
-  constructs its own recaller from `plan.repos[0].slug`.
+  constructs its own recaller — `plan.repos[0].slug` before M13, and now **one recaller per
+  delivery**, `Recaller(scope_ref=repo.slug)`, built inside the loop that delivers each
+  repository (`orchestration/modes/task.py`). ⚠️ That is not a detail: a two-repository
+  ticket that reused the first repository's recaller would serve one repository's memories
+  into the other's turn while the brief was telling the model which tree it was in, and the
+  records' own audience check would not catch it — the *query* would simply be asked about
+  the wrong repository. The single-repo refusal above is deliberately untouched by M13; the
+  plurality is answered by the loop, not by relaxing the rule.
 - **What the model is told.** Three groups, not the plan's two: `### Backed by evidence`
   (a person said so / a check passed — `MemoryRecord.is_verified`), `### Observed, but not
   confirmed` (a tool saw it), and `### Unconfirmed — the harness has not checked these`

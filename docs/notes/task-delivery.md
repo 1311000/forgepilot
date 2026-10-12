@@ -20,7 +20,7 @@ A mocked ticket now becomes a branch, a real diff and a pull request draft, dete
 - **The workspace diff is real**, computed with `difflib` against a snapshot taken at `prepare`. Returning `""` would have made "the ticket produced a diff" an assertion about the mock rather than about what the model changed.
 - **`run_task` flushes before returning.** It did not, and a finished task's `task/check` and closing `task/state` events sat in the buffer — a reader, or a crash, saw a task that never ended. Found by a test, not by inspection.
 
-## One repository per task (P5-2)
+## One repository per task, then N (P5-2 → M13)
 
 `preprocess` returns **every** repository a ticket names, because that is what the
 ticket says; when it names none, `plan_task` falls back to the project's own
@@ -36,31 +36,85 @@ draft — could tell. For a cross-repository change the untouched half is precis
 the part nobody goes to look at, which is why the silent version is worse than a
 refusal would have been.
 
-**Refused, not picked, and refused before the classifier:**
+**The first answer was a refusal (P5-2).** `plan_task` sent a ticket naming more than
+one target to `AWAITING_INFO`, naming the repositories in the reason so a person could
+split the ticket — before the classifier, for the reason an incomplete ticket is: the
+answer is a rule, and asking a model which half of a change to make would be asking it
+to decide where to write. `run_task` asserted the invariant it relied on
+(`len(plan.repos) == 1`), so a two-repository plan failed where it was used rather than
+delivering half a change. **That was a policy answer to a capability gap, and M13 built
+the capability** (`~/.claude/plans/m13-cross-repo-delivery.md`, decisions D1–D8).
 
-- `plan_task` sends a ticket naming more than one target to `AWAITING_INFO`, naming
-  the repositories in the reason so a person can split the ticket. Same state and
-  same shape as "no repository could be determined", which was already there.
-- **Before the classifier**, for the reason an incomplete ticket is: the answer is
-  a rule, and asking a model which half of a change to make would be asking it to
-  decide where to write. Both tests use `UnreachableClassifier`, which raises if
-  called, so `gateway.calls == 0` cannot pass by accident.
-- **The project's own list is not a licence to choose the first.** A project that
-  declares several repositories and a ticket that names none is still two targets;
-  picking `repos[0]` there is the same half-delivery by another route, and it would
-  be the *configuration* making the choice.
-- **`run_task` asserts the invariant it relies on** (`len(plan.repos) == 1`,
-  matching the `plan.selection is not None` assertion beside it). A future change
-  that lets a two-repository plan through now fails where it is used, rather than
-  quietly delivering half a change.
+**M13: the unit of delivery is a `(session, repository)` pair.** `run_task` is a serial
+`for repo in plan.repos:` loop, and each delivery is a `RepoDelivery` with its own
 
-**Multi-repository delivery is a milestone, not a line of code.** It needs one
-worktree, one commit and one pull request *per* repository, a body that explains the
-split, and an answer to "the other repository's suite also passes". Until that
-exists, `README.md`'s「跨仓」and the design doc's 300GB-across-repos premise are
-served by the *seam* (`ProjectConfig.repos` is a tuple, `Retriever.search` takes
-`repos`) and not by the runner — which is better said out loud than discovered from
-a ticket that half-worked.
+- **working tree**, the handle now keyed `(session_id, repo.slug)` rather than on the
+  session alone (the P5-2-era bug in its purest form: `prepare(repo_b, …)` in one session
+  returned **repo A's** tree, and its branch, and reported repo B's changes against A's
+  baseline);
+- **branch name**, `forgepilot/<session>/<slug>`;
+- **brief**, `compose_delivery_brief` in `orchestration/context_assembly.py` — the turn is
+  told which repository it is in and, when the ticket spans several, that the siblings'
+  files are **not** in this tree ("a change that belongs in one of them cannot be made
+  here"). Without that sentence a model told to fix two repositories does the natural
+  thing and writes only what it can see;
+- **recall scope**, `Recaller(scope_ref=repo.slug)` — what was learned about *this*
+  repository, not about its sibling;
+- **attempt budget**: `project.retry.max_attempts` is per delivery, not per ticket;
+- **commit, push and pull request**; and
+- **state machine**. One machine cannot serve two sequential deliveries —
+  `ALLOWED_TRANSITIONS` has no edge from `delivered` back to `running` — and using one
+  would either crash or need a fake transition. So each delivery runs its own machine and
+  the task's machine records only the verdict.
+
+**The verdict is a function of the deliveries**, not a parallel bookkeeping:
+`DELIVERED` when every repository was delivered, `READY` when none failed but not all were
+published, `FAILED` when any failed. Attempts and turns are summed for the row.
+
+**A failure stops the run, and the stop is recorded rather than assumed.** Repositories
+after the failure are reported `not attempted` (`RepoDelivery.attempted` is
+`state is not TaskState.QUEUED`), with no tree, branch or commit. Parallel delivery was
+refused deliberately: there is one session log, one approval path, and `run_turn`'s
+`workspace_root` is a single directory — and the trade-off is paid in public, because
+**git has no un-push**: repo A's pull request is already open when repo B is verified. The
+cost of that ordering is one reason the loop is serial and not a work queue.
+
+**Each repository's checks run in its own tree** (D3). There is one `project.yaml` `test`
+command, and it runs once per repository, there — so "the other repository's suite also
+passes" has an answer that can be measured, and `task/check` events carry `repo` because
+in one log two repositories' checks interleave and a passing check that does not say which
+tree it ran in cannot be told apart from the other one's. The scripted eval run shows the
+whole shape: two deliveries, two branches (`…/git.local-demo-stats`,
+`…/git.local-demo-reporting`), `stats.py` changed in one and `reporting/windows.py` in the
+other, each check run where its file lives.
+
+**Plurality comes from the ticket, never from configuration — and that is an amendment to
+D4's neighbourhood, made during Phase B.** The project's `repos:` list is a fallback only
+when it declares **exactly one** repository. A silent ticket against a project declaring
+several is a third `AWAITING_INFO`, naming them: the alternative ("deliver to all of
+them") would let the configuration manufacture N pull requests and would make the split
+the PR body explains the *configuration's* assumption rather than the ticket's
+description. The reason string says which of the three it is.
+
+**The pull request body explains the split, and says nothing extra when there is none.**
+When a ticket covers one repository the body is **byte for byte** what it was before M13
+(pinned by `test_a_single_repository_body_is_byte_for_byte_what_it_always_was`); when it
+covers several, a section lists each sibling as this pull request / `#number` (already
+opened) / "committed on `<branch>` and verified, but not published" / **failed**: reason /
+not attempted. The state events carry `repo`, and there is **no aggregate per-task state
+event** on purpose: a single-repository log still reads `running → delivered`, which is
+what its tests assert.
+
+**What is still not covered, and it is a real gap rather than a detail:** an integration
+suite that needs **both** repositories in one directory. There is no merged checkout, and
+there is no per-repository `test`/`test_paths` — every repository runs the project's one
+command in its own tree. A deployment that needs the merged shape adds it; the seam does
+not foreclose it, and the plan's D3 records that we chose not to build it now. Two smaller
+ones: `examples/stat-fix/github/` was not extended to two repositories, so publishing two
+pull requests against a real host is exercised by the local provider and the mock, not
+there; and `README.md`'s「跨仓」and the design doc's 300GB-across-repos premise are now
+served by the runner as well as by the seam (`ProjectConfig.repos` is a tuple,
+`Retriever.search` takes `repos`), but only within one deployment's declared slug list.
 
 ## Task entry point notes (`--task`, `examples/stat-fix/`, `providers/tickets/file.py`)
 
