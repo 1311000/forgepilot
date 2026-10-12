@@ -237,6 +237,33 @@ Both are environment facts rather than defects in this repository — but the se
 one is worth knowing before blaming the harness for thousands of new files in
 `git status`.
 
+⚠️ **`FORGEPILOT_EVAL_SCRATCH` needs the same treatment, and the reason is the one
+`scratch_root()` gives for keeping it outside the repository.** Measured in M11b Phase G,
+when a memory-arm sweep was started with the default scratch root: the first failure was
+`PermissionError … eval-scratch\run-…\repo\.git\hooks\applypatch-msg.sample` (a `run-*`
+directory an older sweep had left behind) and the second,
+after `FORGEPILOT_HOME` was moved inside, was
+`PermissionError … .forgepilot\sessions\local\202610\session-*.header.json.tmp`. What
+worked:
+
+```powershell
+$env:FORGEPILOT_HOME = "D:\wroksapce\pythonCode\forge\.tmp\fp-home"
+$env:FORGEPILOT_EVAL_SCRATCH = "D:\wroksapce\pythonCode\forge\.tmp\eval-scratch"
+.venv/Scripts/python.exe evals/run.py --live --task bug-fix --arm full --arm no-memory --arm no-distill --reps 2
+```
+
+⚠️ **And that is mechanics, not a scored measurement**, because an inside-the-repository
+scratch root is exactly the leak `scratch_root()` warns about: `evals/tasks/*/solution/` is
+one `..` away from a run the model can read. The confinement was a property of *this
+session's* spawned process tree rather than of the box — the same paths were writable from
+`pwsh` (`Set-Content` to `~/.forgepilot/probe-ps.txt` succeeded) while
+`.venv/Scripts/python.exe` was refused at `~/.forgepilot/eval-scratch/probe-a`,
+`~/.forgepilot/probe-dsh.txt` and even `D:\wroksapce\pythonCode\probe-out.txt`
+(`[WinError 5]` / `[Errno 13]`), and `.tmp/probe-in.txt` written fine. Earlier sweeps on
+this machine reached `~/.forgepilot` without any of this. **So: a scored sweep needs a
+writable scratch root outside the checkout; if the host will not give the spawned tree one,
+say so in the row's context rather than publishing the rate.**
+
 ### ⚠️ The sandbox confined writes, not reads — measured, and an eval arm depended on it
 *(closed since: `ReadScope.WORKSPACE` masks every unnamed top-level entry, `probe()` verifies that
 claim with a read, and the eval's containment row claims it — see the last paragraph of this section
@@ -352,6 +379,68 @@ the probe — `checks: pass` **and** `probes: pass` are both required, so the fa
 reason says which one happened. Its passing later would be the alarm: it would mean
 the held-out input had stopped being held out, most likely by being moved under
 `tests/`.
+
+### The memory arms: the mechanism fires, and the pass rate does not move (M11b Phase G)
+
+Two arms were added, and they are the first whose switch is **not** a project override:
+`Arm` gained `memory: bool = True` and `distill: bool = True`, `arm_changes` reports each
+as `True -> False`, and the two guards that call an arm decorative
+(`test_every_arm_changes_something`, `test_each_arm_reports_what_it_changed`) accept a
+runtime switch. The config plane says what the store *is*; nothing in it can say whether
+*this run* reads or writes one.
+
+⚠️ **The eval had wired recall and had no producer.** `run_task(memory=root.memory)` came
+from Phase E, and `distill()` had no caller in `evals/` at all: every memory arm began with
+an empty store, `full` and `no-memory` sent the same prompt, and the pair was guaranteed to
+agree. Two halves are now real:
+
+- **A store that outlives the attempt.** `H.memory_rows(task, arm)` adds two patch rows —
+  `SqliteMemoryStorePlugin` and the distillation watermark — at absolute paths under
+  `H.memory_dir(task, arm)`, and `reset_memory` runs on `rep == 1` only. `prepare_repo`
+  wipes the checkout every run, so memory is the only thing that can carry from one rep to
+  the next; the store is keyed by task and arm and **not** by rep, so rep 2 is warm and two
+  arms never share one (otherwise the comparison is a sequence). Each row records
+  `memories_before`, read after boot and before the first turn, which is the only moment it
+  means "what this run could have recalled".
+- **Distillation after the checks**, never during a turn: it is a maintenance pass over a
+  finished session, and it must change what the *next* attempt starts from.
+
+Measured live on `bug-fix`, 3 arms × 2 reps, same model and budget
+(`evals/results/20261012T104203-live.jsonl`, every row `pass ready`, `stats.py` changed):
+
+| arm | rep | calls | before | distilled | memory writes | recalls | lines served | passed |
+|---|---|---|---|---|---|---|---|---|
+| `full` | 1 | 14 | 0 | 5 | 6 | 0 | 0 | ✅ |
+| `full` | 2 | 9 | **6** | 1 | 3 | **1** | **5** | ✅ |
+| `no-memory` | 1 | 9 | 0 | 4 | 5 | 0 | 0 | ✅ |
+| `no-memory` | 2 | 10 | 5 | 4 | 5 | **0** | **0** | ✅ |
+| `no-distill` | 1 | 5 | 0 | — | **0** | 0 | 0 | ✅ |
+| `no-distill` | 2 | 13 | 0 | — | **0** | 0 | 0 | ✅ |
+
+Three readings, and the first is the one a table like this invites you to skip:
+
+1. **The pass-rate delta is zero.** Six of six passed. On a task this size the run is not
+   near the edge, so memory has nothing to rescue — recorded as a zero rather than dropped,
+   because "no difference" and "the arms were not wired" look identical from a rate alone
+   and the second is what the previous state actually was.
+2. **The mechanism fired, and the arms differ exactly as they claim.** `full/rep2` began
+   with 6 records, recalled once and put **5 lines** into its prompt; `no-memory/rep2` had
+   5 records in its store and served **0**, because `memory=None` is a refusal and not a
+   silence; `no-distill` never wrote one, so both its reps were cold by construction.
+3. **The counts are not a quality claim.** `no-distill/rep1` took 5 calls and `rep2` 13,
+   `full` went 14 → 9: at n=2 that is one run's variance, the same reading `evals/README.md`
+   already gives the `out-of-scope`/`tight-window` cells.
+
+⚠️ **One instrument lesson, and it cost a whole sweep.** The first version appended the
+scripted "nothing" answer (`[]`) to the end of `H.script_turns(task)`. Those scripts carry
+several repair attempts, a scripted run consumes two or three, and the turns left over sit
+**in front of** the appended one — so the extraction prompt was answered with the agent's
+spare prose and every scripted row reported `distilled=0 failed='schema'`. That reads as a
+distillation defect; it was a queue. The extraction is a separate prompt and now gets a
+separate script (`run.py::_script_the_extraction`, with
+`tests/evals/test_the_memory_arms_can_learn.py::test_the_extraction_gets_its_own_answer` as
+the regression). **A scripted answer is only the next answer if nothing else is queued
+ahead of it.**
 
 ## Where a search looks, and why that is not where a repository lives
 

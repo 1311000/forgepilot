@@ -45,14 +45,46 @@ def task():
 # ---------------------------------------------------------------------------
 def test_every_arm_changes_something() -> None:
     """An arm that changes nothing is not an arm. `full` is the one exception, and
-    it is the baseline rather than an ablation."""
+    it is the baseline rather than an ablation.
+
+    ⚠️ **A switch is not always configuration.** The two memory arms throw a runtime
+    boolean (`Arm.memory` / `Arm.distill`), because no project key means "read the store
+    but do not write it" — that is a property of the experiment, not of a deployment.
+    A guard that only looked at `project`/`patches` would call them decorative and be
+    wrong in the same direction it exists to catch.
+    """
     for name, arm in arm_module.ARMS.items():
         if name == "full":
             continue
-        assert arm.project or arm.patches, (
+        switched = bool(arm.project or arm.patches) or not (arm.memory and arm.distill)
+        assert switched, (
             f"arm {name!r} switches nothing off, so comparing it against `full` "
             f"compares the baseline with itself"
         )
+
+
+def test_the_memory_arms_switch_one_mechanism_each(task) -> None:
+    """`no-memory` reads and never recalls; `no-distill` recalls and never learns.
+
+    Both halves on two arms rather than one, because they fail differently: a run with
+    recall off and a run whose store happened to be empty produce the same prompt, and
+    only the row — `memory_on` / `distill_on` / `memories_before` — can tell them apart.
+    """
+    read_only = H.arm_changes(task, arm_module.arm("no-memory"))
+    learn_only = H.arm_changes(task, arm_module.arm("no-distill"))
+
+    assert read_only["memory"] == (True, False)
+    assert "distill" not in read_only
+    assert learn_only["distill"] == (True, False)
+    assert "memory" not in learn_only
+
+
+def test_the_reference_arm_switches_neither(task) -> None:
+    """`full` is the reference: it must recall *and* learn, or every comparison is
+    against an arm that was already half off."""
+    reference = H.arm_changes(task, arm_module.arm("full"))
+
+    assert reference == {}
 
 
 def test_the_no_search_arm_removes_the_search_tool(task) -> None:

@@ -223,6 +223,8 @@ directions, which is worth knowing before reading a variant's result:
 | `no-search` | `code_search`; the agent must already know which file to read | `find-the-rule` — eight modules, so enumeration costs something; the signal is **calls**, not pass/fail |
 | `no-pinning` | the oracle is not held fixed, so an edited test decides the check | `bug-fix/weakens-the-test` |
 | `no-repair` | one attempt; a failing check ends the task | `two-attempts` |
+| `no-memory` | recall: earlier runs in the repository are still learned from, and never read back | any task where a second attempt could use what the first learned — read `memories_served`, not the rate |
+| `no-distill` | distillation: nothing any run learned ever reaches the store | the same tasks, read `memories_before` (0 by construction) |
 | `tight-window` | a model window small enough that compaction has to work for anything to finish | any task long enough to cross the trigger |
 
 ⚠️ **`baseline` is the aggregate control, and it is not a competitor.** Every other
@@ -235,6 +237,10 @@ design doc's +32% is recorded as unverifiable rather than repeated.
 
 An arm is a project override and at most one patch row. If an arm needs more than
 that, the mechanism is probably not switchable — which is worth knowing too.
+**`no-memory` and `no-distill` are the exception and they say so in the code**: the
+config plane can say what the store *is* and never whether this run reads or writes
+one, so those two switches are `Arm.memory` / `Arm.distill`, reported by
+`H.arm_changes` like any other and checked by the same two guards.
 
 ⚠️ **An arm is only meaningful if some task flips when it is switched off**, and
 three of these did not have one until the tasks above were built. Checked offline,
@@ -252,6 +258,41 @@ It removes a *tool*, not the ability to search: `run` is still there, and on thi
 host `findstr /s` does the same job. So both arms can pass `find-the-bug`, and the
 arm's signal is **tool calls and wall-clock**. A call-count difference of zero is a
 result too — it would say the tool is not earning its place on work this size.
+
+### The memory arms measure a mechanism, not a rate
+
+`no-memory` and `no-distill` are only arms if something writes into the store, and until
+M11b Phase G nothing did: recall was wired and distillation had no caller here, so
+`full` and `no-memory` sent the same prompt and agreed by construction. Both halves are
+real now — a durable per-arm store (`H.memory_rows` / `H.memory_dir`, reset on rep 1 so
+rep 2 is warm) and a distillation pass after the checks.
+
+Measured live on `bug-fix`, 3 arms × 2 reps, one model and one budget
+(`evals/results/20261012T104203-live.jsonl`):
+
+| arm | rep | calls | memories before | distilled | lines served | passed |
+|---|---|---|---|---|---|---|
+| `full` | 1 | 14 | 0 | 5 | 0 | ✅ |
+| `full` | 2 | 9 | 6 | 1 | **5** | ✅ |
+| `no-memory` | 1 | 9 | 0 | 4 | 0 | ✅ |
+| `no-memory` | 2 | 10 | 5 | 4 | **0** | ✅ |
+| `no-distill` | 1 | 5 | 0 | — | 0 | ✅ |
+| `no-distill` | 2 | 13 | 0 | — | 0 | ✅ |
+
+- **The rate does not move: 6/6.** On a task this size the run is nowhere near the edge, so
+  there is nothing for memory to rescue. A zero delta is a result and it is recorded as one.
+- **`lines served` is the number that shows the arms differ**: `full/rep2` recalled once and
+  put five lines in its prompt; `no-memory/rep2` had five records in its store and served
+  none, because `memory=None` is a refusal rather than a silence; `no-distill` never wrote
+  one. **Read those two columns, not the pass rate.**
+- **Do not read the call counts as quality.** 14 → 9, 5 → 13 at n=2 is run-to-run variance,
+  the same caveat the `out-of-scope`/`tight-window` cells carry above.
+
+⚠️ **A scripted-sweep trap worth keeping.** The first version appended the scripted "nothing"
+answer to `H.script_turns(task)`; since those scripts hold spare repair attempts, the
+extraction prompt got an *unused* turn instead, and every scripted row read
+`distilled=0 failed='schema'` — a distillation-looking symptom caused by the queue. The
+extraction has its own script now (`run.py::_script_the_extraction`), with a regression test.
 
 ## What it has already found
 

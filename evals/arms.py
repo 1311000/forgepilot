@@ -31,6 +31,17 @@ class Arm:
     project: dict[str, Any] = field(default_factory=dict)
     #: Extra patch rows, applied after the example's patch.
     patches: tuple[dict[str, Any], ...] = ()
+    #: Whether a run **recalls** what earlier runs learned. ⚠️ **A runtime switch,
+    #: and `project`/`patches` cannot express it** — the config plane says what the
+    #: memory store *is*, never whether this run reads it. So it is a field here,
+    #: and `H.arm_changes` reports it like any other switch: the point of the two
+    #: fields is that an arm that changed nothing must still be visible as an arm
+    #: that changed nothing, or the comparison is the baseline against itself.
+    memory: bool = True
+    #: Whether a finished run is distilled into that store. Separate from `memory`
+    #: because "learned nothing" and "read nothing it had learned" are different
+    #: failures, and only one of them shows up as an empty prompt block.
+    distill: bool = True
 
 
 #: The tool sets without `code_search`, spelled out in full because an override
@@ -90,6 +101,22 @@ ARMS: dict[str, Arm] = {
         name="no-repair",
         description="one attempt: a failing check ends the task instead of looping",
         project={"retry": {"max_attempts": 0, "on_failure": "stop"}},
+    ),
+    # ⚠️ **The pair that measures the memory milestone, and they are two arms rather
+    # than one because the two halves fail differently.** `no-memory` recalls nothing
+    # while still learning — the run after it in the same arm's store has something to
+    # read and does not read it. `no-distill` reads nothing while still being written
+    # to, which is what it would be if the distillation step silently did not run: the
+    # prompt block is empty, the store is empty, and only the row can tell those apart.
+    "no-memory": Arm(
+        name="no-memory",
+        description="recall off: earlier runs in this repository are learned from and never read",
+        memory=False,
+    ),
+    "no-distill": Arm(
+        name="no-distill",
+        description="distillation off: nothing the earlier runs learned ever reaches the store",
+        distill=False,
     ),
     "tight-window": Arm(
         name="tight-window",

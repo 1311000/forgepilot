@@ -437,4 +437,32 @@ supported as a *fact about the log*, not as an absence; and the DB rows for a pu
 deleted rather than blanked, because blanking `record_json` alone would leave the indexed
 columns (subject, tenant, type) behind — the very thing a purge is asked to remove.
 
+## Phase G — the two eval arms, and the producer the eval never had
+
+`evals/` gained `no-memory` (recall off) and `no-distill` (distillation off). They are the
+first arms whose switch is not a project override: `Arm.memory` / `Arm.distill`, reported
+through `H.arm_changes` so a row still carries its own evidence. **The interesting finding
+was not the arms — it was that the eval had wired `run_task(memory=...)` from Phase E and
+nothing in `evals/` ever called `distill()`.** Every memory arm therefore began with an
+empty store, `full` and `no-memory` sent the same prompt, and the comparison was guaranteed
+to agree. A mechanism switched off and a mechanism never switched on are indistinguishable
+from a rate, which is this repository's oldest defect shape in a new place.
+
+Both halves are real now: a durable per-`(task, arm)` SQLite store plus the distillation
+watermark (`H.memory_rows` / `H.memory_dir`, reset on `rep == 1` so rep 2 is warm and two
+arms never share one), and a distillation pass **after** the checks — it is a maintenance
+pass over a finished session and must change what the *next* attempt starts from.
+
+**Measured live on `bug-fix`, 3 arms × 2 reps, the numbers and the reading are in
+`docs/notes/evals.md` and `evals/README.md`.** In one line: the pass rate did not move
+(6/6), and the mechanism did — `full/rep2` began with 6 records and served 5 lines into its
+prompt, `no-memory/rep2` had 5 records and served 0, `no-distill` wrote none and was cold in
+both reps.
+
+**Phase G gaps, stated:** the comparison is one task at n=2, so it supports *"the arms
+differ in the way they claim"* and **not** *"memory improves accuracy"* — that needs a
+sweep over all eight tasks on a host whose spawned tree may write a scratch root outside
+the checkout (see `docs/notes/evals.md`); and the store is per (task, arm) on a local
+filesystem, which is a measurement convenience, not a deployment shape.
+
 

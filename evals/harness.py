@@ -204,6 +204,77 @@ def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
     return scratch_root() / f"run-{digest}"
 
 
+def memory_dir(task: EvalTask, arm: str) -> Path:
+    """Where an arm's memory lives — **per task and arm, deliberately not per rep.**
+
+    ⚠️ **A store that is per attempt measures nothing.** `prepare_repo` wipes and
+    re-copies the checkout every run, so the only thing that can carry across two
+    attempts at one task is memory — and if the store died with the attempt, the
+    memory arms would compare two runs that both began empty. So reps of one arm share
+    the store, which means **rep 1 is cold and the later reps are warm**: that is the
+    comparison the milestone is about (does the second attempt at a repository start
+    from something?), and every row records `memories_before` so a reader can split the
+    cold runs from the warm ones instead of averaging them into one number. It is the
+    same rule `H.arm_changes` follows for a switch: make the difference visible.
+
+    Opaque for the reason `scratch_dir` is: the path reaches the session header and a
+    model that can read `no-distill` off its environment has been told the treatment.
+    Two arms never share a directory — `full` learning from `no-memory`'s runs would
+    make the pair a sequence rather than a comparison.
+    """
+    digest = hashlib.blake2s(
+        f"memory|{task.name}|{arm}".encode(), digest_size=6
+    ).hexdigest()
+    # ⚠️ **`store-`, not `memory-`.** The guard that keeps an arm's name out of its own
+    # path (`tests/evals/test_arms_are_applied.py`) checks every `-`-split word of the
+    # arm name, and `no-memory` has `memory` in it — so a directory called `memory-<hex>`
+    # would have failed it. The word is not a hint on its own, but the rule is worth more
+    # than the word, and the digest is what identifies the directory anyway.
+    return scratch_root() / f"store-{digest}"
+
+
+def reset_memory(task: EvalTask, arm: str) -> None:
+    """Clear an arm's store — **before the first attempt of a cell, never a later one.**
+
+    `rep == 1` is where a sweep starts, so the cold run stays cold across sweeps
+    instead of inheriting whatever the previous sweep of the same arm left behind.
+    Reps 2..N must *not* reset: the learning they are there to measure would be the
+    thing deleted.
+    """
+    shutil.rmtree(memory_dir(task, arm), ignore_errors=True)
+
+
+def memory_rows(task: EvalTask, arm: str) -> list[dict[str, Any]]:
+    """The two rows that make an arm's memory durable — the store and its watermark.
+
+    Both, because they are two halves of one fact: `memory` is where what was learned
+    goes, and `distillation` is how far into each session's log that already happened.
+    A durable store with a per-process watermark would re-extract and re-pay for every
+    session on every run, and a per-run store with a durable watermark would skip the
+    extraction it is supposed to do — each is a defect the other's default hides.
+
+    ⚠️ **The paths are absolute**, because a relative one resolves against a cwd that
+    changes per run — and they are written into a patch layer, which is the channel
+    that already carries "this run is configured differently" (`H.arm_changes` reports
+    both rows under `patch:memory` and `patch:distillation`).
+    """
+    into = memory_dir(task, arm)
+    return [
+        {
+            "id": "memory",
+            "plugin": "forgepilot.providers.memory.sqlite:SqliteMemoryStorePlugin",
+            "config": {"path": str(into / "memory.sqlite3")},
+            "tier": "trusted",
+        },
+        {
+            "id": "distillation",
+            "plugin": "forgepilot.providers.distillation.watermark:JsonlWatermarkPlugin",
+            "config": {"path": str(into / "watermarks.jsonl")},
+            "tier": "trusted",
+        },
+    ]
+
+
 def _git(*args: str, cwd: Path) -> None:
     completed = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
@@ -307,6 +378,18 @@ def arm_changes(task: EvalTask, arm: Any) -> dict[str, tuple[Any, Any]]:
     }
     for row in getattr(arm, "patches", ()) or ():
         changes[f"patch:{row.get('id', '?')}"] = (None, row.get("config"))
+    # ⚠️ **A switch that is neither a project key nor a patch row, and it is reported
+    # anyway.** The two memory arms are runtime booleans (`Arm.memory`/`Arm.distill`):
+    # there is no configuration value that means "read the store but do not write it",
+    # because that is a property of the experiment and not of a deployment. Reporting
+    # only configuration would leave them looking like arms that switch nothing off —
+    # which is the exact defect this function exists to make visible.
+    for key, value in (
+        ("memory", getattr(arm, "memory", True)),
+        ("distill", getattr(arm, "distill", True)),
+    ):
+        if value is False:
+            changes[key] = (True, False)
     return changes
 
 
@@ -1084,4 +1167,21 @@ def summarise_session(session: Any) -> dict[str, Any]:
             for e in events
             if e.kind == EventKind.COMPACTION_END
         ),
+        # ⚠️ **The only place a recall can be seen, and it is why this is read from the
+        # log.** An arm with recall switched off and an arm whose store happened to be
+        # empty produce the *same* prompt — both have no memory block — so a rate alone
+        # cannot tell "the mechanism is off" from "the mechanism ran and found nothing".
+        # `memory_writes` is the same argument for the other half: a run that learned
+        # nothing and a run that was never asked to learn are indistinguishable in the
+        # diff it produced.
+        "recalls": sum(1 for e in events if e.kind == EventKind.MEMORY_RECALLED),
+        # Memories *served*, not turns that asked: one recall event per turn, and a turn
+        # that asked and matched nothing writes no event at all — so this is the only
+        # number that says the warm run actually received something.
+        "memories_served": sum(
+            int(e.data.get("count", 0))
+            for e in events
+            if e.kind == EventKind.MEMORY_RECALLED
+        ),
+        "memory_writes": sum(1 for e in events if e.kind == EventKind.MEMORY_WRITE),
     }

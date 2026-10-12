@@ -50,6 +50,89 @@ RESULTS = H.HERE / "results"
 CONTAIN = os.environ.get("FORGEPILOT_EVAL_CONTAIN", "") not in ("", "0", "false", "False")
 
 
+def _memory_count(root: Any) -> int:
+    """How many memories the store holds right now — `0` when there is no store.
+
+    Read through the service, and **not** through a counter this module keeps: the
+    store is the thing that says what was learned, and a second count kept here is the
+    second source of truth this project keeps finding defects in.
+    """
+    memory = getattr(root, "memory", None)
+    if memory is None:
+        return 0
+    records = getattr(memory, "records", ())
+    return len(records or ())
+
+
+def _memory_for(root: Any, *, recall: bool) -> Any:
+    """The store a turn may read, or `None` — which is a refusal, not a silence.
+
+    `run_task(memory=None)` recalls nothing *and* says so: `Recaller` is not built, no
+    `memory/recalled` event is written, and `full`/`no-memory` differ by exactly this
+    argument. Passing the store and hoping for an empty result would make the arm a
+    claim about the store's contents rather than about the mechanism.
+    """
+    return getattr(root, "memory", None) if recall else None
+
+
+def _script_the_extraction(root: Any) -> None:
+    """Answer the extraction prompt with the empty list, and nothing else.
+
+    ⚠️ **Appending this to the agent's script does not work**, which is how it was
+    written first: `H.script_turns(task)` scripts several repair attempts and a scripted
+    run consumes only the first two or three, so the turns left over sit *in front of*
+    the one meant for the distiller — the extraction prompt was answered with the
+    agent's spare prose, and every scripted sweep reported `failed='schema'` for a
+    reason that had nothing to do with distillation. The extraction is a separate
+    prompt, so it gets a separate script: clear the queue and hand it exactly one
+    answer. The honest answer a scripted model can give is "nothing", and scripting it
+    means the step completes for real — the watermark advances and zero candidates is
+    recorded as zero rather than as a transport failure. It is deliberately not a
+    seeded memory: an eval that writes the memory it is about to measure has measured
+    its own fixture.
+    """
+    root.llm.reset()
+    root.llm.script(json.dumps([]))
+
+
+async def _learn(
+    root: Any,
+    session: Any,
+    project: Any,
+    constraints: Any,
+    record: Any,
+) -> tuple[int | None, str]:
+    """Distil the finished session into the arm's store. Returns `(written, failed)`.
+
+    The scope and the tenant come from the *run* — the project's repository and the
+    principal's tenant — because those are what make a memory attributable, and a
+    distillation that guessed either would be writing a record no recall could scope.
+    The budget is the run's own, so a maintenance pass cannot spend more than the task
+    it is reading about.
+    """
+    from forgepilot.runtime.distillation import distill
+
+    memory = getattr(root, "memory", None)
+    watermarks = getattr(root, "distillationWatermarks", None)
+    if memory is None or watermarks is None:
+        return None, "no-memory-service"
+    repo = project.repos[0] if project.repos else None
+    if repo is None:
+        return None, "no-scope"
+    report = await distill(
+        session,
+        llm=root.llm,
+        memory=memory,
+        watermarks=watermarks,
+        scope_ref=repo.slug,
+        tenant_id=str(record.principal.tenant_id),
+        repo=repo,
+        model=getattr(root.llm, "model", "") or "",
+        budget=constraints.budget,
+    )
+    return report.written, report.failed
+
+
 async def run_one(
     task: H.EvalTask, arm: arm_module.Arm, rep: int, *, scripted: bool, contain: bool = False
 ) -> dict:
@@ -66,6 +149,13 @@ async def run_one(
     from forgepilot.seams.sandbox import SandboxEnforcement
 
     scratch = H.scratch_dir(task, arm.name, rep)
+    # ⚠️ **The durable store is part of the harness, not of an arm.** Every arm gets the
+    # same one (per task and arm), so `full` and `no-memory` differ in exactly one
+    # thing: whether the run reads it. Giving only the memory arms a durable store would
+    # make the pair compare a store against no store and call the difference "recall".
+    memory_rows = H.memory_rows(task, arm.name)
+    if rep == 1:
+        H.reset_memory(task, arm.name)
     root = None
     runtime = None
     started = time.monotonic()
@@ -78,6 +168,10 @@ async def run_one(
         # difference between "the agent could not find it" and "the agent was not allowed to go and
         # look" is this boolean.
         "contained": contain,
+        # What the two memory switches were, on the row as well as in `arm_changes`:
+        # the diff is the evidence, and this is the thing a reader filters on.
+        "memory_on": bool(arm.memory),
+        "distill_on": bool(arm.distill),
         "started": datetime.now(UTC).isoformat(),
         # The mapping from an opaque directory back to what it was. It lives here
         # rather than in the path because the path is inside the agent's own
@@ -90,13 +184,23 @@ async def run_one(
         repo = H.prepare_repo(task, scratch / "repo")
         shipped = H.base_paths(repo)
         H.export_environment(repo, scratch / "worktrees")
-        root, _ = await H.boot(task, list(arm.patches), scripted=scripted, contain=contain)
+        root, _ = await H.boot(
+            task, [*arm.patches, *memory_rows], scripted=scripted, contain=contain
+        )
         if scripted and task.script:
-            root.llm.script(*H.script_turns(task))
+            turns = list(H.script_turns(task))
+            root.llm.script(*turns)
 
         # ⚠️ **With the arm.** Without it, an arm that switches something off in the
         # *project* — which is three of the five — runs the baseline configuration,
         # and the comparison is the baseline against itself.
+        # **What the store already held when this attempt started.** Read after boot and
+        # before the first turn, because that is the only moment the number means "what
+        # this run could have recalled" — after the run it also counts what the run
+        # itself wrote, and the two are the difference between a warm store and a busy
+        # one. Reps of one arm share a store, so rep 1 is 0 by construction and a nonzero
+        # number here is the learning the earlier reps left behind.
+        row["memories_before"] = _memory_count(root)
         project = H.write_project(task, scratch / "config", arm=arm)
         record = root.principal.resolve("demo-token")
         constraints = derive(record.principal, record.grant, project.to_policy(), key=None)
@@ -163,9 +267,10 @@ async def run_one(
             principal=record.principal,
             compactor=getattr(root, "compaction", None),
             # On by default here, because an eval that runs without the mechanism is
-            # measuring a system nobody deploys. The `no-memory` arm (Phase G) is
-            # the *deliberate* version of that, and it passes `None` explicitly.
-            memory=getattr(root, "memory", None),
+            # measuring a system nobody deploys. The `no-memory` arm is the *deliberate*
+            # version of that: it passes `None`, so the difference between the two arms
+            # is one argument and not a configuration that nobody reads.
+            memory=_memory_for(root, recall=arm.memory),
         )
 
         final = outcome.checks[-1] if outcome.checks else None
@@ -202,6 +307,22 @@ async def run_one(
         row["changed_tests"] = list(
             _from_mapping(H.project_mapping(task), name=task.name).tests_in(outcome.changed_paths)
         )
+        # ⚠️ **The half this eval never had.** `memory=` wired *recall*, and nothing ever
+        # wrote into the store — so every memory arm began empty and the comparison was
+        # between two runs that had both learned nothing, which looks exactly like a
+        # mechanism that makes no difference. Distillation runs here, after the checks,
+        # because it is a maintenance pass over a finished session and not a turn: it
+        # must change what the *next* attempt starts from, never what this one did.
+        row["distilled"] = None
+        row["distill_failed"] = ""
+        if arm.distill:
+            if scripted:
+                _script_the_extraction(root)
+            written, failed = await _learn(
+                root, runtime.session, project, constraints, record
+            )
+            row["distilled"] = written
+            row["distill_failed"] = failed
         row.update(
             state=str(outcome.state),
             delivered=outcome.state.value in {"delivered", "ready"},
