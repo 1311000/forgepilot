@@ -84,6 +84,17 @@ EXACT = frozenset(rel.as_posix() for rel in FILES)
 PY_FILES = tuple(rel for rel in FILES if rel.suffix == ".py")
 YAML_FILES = tuple(rel for rel in _repo_files() if rel.suffix in {".yaml", ".yml"})
 
+#: One path from each tree that no checkout can be missing, as the exact `EXACT` spelling.
+#: Presence is what the vacuity guard asserts, so the guard cannot depend on how much
+#: untracked output happens to be lying around.
+TREE_ANCHORS = (
+    "src/forgepilot/__init__.py",
+    "tests/conftest.py",
+    "tools/check.py",
+    "evals/run.py",
+    "examples/stat-fix/fixture/stats.py",
+)
+
 
 def _module_path(dotted: str) -> Path | None:
     """The file :data:`EXACT` spells for ``dotted``, or ``None``.
@@ -398,11 +409,16 @@ def test_the_walk_actually_saw_the_tree() -> None:
     """Guard against every check above passing on an empty or renamed walk.
 
     This file's whole value is a negative result — "no spelling is wrong" — and a
-    negative result from a walk that found nothing looks identical. The numbers are
-    the measured shape of the tree, an order of magnitude below it so ordinary
-    growth never fails them.
+    negative result from a walk that found nothing looks identical. So the guard
+    asserts **presence**, one path per tree, rather than a size.
+
+    A total-file bound was tried first and CI refuted it: this box walks 442 files
+    while a fresh checkout walks **347**, because the difference is untracked,
+    gitignored output under `evals/results/`. A threshold calibrated on the
+    developer's dirty tree is the same mistake as a path calibrated on the
+    developer's filesystem, one level up.
     """
     assert len(PY_FILES) > 100, f"expected many Python files, found {len(PY_FILES)}"
-    assert len(FILES) > 400, f"expected the five trees to hold many files, found {len(FILES)}"
     assert len(REFERENCES) > 500, f"expected many intra-project imports, found {len(REFERENCES)}"
-    assert any(rel.parts[0] == "src" and "forgepilot" in rel.parts for rel in PY_FILES)
+    for anchor in TREE_ANCHORS:
+        assert anchor in EXACT, f"the walk did not see {anchor!r}; this is not the five trees"
