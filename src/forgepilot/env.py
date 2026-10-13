@@ -20,11 +20,20 @@ Deliberate properties:
 from __future__ import annotations
 
 import os
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from forgepilot.errors import ForgePilotError
 
-__all__ = ["EnvFileUnreadable", "candidate_files", "load_env_file", "load_local_env"]
+__all__ = [
+    "EnvFileUnreadable",
+    "TempRootUnusable",
+    "candidate_files",
+    "load_env_file",
+    "load_local_env",
+    "pin_temp_root",
+]
 
 #: Loaded in order; later files do not override earlier ones or the environment.
 FILENAMES = (".env.local",)
@@ -146,3 +155,55 @@ def load_local_env(start: Path | None = None) -> list[str]:
         if candidate.is_file():
             return load_env_file(candidate)
     return []
+
+
+class TempRootUnusable(ForgePilotError):
+    """``FORGEPILOT_TMP`` names a directory a temp file cannot be created in."""
+
+
+def pin_temp_root(environ: Mapping[str, str] | None = None) -> Path | None:
+    """Point ``tempfile`` at ``$FORGEPILOT_TMP`` for the whole process.
+
+    Returns the **previous** ``tempfile.tempdir`` so the caller can put it back —
+    a CLI process does not care, but a test process that calls :func:`main` would
+    otherwise leak a global into every later test in the session.
+
+    Returns the previous value unchanged when the variable is unset or empty, so
+    an unconfigured machine behaves exactly as before.
+
+    **The directory is proved, not assumed.** ``mkdir`` succeeding is not the same
+    as ``mkstemp`` succeeding — measured on this development box, where ``%TEMP%``,
+    ``C:\\Windows\\Temp`` and ``c:\\tmp`` all exist and all raise
+    ``PermissionError: [Errno 13] Permission denied`` on ``mkstemp``. A pinned root
+    that cannot hold a temp file would move the failure to whichever unrelated
+    ``mkdtemp`` call happens next, so this writes one probe file and removes it.
+
+    This is the difference between a knob one provider reads and a knob the process
+    honours. Before M15 only ``LocalTempWorkspacePlugin`` consulted the variable
+    while ``tempfile.gettempdir()`` was still called directly from
+    ``providers/sandbox/namespace.py`` — the same setting meant two different
+    directories depending on who asked.
+    """
+    name = "FORGEPILOT_TMP"
+    previous = tempfile.tempdir
+
+    value = (environ if environ is not None else os.environ).get(name)
+    if not value:
+        return previous
+
+    root = Path(value).expanduser().resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = tempfile.mkstemp(prefix="forgepilot-tmp-", dir=root)
+        os.close(probe[0])
+        os.unlink(probe[1])
+    except OSError as exc:
+        raise TempRootUnusable(
+            f"{name} names {root}, which cannot hold a temporary file "
+            f"({type(exc).__name__}: {exc}). Point it at a writable directory, or "
+            f"unset it — leaving it set means every temp file the process writes "
+            f"fails later, somewhere unrelated to this setting."
+        ) from exc
+
+    tempfile.tempdir = str(root)
+    return previous

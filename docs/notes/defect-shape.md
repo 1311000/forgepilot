@@ -64,7 +64,7 @@ about; qualify it or use "repo host".
 
 ## The repeated defect shape, and where it has actually appeared
 
-Fourteen rows now, in this codebase: **a field that looks enforced and is not.** It is
+Fifteen rows now, in this codebase: **a field that looks enforced and is not.** It is
 worth recognising on sight, because the cost is not the missing check — it is that
 everything downstream behaves as though the check happened.
 
@@ -85,6 +85,7 @@ everything downstream behaves as though the check happened.
 | `SandboxExecutionPolicy.network` | accepted and never read, **one branch over from `mode`**. It defaults to `DENY`, every caller threads its constraints through (`builtin.run`, `repair.run_checks`), and the model's scope section stated `Network: deny` — while `local.py` spawned the command with an unrestricted network reach. Fixed at P4-1; see `docs/notes/sandbox.md`. ⚠️ **This one is worse than the others in the table**, because the false statement was made *to the model*, which then reasoned from it |
 | `Plan.repos` / `plan.repos[0]` | `plan_task` filled the plan with **every** repository the ticket named (and, when it named none, with every repository the project declared) while `run_task` executed against `repos[0]`. A two-repository ticket was fixed in one of them and reported `READY` / `DELIVERED`. ⚠️ The worst instance of the shape so far, because the discarded half of a *cross-repository* change is exactly what nobody goes to look at. Fixed at P5-2; see `docs/notes/task-delivery.md` |
 | `WorkspaceHandle` keyed on `session_id` alone | `prepare`/`dispose`/`_baseline` in both workspace providers keyed their handle cache on the session id, so the second `prepare(repo_b, …)` **in one session returned repo A's tree and repo A's branch** — and, the baseline being keyed the same way, reported B's changes as A's diff. The producer was already plural (`ProjectConfig.repos` is a tuple, `preprocess` returns every mention); the *key* was singular. Same shape one level down: a scope that looks per-something and is per-something-else, with no error anywhere. Fixed at M13 Phase A — `(session_id, repo.slug)`, with the branch and the directory name carrying the slug too — and the falsifier (`test_one_session_two_repositories_gets_two_worktrees_and_two_branches`, `test_two_repositories_in_one_session_get_two_workspaces`) is red under the old key. See `docs/notes/task-delivery.md` |
+| A row's `FAILED` state, printed by `--boot` | the loader printed `FAILED` per row and then counted only what **registration** raised, so `result: OK` and **exit 0** sat directly under a failed row — and `--sandbox-check`, which shares the loader, reported the row as unloaded with no reason. A plugin whose `apply` raises does **not** raise out of `ctx.plugin(...)`: the kernel keeps the exception *on the fiber*, so a caller that reads the state learns *that* it failed and never *why*. Fixed at M15 — `kernel.effects.fiber_error()` reads it and `--boot` exits 1 — and the falsifier is `tests/cli/test_boot_report.py::test_a_row_that_fails_to_activate_fails_the_boot`, which is host-independent because the failing row is made to fail by its own configuration. See `docs/notes/seams-and-providers.md` |
 
 `capabilities()` is now load-bearing: `run_task` consults it before opening a pull
 request. `PullRequestDraft.draft` was a **known** absence rather than an oversight —
@@ -155,6 +156,49 @@ straight to the sandbox by `runtime/repair.py`; they are not tool calls, so no
 guard sees them. `project.yaml`'s `commands:` is a *different* key from `test:`
 for the same reason — one is context the harness executes, the other is a
 permission the project grants a model.
+
+## The fifteenth instance is the one this file's own definition nearly missed
+
+Every row above is a *field* that looks enforced. M15's is not a field: it is a
+**state that is printed and then not consumed**, one line above the summary that
+contradicts it. `--boot` printed
+
+```
+  workspace        FAILED     forgepilot.providers.workspace.local:LocalTempWorkspacePlugin
+result: OK
+```
+
+and exited **0**. Both lines were true as written — the tree had resolved and every
+row had been registered — which is exactly why it survived: the *reporting* was
+correct and the *judgement* was made from a different fact than the report was.
+The loader caught what registration raises and read the state for everything else,
+and in this kernel those are not the same failure:
+
+> a plugin whose `apply` raises does **not** raise out of `ctx.plugin(...)`; the
+> exception is kept on the fiber and the fiber is left `FAILED`.
+
+So there was a printed `FAILED` with no reader that could turn it into a reason, an
+exit code, or a sentence. The tell is worth naming for future instances: **when
+output and a summary disagree, the summary is usually reading a neighbouring fact
+rather than the one it printed.** Here that neighbouring fact was "did
+`apply_row` raise", and the answer was no.
+
+The fix is `kernel/effects.py::fiber_error()` — the synchronous reader for the
+reason, with `await await_fiber(fiber)` as the async form and a refusal inside a
+running loop rather than an `asyncio` error naming the wrong thing. Two things
+about it are deliberate and pinned by tests:
+
+- **`PENDING` is not a failure.** A fiber waiting on an unavailable `inject` never
+  activates *by design* — it is the fail-closed property, and the kernel does not
+  poll `check` (semantics #10). Counting it as a failure would refuse every profile
+  with a legitimately deferred row; awaiting it would hang `--boot` forever, which
+  is why `fiber_error` answers "no reason" without awaiting a `PENDING` fiber.
+  `tests/kernel/test_kernel_contract.py` pins both halves.
+- **A failed row with no exception is still a failure.** `--boot` counts the state,
+  and reports `the kernel recorded no exception` rather than inventing one.
+
+The `--boot` half of the fix is one branch in `cli/main.py::_apply_rows`, and
+`--sandbox-check` gained the reason for free because both share that loader.
 
 
 ## Unverified claim in the design doc

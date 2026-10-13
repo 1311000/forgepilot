@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -238,12 +239,20 @@ def _apply_rows(root: Any, resolved: Any) -> list[tuple[str, str, str, str | Non
     """Load every enabled row onto ``root``.
 
     Returns ``(row id, state, plugin, error)`` per row, where ``state`` is the
-    fiber's state or ``"FAILED"`` with the exception in ``error``. One loader, so
-    ``--boot``'s report and ``--sandbox-check``'s setup cannot drift about what
-    loading a profile means.
+    fiber's state and ``error`` is why the row did not load — a **registration**
+    failure or an **activation** one. One loader, so ``--boot``'s report and
+    ``--sandbox-check``'s setup cannot drift about what loading a profile means.
+
+    ⚠️ **A row can fail without anything being raised here.** A plugin whose ``apply``
+    raises leaves its fiber ``FAILED`` and keeps the exception *on the fiber*, so a
+    loader that only catches what ``apply_row`` raises reports the state and loses the
+    reason. ``--boot`` did exactly that and printed ``result: OK`` beside a ``FAILED``
+    row until M15. ``PENDING`` is the other side of the same coin and is deliberately
+    *not* a failure: a fiber waiting for an unavailable dependency is the fail-closed
+    property working, and awaiting it would wait forever.
     """
     from forgepilot.config import apply_row
-    from forgepilot.kernel import fiber_state_name
+    from forgepilot.kernel import fiber_error, fiber_state_name
 
     loaded: list[tuple[str, str, str, str | None]] = []
     for row in resolved.enabled_rows():
@@ -253,6 +262,21 @@ def _apply_rows(root: Any, resolved: Any) -> list[tuple[str, str, str, str | Non
         except Exception as exc:  # noqa: BLE001 - report every row, do not stop at the first
             loaded.append((row.id, "FAILED", row.plugin, f"{type(exc).__name__}: {exc}"))
             continue
+
+        if state == "FAILED":
+            failure = fiber_error(fiber)
+            loaded.append(
+                (
+                    row.id,
+                    state,
+                    row.plugin,
+                    f"{type(failure).__name__}: {failure}"
+                    if failure is not None
+                    else "the kernel recorded no exception",
+                )
+            )
+            continue
+
         loaded.append((row.id, state, row.plugin, None))
     return loaded
 
@@ -1265,11 +1289,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Load a gitignored .env.local before anything reads the environment. The
     # real environment always wins, so an explicit `export` still takes
     # precedence over the file.
-    from forgepilot.env import load_local_env
+    from forgepilot.env import TempRootUnusable, load_local_env, pin_temp_root
 
     use_utf8_output()
     load_local_env()
 
+    # After the env file, because `.env.local` may be where FORGEPILOT_TMP is set.
+    # Restored on the way out: a CLI process would not care, but `main()` is also
+    # called in-process by the test suite, and a global left behind is a global the
+    # next test inherits.
+    previous_tempdir = None
+    try:
+        previous_tempdir = pin_temp_root()
+    except TempRootUnusable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        return _dispatch(argv)
+    finally:
+        tempfile.tempdir = previous_tempdir
+
+
+def _dispatch(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 

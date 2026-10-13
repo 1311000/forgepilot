@@ -13,6 +13,7 @@ does not have to rediscover them.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 import pytest
@@ -20,13 +21,15 @@ from cordis_port import Context, Service
 
 from forgepilot.kernel import (
     assert_declares_inject,
+    await_fiber,
     bind_effect,
     bind_waterfall,
     dispose_fiber,
+    fiber_error,
     make_plugin,
     plugin_declares,
 )
-from forgepilot.kernel.errors import PluginContractViolation
+from forgepilot.kernel.errors import KernelContractViolation, PluginContractViolation
 
 
 # ---------------------------------------------------------------------------
@@ -341,3 +344,106 @@ def test_assert_declares_inject_guard() -> None:
 
     with pytest.raises(PluginContractViolation, match="constraints"):
         assert_declares_inject(plugin, ["constraints"])
+
+
+# ---------------------------------------------------------------------------
+# 14. A failure inside `apply` is on the fiber, and awaiting is how you hear it
+# ---------------------------------------------------------------------------
+class _Boom(RuntimeError):
+    """Distinguishable from the many ``RuntimeError``s the kernel itself raises."""
+
+
+async def test_a_raising_apply_leaves_failed_and_await_re_raises(root: Context) -> None:
+    """``ctx.plugin(...)`` does **not** raise when the plugin's ``apply`` raises.
+
+    The exception is kept on the fiber and the fiber is left ``FAILED``. This is
+    the whole reason ``--boot`` could print ``FAILED`` beside ``result: OK``:
+    a loader that reads only the state learns *that* a row failed and never
+    *why*, because the reason was never raised anywhere it was looking.
+
+    ``await fiber`` is the documented way to hear it, and it raises the plugin's
+    own exception unchanged — not a wrapper.
+
+    Note what the state reads *before* the await: inside a running event loop
+    activation is deferred (semantics #8), so the fiber still says ``ACTIVE``
+    while ``apply`` is about to blow up. That is semantics #7 from the other
+    side, and it is why the state must be read after awaiting, not before.
+    """
+
+    def apply(ctx, config):  # noqa: ANN001, ARG001
+        raise _Boom("plugin body exploded")
+
+    fiber = root.plugin(make_plugin(apply))
+
+    with pytest.raises(_Boom, match="plugin body exploded"):
+        await await_fiber(fiber)
+
+    assert fiber.get_state().name == "FAILED"
+
+
+async def test_await_fiber_returns_for_an_active_fiber(root: Context) -> None:
+    """Awaiting is safe for a healthy fiber — it is the "has it loaded" question."""
+    ran: list[str] = []
+
+    fiber = root.plugin(make_plugin(lambda ctx, cfg: ran.append("ran")), {})
+
+    await await_fiber(fiber)
+    assert ran == ["ran"]
+
+
+def test_fiber_error_returns_the_reason_of_a_failed_fiber(root: Context) -> None:
+    """The synchronous reader: ``FAILED`` in, the exception out."""
+
+    def apply(ctx, config):  # noqa: ANN001, ARG001
+        raise _Boom("plugin body exploded")
+
+    failure = fiber_error(root.plugin(make_plugin(apply)))
+
+    assert isinstance(failure, _Boom)
+    assert str(failure) == "plugin body exploded"
+
+
+def test_fiber_error_is_none_for_an_active_fiber(root: Context) -> None:
+    """No failure, no reason — and no exception raised out of the reader."""
+    assert fiber_error(root.plugin(make_plugin(lambda ctx, cfg: None), {})) is None
+
+
+def test_fiber_error_refuses_to_await_a_pending_fiber(root: Context) -> None:
+    """⚠️ The one way this helper could hang forever.
+
+    A fiber that declares an unavailable ``inject`` is ``PENDING`` *by design* —
+    that is the fail-closed property, not a failure (semantics #10: the kernel
+    does not poll ``check``, so nothing will ever resolve it). Awaiting such a
+    fiber would wait for an activation that is never coming, so ``fiber_error``
+    must answer "no reason" instead of awaiting.
+
+    If this test hangs, the distinction was lost and ``--boot`` on a profile with
+    a legitimately PENDING row would hang rather than report it.
+    """
+    fiber = root.plugin(make_plugin(lambda ctx, cfg: None, inject=["never_provided"]))
+
+    assert fiber.get_state().name == "PENDING"
+    assert fiber_error(fiber) is None
+
+
+def test_fiber_error_refuses_inside_a_running_loop(root: Context) -> None:
+    """Inside a loop there is a right answer already — ``await`` — so say so.
+
+    ``asyncio.run`` cannot be used from a running loop, and letting its
+    ``RuntimeError`` escape would name ``asyncio`` rather than the fix. The fiber
+    is built *outside* the loop so it is already ``FAILED`` — the state check
+    comes first, and an ``ACTIVE`` fiber answers ``None`` without ever looking
+    at the loop.
+    """
+
+    def apply(ctx, config):  # noqa: ANN001, ARG001
+        raise _Boom("plugin body exploded")
+
+    fiber = root.plugin(make_plugin(apply))
+    assert fiber.get_state().name == "FAILED"
+
+    async def inside() -> None:
+        with pytest.raises(KernelContractViolation, match="await_fiber"):
+            fiber_error(fiber)
+
+    asyncio.run(inside())

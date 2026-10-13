@@ -36,6 +36,7 @@ differences that matter, and that these wrappers absorb:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
@@ -44,13 +45,19 @@ from cordis_port import Context, Fiber
 from cordis_port import Service as PluginService  # re-exported for providers
 from cordis_port.utils import _new_symbol as _kernel_new_symbol
 
-from forgepilot.kernel.errors import DisposalError, PluginContractViolation
+from forgepilot.kernel.errors import (
+    DisposalError,
+    KernelContractViolation,
+    PluginContractViolation,
+)
 
 __all__ = [
     "apply_plugin",
     "make_plugin",
     "assert_apply_arity",
     "dispose_fiber",
+    "await_fiber",
+    "fiber_error",
     "bind_effect",
     "bind_listener",
     "bind_waterfall",
@@ -186,6 +193,60 @@ def fiber_state_name(fiber: Fiber) -> str:
     run. See ``test_active_state_does_not_imply_apply_has_run``.
     """
     return fiber.get_state().name
+
+
+async def await_fiber(fiber: Fiber) -> None:
+    """Wait for ``fiber`` to finish activating, **re-raising the failure it recorded**.
+
+    A plugin whose ``apply`` raises does not raise out of ``ctx.plugin(...)``: the
+    kernel keeps the exception on the fiber and leaves the state ``FAILED``. A caller
+    that only reads the state therefore learns *that* a row failed and never *why*,
+    which is exactly what ``--boot`` did — it printed ``FAILED`` and then
+    ``result: OK``, because the reason was never raised anywhere.
+
+    Awaiting the fiber is the port's documented way to ask (see
+    ``test_active_state_does_not_imply_apply_has_run``), and the same await returns
+    immediately for a fiber that activated successfully.
+
+    ⚠️ **Only await a fiber you already know is not ``PENDING``.** A fiber that
+    declares an unavailable ``inject`` stays ``PENDING`` *by design*, and awaiting it
+    would wait for a dependency that is never coming. :func:`fiber_error` checks the
+    state first for that reason.
+    """
+    await fiber
+
+
+def fiber_error(fiber: Fiber) -> BaseException | None:
+    """The exception a ``FAILED`` fiber recorded, or ``None``.
+
+    Returns ``None`` for every state other than ``FAILED`` — including ``PENDING``,
+    which is a documented outcome rather than a failure and must not be awaited (see
+    :func:`await_fiber`). A ``FAILED`` fiber whose reason cannot be recovered also
+    returns ``None``; the caller still has to treat the row as failed, because the
+    state is the evidence and the message is only the explanation.
+
+    For a **synchronous** caller (``--boot``). Inside a running event loop there is
+    nothing to spin, so this raises rather than reporting a loop's own error as the
+    plugin's; use ``await await_fiber(fiber)`` there instead.
+    """
+    if fiber_state_name(fiber) != "FAILED":
+        return None
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise KernelContractViolation(
+            "fiber_error() is for a synchronous caller with no running event loop; "
+            "inside one, `await await_fiber(fiber)` and catch the exception directly"
+        )
+
+    try:
+        asyncio.run(await_fiber(fiber))
+    except BaseException as exc:  # noqa: BLE001 - the failure is this function's return value
+        return exc
+    return None
 
 
 def apply_plugin(
