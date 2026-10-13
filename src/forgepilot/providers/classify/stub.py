@@ -45,7 +45,10 @@ class NullClassifierPlugin(PluginService):
     def capabilities(self) -> frozenset[str]:
         return frozenset({"declines"})
 
-    async def classify(self, request: ClassificationRequest) -> TicketUnderstanding:
+    async def classify(
+        self, request: ClassificationRequest, *, session: Any = None
+    ) -> TicketUnderstanding:
+        # No model, so nothing to record: the session is accepted and ignored.
         return TicketUnderstanding(
             category="",
             confidence=0.0,

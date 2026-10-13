@@ -46,7 +46,7 @@ class _FixedClassifier:
     def capabilities(self) -> frozenset[str]:
         return frozenset()
 
-    async def classify(self, request):  # noqa: ANN001
+    async def classify(self, request, *, session=None):  # noqa: ANN001
         return self.understanding
 
 

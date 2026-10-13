@@ -219,7 +219,7 @@ async def run_one(
             ),
         )
 
-        gateway = ClassifierGateway(root.classifier)
+        gateway = ClassifierGateway(root.classifier, session=runtime.session)
         plan = await plan_task(
             ticket=H.ticket_for(task),
             project=project,

@@ -1183,7 +1183,9 @@ def _task(args: argparse.Namespace) -> int:
             minimum_enforcement_for_exec=_minimum_enforcement(root, args),
         )
         try:
-            gateway = ClassifierGateway(root.classifier)
+            # The session goes on the gateway: a model-backed classifier must record
+            # the call, and `plan_task`'s signature stays as it was.
+            gateway = ClassifierGateway(root.classifier, session=runtime.session)
             plan = await plan_task(
                 ticket=ticket,
                 project=project,

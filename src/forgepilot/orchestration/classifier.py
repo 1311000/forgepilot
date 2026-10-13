@@ -12,7 +12,9 @@ being true.
 
 The gateway also passes through unchanged: it does not cache, retry, or
 reinterpret. A wrapper with opinions would make the count describe the wrapper
-rather than the classifier.
+rather than the classifier. The one thing it does carry is the **session** a
+model-backed classifier must record its call in — see
+:attr:`ClassifierGateway.session`.
 """
 
 from __future__ import annotations
@@ -37,16 +39,29 @@ class ClassifierGateway:
     #: Every request, kept so a test can assert *what* was classified and not
     #: merely how often.
     requests: list[ClassificationRequest] = field(default_factory=list)
+    #: The session this classification is recorded in. It lives on the gateway
+    #: rather than in ``ClassificationRequest`` because it is **not** part of what a
+    #: classifier is shown: putting it in the value object would make it something a
+    #: classifier could read, compare or branch on, and the ticket is the only input
+    #: the seam is about. It is carried here so `plan_task` keeps its signature — the
+    #: caller that has a session is the one that builds the gateway.
+    session: Any = None
 
-    async def classify(self, request: ClassificationRequest) -> TicketUnderstanding:
+    async def classify(
+        self, request: ClassificationRequest, *, session: Any = None
+    ) -> TicketUnderstanding:
         self.calls += 1
         self.requests.append(request)
-        return await self.classifier.classify(request)
+        # An explicit argument wins over the one this gateway was built with, so a
+        # caller holding a session can supply it late without rebuilding the gateway.
+        return await self.classifier.classify(
+            request, session=session if session is not None else self.session
+        )
 
     def reset(self) -> None:
         self.calls = 0
         self.requests.clear()
 
     @classmethod
-    def wrap(cls, classifier: Any) -> ClassifierGateway:
-        return cls(classifier=classifier)
+    def wrap(cls, classifier: Any, session: Any = None) -> ClassifierGateway:
+        return cls(classifier=classifier, session=session)

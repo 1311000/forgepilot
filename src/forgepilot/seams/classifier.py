@@ -95,7 +95,20 @@ class ClassificationRequest:
 class Classifier(Protocol):
     def capabilities(self) -> frozenset[str]: ...
 
-    async def classify(self, request: ClassificationRequest) -> TicketUnderstanding: ...
+    async def classify(
+        self, request: ClassificationRequest, *, session: Any = None
+    ) -> TicketUnderstanding:
+        """Understand a ticket.
+
+        ``session`` is **where the call is recorded**, and it is a keyword so that a
+        classifier which does not use a model need not know it exists. A classifier
+        that *does* call a model must treat it as required: the prompt it sends is
+        new content the log does not otherwise hold, so without a session the call
+        could not be rebuilt from the log afterwards. The shipped model classifier
+        refuses to call the model at all without one rather than make a call nothing
+        records.
+        """
+        ...
 
 
 def understand_from_signals(

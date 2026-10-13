@@ -182,13 +182,23 @@ summariser call was made and came back useless.
   durable, so an event appended after the request was derived would trip
   `ModelVisibleNotLogged`. The estimate is therefore computed twice — once to
   decide, once as the unchanged loud backstop.
-- **The summariser call goes through `projection.build_compaction_request`.** That
-  module claims to be the only constructor of a `ChatRequest`, and the claim is
-  already false twice (the classifier and the review narrative each build their
-  own and neither is logged). Compaction is not a third: it goes through
-  `guarded_complete`, so the call is flushed, guarded, and reconstructable from
-  the log. The honest description of the invariant is *"every conversation message
-  comes from the projection"*, not *"nobody else ever builds a request"*.
+- **Every model call is recorded, and the projection is the only place a request
+  is built — since M16 that is enforced rather than asserted.** This bullet used
+  to concede that the module's claim was already false twice: the classifier and
+  the review narrative each built their own request and neither was logged. Both
+  now go through `projection.build_side_request`, which appends the prompt as a
+  log-only `classifier/request` / `review/request` event and hands back a request
+  whose single message cites that event — so the call is reconstructable from the
+  log, *and* what the model is shown is what the log holds, because the request is
+  rebuilt from the event (the redaction gate therefore sits between the two).
+  Compaction was already safe here: `build_compaction_request` plus
+  `guarded_complete`. Two contract tests now parse the tree: a `ChatRequest` may be
+  constructed only in `runtime/projection.py`, and a model may be reached only
+  through `runtime/log_guard.py` — both with **no exemption list**, since an
+  exemption list is where the next offender hides and it is edited by whoever adds
+  the offender. The honest description of the invariant stays "every conversation
+  message comes from the projection"; what changed is that the narrower claim is
+  now the true one.
 - **Failures are recorded, never raised.** A pass that cannot act is not an error
   in the run — it means the run is on its own from here. `compaction/failed`
   carries one of five codes, and the breaker counts them.
@@ -199,11 +209,17 @@ summariser call was made and came back useless.
   same model the loop is using, and a provider that held its own would summarise
   with a different one than the conversation is happening in.
 
-**Known gap: `estimate_tokens` is `len // 4`**, so the trigger and the "freed"
-accounting are approximate. It errs toward refusing early, which stays safe here
-for the same reason: compacting a step too early costs a little, a step too late
-has already failed. A real tokenizer is a dependency and a per-model decision, and
-is its own task.
+**`estimate_tokens` is a calibration, not a tokenizer** — four ASCII characters
+per token, and a non-ASCII character counted as a whole one. It used to be
+`len // 4` for everything, which over-counts English (the safe direction: the
+trigger fires early) and under-counted CJK by roughly 4×, so a 1000-character
+Chinese prompt was estimated at 250 tokens — the *unsafe* direction, in a system
+whose tickets, comments and briefs are routinely CJK. The repair keeps the single
+floor at the end, so every English-only number is byte-identical, and moves only
+non-ASCII text upward; the measured consequence is that no offline number moves
+at all (`--scripted`, both arms, 20 rows: `compactions=0`, `shadowed=0`). A real
+tokenizer is still a dependency and a per-model decision, and is still its own
+task.
 
 
 ## Session log notes (read before touching storage or the projection)

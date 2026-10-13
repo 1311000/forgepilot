@@ -216,6 +216,23 @@ class EventKind:
     DISTILLATION_FAILED = "distillation/failed"
     DISTILLATION_END = "distillation/end"
 
+    # --- side-channel model calls -----------------------------------------
+    # Two model calls are not part of the conversation and therefore cannot be
+    # `derive_messages` of anything: the classifier reads a ticket, and the review
+    # narrative reads a diff. Both used to build their `ChatRequest` by hand and
+    # call the provider directly, which made "the log can rebuild every model call"
+    # false in exactly two places and left nothing to notice it.
+    #
+    # They now go through `projection.build_side_request`, which writes one of
+    # these first and log-only — carrying the model, the system sections and the
+    # prompt **verbatim** — and returns a request whose message cites the event.
+    # Neither is model-visible: a later turn must never see what an earlier
+    # side-channel call asked.
+    #: The classifier's prompt: the ticket, as the model was shown it.
+    CLASSIFIER_REQUEST = "classifier/request"
+    #: The review narrative's prompt: the brief and the hunks it may cite.
+    REVIEW_REQUEST = "review/request"
+
 
 #: Closed set. ``interrupted`` is appended by the recovery sweep for any log that
 #: ends inside an open turn, so the projection always sees balanced turns.

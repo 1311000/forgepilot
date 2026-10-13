@@ -6,6 +6,15 @@ produced here, from an event, carrying the ``source_event_seq`` that proves wher
 it came from. There is no other way to build a request, so there is no path that
 could bypass the log — and :mod:`forgepilot.runtime.log_guard` checks the result.
 
+⚠️ **That sentence was aspirational until M16.** Two callers built their own
+request and called the provider directly — the classifier
+(``providers/classify/llm.py``) and the review narrative
+(``runtime/review/narrative.py``) — so the claim was false in exactly two places,
+and nothing noticed. Both now go through :func:`build_side_request`, and the
+contract test ``test_only_the_projection_builds_a_request.py`` is what keeps the
+sentence true rather than merely written down: it walks the source with ``ast``
+and fails if ``ChatRequest(`` appears anywhere but this file.
+
 The message list is **derived, never stored**. DSH makes the same choice: a
 mutable ``messages[]`` alongside the log is a second source of truth, and the two
 drift the first time anything edits one without the other.
@@ -29,6 +38,7 @@ from forgepilot.seams.session import EventKind, SessionEvent, SurfaceOp
 __all__ = [
     "derive_messages",
     "build_request",
+    "build_side_request",
     "build_compaction_request",
     "build_distillation_request",
     "unsupported_event_kinds",
@@ -311,6 +321,80 @@ async def build_request(
     )
 
 
+async def build_side_request(
+    session: Any,
+    *,
+    kind: str,
+    model: str,
+    system: Sequence[str],
+    prompt: str,
+    max_tokens: int,
+    temperature: float = 0.0,
+) -> ChatRequest:
+    """The request for a model call that is **not** part of the conversation.
+
+    Two calls read something the log does not hold as history: the classifier
+    reads a ticket, the review narrative reads a diff. Their messages are new
+    content, so unlike :func:`build_compaction_request` there is nothing to
+    ``derive_messages`` from — the new content *is* the message. That is why
+    ``kind`` exists: the event this writes is what the message cites, and the
+    event carries the prompt verbatim, so the call is reconstructable from the
+    log afterwards and guardable (``runtime/log_guard.guarded_complete``) before.
+
+    ⚠️ **The request is rebuilt from the logged event, not from these arguments.**
+    The two are identical unless the redaction gate fired, and when it did, the
+    model must see what the log holds rather than what the caller passed —
+    otherwise a secret would travel into the prompt while the log recorded a
+    redacted copy, which is the one direction of "model-visible means logged" that
+    cannot be repaired afterwards. A payload the gate collapsed yields an empty
+    prompt, which the callers already treat as "I could not read this".
+
+    ``session=None`` returns a request whose message carries no
+    ``source_event_seq``. That request is **meant to be refused**:
+    ``assert_logged`` raises on it, so a caller with no session cannot quietly make
+    an unrecorded model call — the fail-closed behaviour the classifier relies on.
+    """
+    if session is None:
+        return ChatRequest(
+            model=model,
+            system=tuple(system),
+            messages=(ChatMessage(role=Role.USER, content=prompt),),
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    event = await session.append(
+        kind,
+        {
+            "model": model,
+            "system": list(system),
+            "prompt": prompt,
+            "maxTokens": max_tokens,
+            "temperature": temperature,
+        },
+        surface=SurfaceOp.LOG_ONLY,
+    )
+
+    logged_system = event.data.get("system")
+    return ChatRequest(
+        model=model,
+        system=(
+            tuple(str(part) for part in logged_system)
+            if isinstance(logged_system, (list, tuple))
+            else ()
+        ),
+        messages=(
+            ChatMessage(
+                role=Role.USER,
+                content=str(event.data.get("prompt", "")),
+                source_event_seq=event.seq,
+            ),
+        ),
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+
 async def build_compaction_request(
     session: Any,
     *,
@@ -325,9 +409,10 @@ async def build_compaction_request(
 
     It lives **here** rather than in the compaction provider so that the claim
     "`projection.py` is the only module that constructs a `ChatRequest`" stays
-    true for this path. That claim is already false in two places — the
-    classifier and the review narrative each build their own, and neither is
-    logged — and compaction is not going to become a third.
+    true for this path. That claim was false in two places until M16 — the
+    classifier and the review narrative each built their own, and neither was
+    logged; both now go through `build_side_request` — and compaction is still
+    not going to become a third.
 
     The consequence is that this call is **guarded like any other**: it goes
     through `guarded_complete`, so it flushes first and every message it sends

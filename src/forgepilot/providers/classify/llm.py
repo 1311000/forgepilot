@@ -20,6 +20,15 @@ harness's voice and would arrive already privileged. This is the same split
 
 Configured with ``model`` and ``max_tokens``. It reads the model through the
 ``llm`` service, so swapping to the company's own model later is a config line.
+
+**The call is recorded, and that is why it needs a session.** The ticket text this
+sends is new content — the log holds it only because this call writes it — so the
+request is built by `projection.build_side_request` (which appends a
+`classifier/request` event carrying the prompt verbatim) and the call goes through
+`log_guard.guarded_complete`. Without a session there is nothing to write it to,
+and this provider **does not call the model at all**: an unrecorded model call is
+the thing the invariant forbids, so it declines instead. A caller that wants a
+classification passes a session; the fail-closed default is `needs_human`.
 """
 
 from __future__ import annotations
@@ -28,12 +37,14 @@ import json
 from typing import Any
 
 from forgepilot.kernel import PluginService
+from forgepilot.runtime.log_guard import guarded_complete
+from forgepilot.runtime.projection import build_side_request
 from forgepilot.seams.classifier import (
     SERVICE_NAME,
     ClassificationRequest,
     TicketUnderstanding,
 )
-from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
+from forgepilot.seams.session import EventKind
 
 __all__ = ["LLMClassifierPlugin"]
 
@@ -95,9 +106,38 @@ class LLMClassifierPlugin(PluginService):
     def capabilities(self) -> frozenset[str]:
         return frozenset({"classify"})
 
-    async def classify(self, request: ClassificationRequest) -> TicketUnderstanding:
+    async def classify(
+        self, request: ClassificationRequest, *, session: Any = None
+    ) -> TicketUnderstanding:
+        """Classify, if there is somewhere to record the call.
+
+        **No session means no model call.** The prompt carries the ticket, which
+        the log does not hold as history — so a call made without a session is a
+        call nothing can rebuild, and *model-visible means logged* would be false
+        for it. Declining is the fail-closed answer: the ticket goes to a human,
+        which is the same thing that happens when the model is unreachable.
+        """
+        if session is None:
+            return TicketUnderstanding(
+                notes=(
+                    "no session to record this classification in, so the model was "
+                    "not asked; a human must decide"
+                )
+            )
+
         try:
-            response = await self.ctx.llm.complete(self._build(request))
+            built = await build_side_request(
+                session,
+                kind=EventKind.CLASSIFIER_REQUEST,
+                model=self.model,
+                # Nothing from the ticket reaches this: a classifier copies ticket
+                # text into its fields, and privileged text would speak with the
+                # harness's voice.
+                system=(_SYSTEM,),
+                prompt=self._prompt(request),
+                max_tokens=self.max_tokens,
+            )
+            response = await guarded_complete(session, self.ctx.llm, built)
         except Exception:  # noqa: BLE001 - an endpoint that breaks is not a guess
             return TicketUnderstanding(
                 notes="the model could not be reached; a human must decide"
@@ -106,23 +146,13 @@ class LLMClassifierPlugin(PluginService):
         return self._parse(response.message.content)
 
     # -- translation, kept separate from the call so it can be tested ---------
-    def _build(self, request: ClassificationRequest) -> ChatRequest:
+    def _prompt(self, request: ClassificationRequest) -> str:
         lines = [f"Title: {request.title}", "", request.description]
         if request.comments:
             lines.append("")
             lines.append("Comments:")
             lines.extend(f"- {body}" for body in request.comments)
-
-        return ChatRequest(
-            model=self.model,
-            # Nothing from the ticket reaches this: a classifier copies ticket
-            # text into its fields, and privileged text would speak with the
-            # harness's voice.
-            system=(_SYSTEM,),
-            messages=(ChatMessage(role=Role.USER, content="\n".join(lines)),),
-            max_tokens=self.max_tokens,
-            temperature=0.0,
-        )
+        return "\n".join(lines)
 
     @staticmethod
     def _parse(content: str | None) -> TicketUnderstanding:

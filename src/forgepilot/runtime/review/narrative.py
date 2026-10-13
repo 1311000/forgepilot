@@ -25,6 +25,8 @@ import json
 from collections.abc import Sequence
 from dataclasses import replace
 
+from forgepilot.runtime.log_guard import guarded_complete
+from forgepilot.runtime.projection import build_side_request
 from forgepilot.runtime.review.diffmodel import ParsedDiff
 from forgepilot.seams.review import (
     ChangeGroup,
@@ -35,6 +37,7 @@ from forgepilot.seams.review import (
     EvidenceKind,
     EvidenceRef,
 )
+from forgepilot.seams.session import EventKind
 
 __all__ = [
     "compute_coverage",
@@ -276,9 +279,14 @@ async def model_narrative(
     Returning ``None`` rather than raising keeps the caller simple: a model that
     is unavailable, slow or incoherent degrades to the deterministic narrative
     instead of failing the review.
-    """
-    from forgepilot.seams.llm import ChatMessage, ChatRequest, Role
 
+    The prompt is built by :func:`forgepilot.runtime.projection.build_side_request`
+    and the call goes through
+    :func:`forgepilot.runtime.log_guard.guarded_complete`. This request is not part
+    of the conversation — the diff is not history the log holds — so it cannot be
+    ``derive_messages`` of anything; the ``review/request`` event is what makes the
+    call reconstructable afterwards, and it records the prompt verbatim.
+    """
     available = "\n".join(
         f"- hunk_id={h.hunk_id}  {h.path} +{len(h.added)} −{len(h.removed)}"
         for h in base.groups[0].hunks[:40]
@@ -288,24 +296,20 @@ async def model_narrative(
         for e in list(getattr(session, "committed_events", ()) or ())[:60]
     )
 
-    request = ChatRequest(
+    request = await build_side_request(
+        session,
+        kind=EventKind.REVIEW_REQUEST,
         model=model or getattr(llm, "model", ""),
         system=(NARRATIVE_JSON_INSTRUCTIONS,),
-        messages=(
-            ChatMessage(
-                role=Role.USER,
-                content=(
-                    f"{user_brief}\n\n可引用的 hunk：\n{available}\n\n"
-                    f"可引用的会话事件：\n{event_lines}"
-                ),
-            ),
+        prompt=(
+            f"{user_brief}\n\n可引用的 hunk：\n{available}\n\n"
+            f"可引用的会话事件：\n{event_lines}"
         ),
         max_tokens=2000,
-        temperature=0.0,
     )
 
     try:
-        response = await llm.complete(request)
+        response = await guarded_complete(session, llm, request)
     except Exception:  # noqa: BLE001 - any model failure degrades, never fails the review
         return None
 

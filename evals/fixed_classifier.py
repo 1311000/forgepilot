@@ -64,5 +64,8 @@ class FixedClassifierPlugin(PluginService):
     def capabilities(self) -> frozenset[str]:
         return frozenset({"classify"})
 
-    async def classify(self, request: ClassificationRequest) -> TicketUnderstanding:
+    async def classify(
+        self, request: ClassificationRequest, *, session: Any = None
+    ) -> TicketUnderstanding:
+        # Scripted, so no model call and nothing to record in the session.
         return self._understanding
