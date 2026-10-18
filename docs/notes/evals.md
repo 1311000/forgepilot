@@ -576,8 +576,15 @@ red — `AssertionError: assert 'edited in this session' in 'MAX_ATTEMPTS = 3\n'
 the slice silently reading the configured checkout while every inspection says it
 read the hit.
 
-⚠️ **One residual, unchanged: `open` still has no caller in `src/`.** Only tests
-call it. Adding the root made the method *correct*; it did not give it a consumer,
-and the `ensure_mirror` shape noted just above still applies to it — a seam method
-nothing reaches is a seam method nobody has tested against a real caller.
+✅ **The residual above was closed at M19, and not by touching `open` again.** `read_code`
+(`runtime/tools/builtin.py`, `build_search_definitions`) is the consumer: it resolves a
+repository path at a revision, calls `Retriever.open`, and reports the revision that was
+*served* rather than the one it asked for. Wiring it found two defects — `code_search`'s
+renderer dropped the repository and the ref (so a hit from an index could not be turned
+into the call `read_code` accepts), and the index provider's `open` matched the ref exactly
+while its `search` followed `ref_to_serve` (so the default `<worktree>` request was told
+"the index has no such file" about a file it held). The lesson the `ensure_mirror` note
+above states still stands, and it is why this took a tool rather than a test: a seam method
+nothing reaches is a seam method nobody has exercised against a real caller, and the caller
+is what found both.
 
