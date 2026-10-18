@@ -118,6 +118,16 @@ class LocalRepositoryVcsPlugin(PluginService):
             f"invented without lying."
         )
 
+    async def update_pull_request_body(
+        self, pull_request: PullRequestRef, body_md: str, constraints: ExecutionConstraints
+    ) -> None:
+        self._path(pull_request.repo, constraints)
+        raise NoRepoHost(
+            f"cannot edit the description of {pull_request.repo.slug!r}#"
+            f"{pull_request.number}: no repo host is configured. The pull request "
+            f"does not exist here either, so there is nothing to edit."
+        )
+
     async def diff(
         self, repo: RepoRef, base: str, head: str, constraints: ExecutionConstraints
     ) -> DiffBundle:

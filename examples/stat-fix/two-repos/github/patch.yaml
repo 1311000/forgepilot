@@ -1,0 +1,102 @@
+# The cross-repository deployment against a real repo host: **one ticket, two
+# repositories, two pushed branches, two pull requests.**
+#
+# The rows are `../patch.yaml`'s with three changes: the slugs are GitHub's, the
+# `vcs` row is the GitHub provider, and the policy row turns the `open_pr` ask
+# off. Everything else is the same because it has nothing to do with how many
+# repositories there are or which host they live on.
+#
+# The three repository → path rows (`workspace`, `retriever`, `vcs`) must agree on
+# the mirror path: `vcs` derives it as `<mirror_root>/<host>/<namespace>/<name>`
+# and `workspace` has to cut its worktree from exactly that directory. Nothing
+# checks that they agree — see the long comment in `../github/patch.yaml` for why
+# it cannot be checked without changing a seam.
+
+- id: classifier
+  plugin: forgepilot.providers.classify.llm:LLMClassifierPlugin
+  config:
+    model: ${FORGEPILOT_LLM_MODEL:-deepseek-flash}
+    max_tokens: 2048
+  tier: trusted
+
+- id: tickets
+  plugin: forgepilot.providers.tickets.file:FileTicketSourcePlugin
+  config:
+    root: examples/stat-fix/two-repos/github/tickets
+  tier: trusted
+
+- id: workspace
+  plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+  config:
+    repos:
+      github.com/1311000/test: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test
+      github.com/1311000/test-reporting: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test-reporting
+    worktree_root: ${FORGEPILOT_EXAMPLE_WORKTREES}
+    branch_prefix: forgepilot
+  tier: trusted
+
+# `code_search` does not search these paths — the tool passes the session's
+# working tree, because a repository's location and the checkout a session is
+# editing are different questions. The map is here to name the slugs:
+# `Retriever.repositories()` enumerates them, and the tool intersects that with
+# the caller's grant before searching anything.
+- id: retriever
+  plugin: forgepilot.providers.retrieve.grep:GrepRetrieverPlugin
+  config:
+    roots:
+      github.com/1311000/test: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test
+      github.com/1311000/test-reporting: ${FORGEPILOT_EXAMPLE_MIRRORS}/github.com/1311000/test-reporting
+  tier: trusted
+
+# The row this example exists for. Both slugs go through the same provider, so
+# the second delivery is what proves the per-`(session, repository)` split reaches
+# the host: its own mirror, its own worktree, its own branch, its own PR.
+- id: vcs
+  plugin: forgepilot.providers.vcs.github:GitHubVcsPlugin
+  config:
+    mirror_root: ${FORGEPILOT_EXAMPLE_MIRRORS}
+    # token_env defaults to FORGEPILOT_GITHUB_TOKEN. Named, never valued.
+  tier: trusted
+
+- id: sandbox
+  plugin: forgepilot.providers.sandbox.local:LocalProcessSandboxPlugin
+  config:
+    max_output_bytes: 64000
+  tier: trusted
+
+# ⚠️ **Publishing really does ask a human, and this example has nobody to ask.**
+# With `open_pr` in `ask_operations` and no answerer registered, the ask resolves
+# to UNAVAILABLE, everything except `allowed-once` refuses, and both deliveries
+# stop at READY — checks passed, commits made, nothing published. That is the
+# correct outcome and a good demonstration on its own; this file turns it off
+# because the point here is the other half: two pull requests a reviewer can open.
+# Delete this row to watch the ask instead; the run ends READY with two drafts and
+# an unanswered `approval/asked` event in the log.
+- id: policy
+  plugin: forgepilot.identity.policy:PolicyServicePlugin
+  config:
+    default: allow
+    ask_operations: []
+  tier: trusted
+
+- id: principal
+  plugin: forgepilot.identity.principal:PrincipalServicePlugin
+  config:
+    tokens:
+      - token: demo-token
+        principal_id: demo
+        tenant_id: local
+        teams: []
+        operations:
+          - read_code
+          - write_code
+          - run_tests
+          - read_ticket
+          - open_pr
+        repo_prefixes:
+          - github.com/1311000/*
+        writable_paths:
+          - "."
+        # Intersected with the project's own value, so both must say `allow`.
+        network: allow
+  tier: trusted

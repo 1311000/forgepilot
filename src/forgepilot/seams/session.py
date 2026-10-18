@@ -133,6 +133,11 @@ class EventKind:
     #: with no preceding assistant tool call is a malformed conversation that
     #: endpoints reject outright.
     TASK_CHECK = "task/check"
+    #: A pull request body was rewritten after the run learned how the ticket's
+    #: *other* repositories ended. Publishing is serial, so the first body is
+    #: written while the second delivery still has no verdict; this event is what
+    #: makes the rewrite (or its failure) visible rather than inferred.
+    TASK_PUBLISHED = "task/published"
     MEMORY_WRITE = "memory/write"
     #: Memories put in front of the model at the start of a turn.
     #:

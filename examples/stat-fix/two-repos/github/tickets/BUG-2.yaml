@@ -1,0 +1,32 @@
+# The cross-repository ticket, naming the two repositories **on the host**.
+#
+# The description is `../tickets/BUG-2.yaml`'s, with one difference: the two
+# `受影响仓库` lines carry GitHub slugs. That is what makes this a ticket for the
+# GitHub deployment — `preprocess` scans the text against the project's `repos`
+# list and takes every entry it finds, so a slug that is not in the project's list
+# would resolve to nothing and the run would stop before the classifier.
+#
+# ⚠️ **The bare names (`test`, `test-reporting`) also match**, which is why the
+# slugs are written out in full: `test` is a short enough word to appear inside
+# ordinary text, and a project that declares a repository called `test` cannot
+# have a ticket that merely mentions it. Here it is harmless — the ticket means
+# both repositories — but it is worth knowing before naming a repository.
+id: BUG-2
+title: 周均线和移动平均线都少一个窗口 —— 两个仓库同一个根因
+status: new
+priority: high
+
+description: |
+  复现步骤：
+  1. 调用 moving_average([1, 2, 3, 4], 2)
+  2. 调用 weekly_average([1, 2, 3, 4], 2)
+
+  预期结果：两边都返回 3 个窗口 —— (1,2) (2,3) (3,4)，即 [1.5, 2.5, 3.5]
+  实际结果：两边都只有 2 个窗口
+
+  受影响仓库：github.com/1311000/test
+  受影响仓库：github.com/1311000/test-reporting
+  相关文件：stats.py、reporting/windows.py
+
+  看板和周报的曲线都比预期短一格，末尾那个窗口丢掉了。两边的窗口代码是三年前
+  拆仓库时复制过去的，所以循环边界上有同一个错误——请分别在两个仓库里修。

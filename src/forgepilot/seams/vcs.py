@@ -91,6 +91,25 @@ class Vcs(Protocol):
         self, draft: PullRequestDraft, constraints: ExecutionConstraints
     ) -> PullRequestRef: ...
 
+    async def update_pull_request_body(
+        self, pull_request: PullRequestRef, body_md: str, constraints: ExecutionConstraints
+    ) -> None:
+        """Replace the description of a pull request this run opened.
+
+        Exists for exactly one reason, and it is a fact about serial delivery: a
+        plural ticket's pull requests are opened one after another, so the first
+        one is created before the run knows how the second ends. Its body says so
+        at the time — "not attempted yet" — and that sentence stops being the
+        whole truth the moment the next delivery succeeds. A reviewer reading the
+        first pull request should not have to know the run order to find out where
+        the sibling stands, so the sibling sections are rewritten once every
+        delivery has a verdict.
+
+        ``constraints`` is checked like every other effectful call: editing a pull
+        request is publishing, so it needs the same operation that opening one did.
+        """
+        ...
+
     async def diff(
         self, repo: RepoRef, base: str, head: str, constraints: ExecutionConstraints
     ) -> DiffBundle: ...

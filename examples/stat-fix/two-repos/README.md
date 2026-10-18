@@ -42,10 +42,10 @@ $env:FORGEPILOT_PYTHON          = 'D:\…\.venv\Scripts\python.exe'
 ```
 
 The run ends `READY` with two drafts, or `DELIVERED` with two pull requests if the `vcs`
-row is pointed at a real host — exactly as in `../github/`, whose self-contained layout
-this directory copies. `patch.yaml` lists both slugs in `workspace.repos`,
-`retriever.roots` and `vcs.repos`; leaving one out is how you get a run that plans two
-repositories and then cannot prepare the second.
+row is pointed at a real host. `github/` is that variant, ready to run and published once:
+two draft pull requests against `github.com/1311000`, one per repository. `patch.yaml`
+lists both slugs in `workspace.repos`, `retriever.roots` and `vcs.repos`; leaving one out is
+how you get a run that plans two repositories and then cannot prepare the second.
 
 ## Why this is a directory of its own
 

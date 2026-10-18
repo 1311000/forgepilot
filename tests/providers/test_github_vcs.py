@@ -29,7 +29,7 @@ import pytest
 
 from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation
-from forgepilot.seams.vcs import PullRequestDraft
+from forgepilot.seams.vcs import PullRequestDraft, PullRequestRef
 
 REPO = RepoRef(host="github.com", namespace="1311000", name="test")
 SLUG = REPO.slug
@@ -503,6 +503,45 @@ async def test_the_token_is_sent_as_a_bearer_credential(vcs) -> None:
 
     headers = {k.lower(): v for k, v in recorder.requests[0][3].items()}
     assert headers.get("authorization") == f"Bearer {TOKEN}"
+
+
+async def test_the_body_of_an_open_pull_request_can_be_replaced(vcs) -> None:
+    """`PATCH`, and the same pull request - not a second one carrying a correction.
+
+    This is what a plural ticket needs: the first body is written before the second
+    delivery has a verdict, and has to be brought up to date afterwards.
+    """
+    import json
+
+    recorder = Recorder(status=200, payload={"number": 7, "body": "updated"})
+    vcs.transport_factory = client_factory(recorder)
+
+    await vcs.update_pull_request_body(
+        PullRequestRef(repo=REPO, number=7),
+        "Fixes BUG-2.\n\n- `github.com/1311000/test-reporting` — #8\n",
+        constraints_for(),
+    )
+
+    method, url, body, _ = recorder.requests[0]
+    assert method == "PATCH"
+    assert url == f"https://api.github.com/repos/{REPO.namespace}/{REPO.name}/pulls/7"
+    assert json.loads(body) == {"body": "Fixes BUG-2.\n\n- `github.com/1311000/test-reporting` — #8\n"}
+
+
+async def test_rewriting_a_body_refuses_without_the_operation(vcs) -> None:
+    from forgepilot.seams.security import Operation as Op
+
+    recorder = Recorder(status=200)
+    vcs.transport_factory = client_factory(recorder)
+
+    with pytest.raises(PermissionError):
+        await vcs.update_pull_request_body(
+            PullRequestRef(repo=REPO, number=7),
+            "body",
+            constraints_for(operations=frozenset({Op.READ_CODE})),
+        )
+
+    assert recorder.requests == [], "a refusal that had already been sent is not a refusal"
 
 
 async def test_a_rejected_pull_request_says_why(vcs) -> None:

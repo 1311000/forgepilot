@@ -175,6 +175,57 @@ def pull_request_payload(draft: PullRequestDraft) -> dict[str, Any]:
     }
 
 
+def create_repository(
+    token: str,
+    repo: RepoRef,
+    *,
+    private: bool = False,
+    api_base: str = "https://api.github.com",
+    timeout: float = 20.0,
+) -> bool:
+    """Create ``repo`` on the host, or report that it already exists.
+
+    Returns ``True`` when this call created it, ``False`` when it was already
+    there. **A 422 is the second answer, not an error**: GitHub uses it for "name
+    already exists", and the caller's question is "is there a repository now" —
+    refusing because the thing it was about to make exists has the right answer.
+
+    This lives beside :func:`authenticated_env` rather than in the seeding script
+    that first needed it, because the module docstring's rule is that exactly one
+    place knows how the credential is sent. The first version of the two-repository
+    example needed a manual click in a browser to make the second repository, which
+    is the kind of step that turns "this works" into "this worked once".
+    """
+    import httpx
+
+    payload = {"name": repo.name, "private": private, "auto_init": False}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        response = httpx.post(
+            f"{api_base.rstrip('/')}/user/repos",
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:  # pragma: no cover - network shape
+        raise GitHubRequestFailed(
+            redact(f"could not reach {api_base}: {type(exc).__name__}", (token,))
+        ) from None
+
+    if response.status_code in (200, 201):
+        return True
+    if response.status_code == 422:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text[:400]
+    raise GitHubRequestFailed(parse_error(response.status_code, body))
+
+
 def parse_error(status: int, body: Any) -> str:
     """GitHub's own explanation, plus the status.
 
@@ -439,6 +490,28 @@ class GitHubVcsPlugin(PluginService):
             url=str(body.get("html_url", "")),
         )
 
+    async def update_pull_request_body(
+        self, pull_request: PullRequestRef, body_md: str, constraints: ExecutionConstraints
+    ) -> None:
+        """Rewrite the body of a pull request this run opened.
+
+        `PATCH`, not `POST`: the pull request exists, and creating a second one to
+        carry a corrected description would be a worse artifact than a stale
+        paragraph. The operation is `OPEN_PR` because this *is* publishing - the
+        body is what a reviewer reads before deciding, and authority to write it
+        without authority to open it would be a narrower grant than it looks.
+        """
+        self._authorise(pull_request.repo, constraints, Operation.OPEN_PR)
+        token = self._token()
+
+        url = (
+            f"{self._api_base}/repos/{pull_request.repo.namespace}/"
+            f"{pull_request.repo.name}/pulls/{pull_request.number}"
+        )
+        status, body = await self._request("PATCH", url, {"body": body_md}, token)
+        if status not in (200, 201):
+            raise GitHubRequestFailed(parse_error(status, body))
+
     async def diff(
         self, repo: RepoRef, base: str, head: str, constraints: ExecutionConstraints
     ) -> DiffBundle:
@@ -491,6 +564,11 @@ class GitHubVcsPlugin(PluginService):
         return httpx.AsyncClient(timeout=self._timeout_s)
 
     async def _post(self, url: str, payload: Any, token: str) -> tuple[int, Any]:
+        return await self._request("POST", url, payload, token)
+
+    async def _request(
+        self, method: str, url: str, payload: Any, token: str
+    ) -> tuple[int, Any]:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -498,7 +576,7 @@ class GitHubVcsPlugin(PluginService):
         }
         client = await self._client()
         try:
-            response = await client.post(url, json=payload, headers=headers)
+            response = await client.request(method, url, json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001 - the message may quote the URL
             # A transport failure is reported, not swallowed, and it is redacted
             # for the same reason git's is: some clients echo the request.

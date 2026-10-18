@@ -43,6 +43,7 @@ from forgepilot.seams.classifier import ClassificationRequest, TicketUnderstandi
 from forgepilot.seams.refs import RepoRef
 from forgepilot.seams.security import ExecutionConstraints
 from forgepilot.seams.tickets import Ticket
+from forgepilot.seams.vcs import Vcs
 
 __all__ = ["TaskPlan", "plan_task"]
 
@@ -496,6 +497,14 @@ async def run_task(
         deliveries.append(
             RepoDelivery(repo=untouched, state=TaskState.QUEUED, reason=_NOT_ATTEMPTED)
         )
+
+    await _rewrite_sibling_sections(
+        plan=plan,
+        deliveries=deliveries,
+        vcs=vcs,
+        constraints=constraints,
+        session=session,
+    )
 
     state, reason = _task_verdict(deliveries)
     machine.to(state, reason)
@@ -1009,6 +1018,69 @@ def _task_verdict(deliveries: Sequence[RepoDelivery]) -> tuple[TaskState, str]:
     if detail:
         reason += f" — {detail}"
     return state, reason
+
+
+async def _rewrite_sibling_sections(
+    *,
+    plan: TaskPlan,
+    deliveries: Sequence[RepoDelivery],
+    vcs: Vcs,
+    constraints: ExecutionConstraints,
+    session: Any,
+) -> None:
+    """Give every pull request the sibling account the run can now write.
+
+    Publishing is serial, so the first pull request of a plural ticket is opened
+    while the run still knows nothing about the second one — and its body says so:
+    "not attempted yet". That sentence was true when it was written and stops being
+    the whole truth the moment the next delivery reaches a verdict. A reviewer
+    reading pull request #1 should not have to reconstruct the run order to learn
+    that #2 exists and passed.
+
+    So the sibling sections are rewritten once, after every delivery has an
+    outcome. What is rewritten is exactly the paragraph `_split_section` produces;
+    the checks, the diff and the symptom are recomputed from the same recorded
+    values, so a rewritten body is the body the run would have written had it known
+    the future.
+
+    **A failed rewrite does not fail the task.** The pull request exists and the
+    change is in it; the description is stale, which is worth a log event and not
+    worth reporting a delivered ticket as failed. The event is where a reader finds
+    out that the body they are looking at is the opening one.
+    """
+    with_pull_request = [d for d in deliveries if d.pull_request is not None]
+    if len(plan.repos) < 2 or not with_pull_request:
+        return
+
+    from forgepilot.seams.session import EventKind
+
+    finished = tuple(deliveries)
+    for delivery in with_pull_request:
+        body = _pull_request_body(
+            plan,
+            delivery.checks,
+            delivery.changed_paths,
+            delivery.diff or "",
+            delivery.pinned_tests,
+            opened=finished,
+            repo=delivery.repo,
+        )
+        try:
+            await vcs.update_pull_request_body(delivery.pull_request, body, constraints)
+        except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+            await session.append(
+                EventKind.TASK_PUBLISHED,
+                {
+                    "repo": delivery.repo.slug,
+                    "updated": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        else:
+            await session.append(
+                EventKind.TASK_PUBLISHED,
+                {"repo": delivery.repo.slug, "updated": True},
+            )
 
 
 def _split_section(

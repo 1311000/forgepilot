@@ -15,6 +15,17 @@ would be the one nobody ran.
 
 Then follow the printed instructions. Nothing here destroys anything: a seed
 checkout this script made earlier is reused, and the push is a fast-forward.
+
+Two flags exist for the **two-repository** deployment, where the second fixture
+is a different directory and the second repository may not exist yet:
+
+    --fixture examples/stat-fix/fixture-reporting   seed a different fixture
+    --create                                        make the repository first
+
+`--create` is the operator action the script exists to avoid doing by hand. It
+goes through `create_repository` beside the provider's token handling rather than
+a second copy of "how the credential is sent", and a repository that is already
+there is the answer, not an error.
 """
 
 from __future__ import annotations
@@ -60,6 +71,27 @@ def _git(
     return completed.stdout
 
 
+def _has_staged_changes(cwd: Path) -> bool:
+    """Whether the index differs from HEAD.
+
+    A seed built on top of an existing ``main`` whose content is already the
+    fixture has **nothing to commit**, and `git commit` exits non-zero saying so.
+    Refusing to continue there would be wrong twice: the repository ends up with
+    the right content, and the message reads as a failure. `--quiet` makes the
+    exit code the answer (1 = differences, 0 = none).
+    """
+    completed = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return completed.returncode != 0
+
+
 def assignment(name: str, value: str, shell: str) -> str:
     """One line that sets ``name`` in ``shell``.
 
@@ -74,7 +106,15 @@ def assignment(name: str, value: str, shell: str) -> str:
     return f"export {name}='{quoted}'"
 
 
-def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "") -> None:
+def seed(
+    token: str,
+    slug: str,
+    into: Path,
+    *,
+    force: bool,
+    remote_base: str = "",
+    fixture: Path = FIXTURE,
+) -> None:
     from forgepilot.providers.vcs.github import authenticated_env, remote_url
     from forgepilot.seams.refs import RepoRef
 
@@ -102,22 +142,51 @@ def seed(token: str, slug: str, into: Path, *, force: bool, remote_base: str = "
     if not into.exists():
         into.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(
-            FIXTURE,
+            fixture,
             into,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"),
         )
         _git("init", "-b", "main", cwd=into)
         _git("add", "-A", cwd=into)
-        _git(
-            "-c",
-            "user.name=ForgePilot Example",
-            "-c",
-            "user.email=example@localhost",
-            "commit",
-            "-m",
-            "metrics-stats: statistics helpers for the reporting pipeline",
+
+        # If the host already has a `main`, build the fixture commit **on top of
+        # it** rather than starting a second root commit. Two unrelated histories
+        # make the push a non-fast-forward, and the only ways out of that are a
+        # force-push to somebody's repository or a manual pull that drops the
+        # fixture's content. `--soft` moves HEAD without touching the index, so
+        # the files just copied are exactly what the commit records.
+        existing = _git(
+            "ls-remote",
+            "--heads",
+            url,
+            "refs/heads/main",
             cwd=into,
-        )
+            env=env,
+            secrets=(token,),
+        ).strip()
+        if existing:
+            _git(
+                "fetch",
+                "--quiet",
+                url,
+                "refs/heads/main",
+                cwd=into,
+                env=env,
+                secrets=(token,),
+            )
+            _git("reset", "--soft", "FETCH_HEAD", cwd=into)
+
+        if _has_staged_changes(into):
+            _git(
+                "-c",
+                "user.name=ForgePilot Example",
+                "-c",
+                "user.email=example@localhost",
+                "commit",
+                "-m",
+                f"{repo.name}: the fixture this example runs against",
+                cwd=into,
+            )
         # The *plain* URL is what gets recorded. See the provider's module
         # docstring: a token-URL here would be a credential at rest in this
         # directory, and it would travel with any copy of it.
@@ -152,6 +221,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--force", action="store_true", help="recreate the seed checkout")
     parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=FIXTURE,
+        help=(
+            "the directory to seed from (default: ../fixture, the statistics "
+            "fixture). The two-repository deployment seeds its second repository "
+            "from ../fixture-reporting."
+        ),
+    )
+    parser.add_argument(
+        "--create",
+        action="store_true",
+        help=(
+            "create the repository on the host first. A repository that is already "
+            "there is not an error - the question is whether one exists, not whether "
+            "this call is what made it."
+        ),
+    )
+    parser.add_argument(
         "--remote-base",
         default="",
         help=(
@@ -176,7 +264,11 @@ def main(argv: list[str] | None = None) -> int:
     home = os.environ.get("FORGEPILOT_HOME")
     base = Path(home) if home else Path.home() / ".forgepilot"
     example = base / "examples" / "stat-fix"
-    into = (args.into or example / "github-seed").resolve()
+    name = args.slug.rsplit("/", 1)[-1]
+    # Per repository rather than one shared directory: the second repository's
+    # seed checkout would otherwise be the first one's, and `--force` on the
+    # second would silently rewrite the first repository's history.
+    into = (args.into or example / f"github-seed-{name}").resolve()
 
     exports = {
         "FORGEPILOT_EXAMPLE_MIRRORS": str(example / "mirrors"),
@@ -224,8 +316,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --slug must be 'host/namespace/name', got {args.slug!r}", file=sys.stderr)
         return 2
 
-    print(f"seeding {args.slug} from {FIXTURE}")
-    seed(token, args.slug, into, force=args.force, remote_base=args.remote_base)
+    host, namespace, repo_name = args.slug.split("/")
+    if args.create:
+        from forgepilot.providers.vcs.github import create_repository
+        from forgepilot.seams.refs import RepoRef
+
+        repo = RepoRef(host=host, namespace=namespace, name=repo_name)
+        made = create_repository(token, repo)
+        print(("created " if made else "already there: ") + args.slug)
+
+    print(f"seeding {args.slug} from {args.fixture}")
+    seed(
+        token,
+        args.slug,
+        into,
+        force=args.force,
+        remote_base=args.remote_base,
+        fixture=args.fixture,
+    )
 
     seeder = "examples/stat-fix/github/seed_github.py"
     run = (

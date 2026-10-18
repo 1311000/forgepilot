@@ -1,0 +1,83 @@
+# The two-repository deployment, against a **real repo host**.
+#
+# `../project.yaml` declares the same two repositories under `git.local/demo/*`,
+# where a delivery ends at READY with a draft. This file is that project with the
+# slugs pointing at GitHub, which is the one thing the local variant cannot
+# exercise: two branches pushed and **two pull requests opened** in one session.
+#
+# ⚠️ **Why a third directory rather than a flag on the second.** `project.repos`
+# is what `preprocess` scans ticket text against, and the ticket has to name the
+# repositories it means. A ticket naming `git.local/demo/stats` is a correct
+# ticket for the local deployment; rewriting its slug at run time would make the
+# text and the project disagree, and "which repositories does this ticket cover"
+# would stop being answerable from the log. So the host variant gets its own
+# ticket, and the two stay comparable because only the slug differs.
+#
+# The cost is the one `../github/` already pays: a change to a shared row does not
+# reach this file.
+
+name: stat-fix-two-repos-github
+
+# A ticket that names one of them gets one delivery; a ticket that names both gets
+# two, and the pull request body of each says where the other one stands.
+repos:
+  - github.com/1311000/test
+  - github.com/1311000/test-reporting
+
+repo_prefixes:
+  - github.com/1311000/*
+
+default_branch: main
+
+# One command for both repositories, run in each repository's own tree (M13/D3).
+# Each checkout is a self-contained Python project with its own `tests/`; a suite
+# needing both repositories side by side would need a merged checkout, which does
+# not exist and is recorded as a gap in `docs/notes/task-delivery.md`.
+test:
+  - ${FORGEPILOT_PYTHON} -m pytest -q
+
+allowed_operations:
+  - read_code
+  - write_code
+  - run_tests
+  - read_ticket
+  - open_pr
+
+writable_paths:
+  - "."
+
+network: allow
+
+# Per delivery, not per ticket (M13/D7): two repositories means up to
+# `2 × (max_attempts + 1)` model turns, because each delivery repairs its own
+# change.
+retry:
+  max_attempts: 2
+  on_failure: stop
+
+# Restored to the base revision while the checks run, so a relaxed assertion
+# cannot be what makes them pass.
+test_paths:
+  - tests/
+  - "test_*.py"
+  - conftest.py
+
+tool_sets:
+  default:
+    - read_file
+    - code_search
+  bugfix:
+    - read_file
+    - code_search
+    - write_file
+    - edit_file
+    - run
+
+category_tool_sets:
+  bug: bugfix
+  question: default
+  feature: bugfix
+
+budget:
+  max_tool_calls: 60
+  max_tokens: 200000

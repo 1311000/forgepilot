@@ -45,6 +45,7 @@ class MockVcsPlugin(PluginService):
         self._branches: dict[tuple[RepoRef, str], BranchRef] = {}
         self._pushes: list[tuple[RepoRef, str]] = []
         self._pull_requests: list[PullRequestDraft] = []
+        self._updated: list[tuple[PullRequestRef, str]] = []
         self._diffs: dict[tuple[RepoRef, str, str], DiffBundle] = {}
         self._seq = 0
         #: Calls refused for lack of authority, so a test can assert that a
@@ -60,6 +61,17 @@ class MockVcsPlugin(PluginService):
     def pull_requests(self) -> tuple[PullRequestDraft, ...]:
         """Everything opened, in order. The task-mode acceptance test reads this."""
         return tuple(self._pull_requests)
+
+    @property
+    def pull_request_bodies(self) -> tuple[tuple[PullRequestRef, str], ...]:
+        """Bodies rewritten after opening, in order.
+
+        A plural ticket's pull requests are opened serially, so the first body is
+        written before the sibling has a verdict. This is what a test reads to
+        assert the rewrite actually happened - the draft alone cannot show it,
+        because the draft is what was sent *before* the rewrite.
+        """
+        return tuple(self._updated)
 
     @property
     def commits(self) -> tuple[tuple[RepoRef, str, str, CommitAuthor], ...]:
@@ -141,6 +153,12 @@ class MockVcsPlugin(PluginService):
         return PullRequestRef(
             repo=draft.repo, number=number, url=f"mock://{draft.repo.slug}/pr/{number}"
         )
+
+    async def update_pull_request_body(
+        self, pull_request: PullRequestRef, body_md: str, constraints: ExecutionConstraints
+    ) -> None:
+        self._authorise(pull_request.repo, constraints, Operation.OPEN_PR)
+        self._updated.append((pull_request, body_md))
 
     async def diff(
         self, repo: RepoRef, base: str, head: str, constraints: ExecutionConstraints

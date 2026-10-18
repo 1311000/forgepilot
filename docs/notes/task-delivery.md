@@ -103,18 +103,48 @@ covers several, a section lists each sibling as this pull request / `#number` (a
 opened) / "committed on `<branch>` and verified, but not published" / **failed**: reason /
 not attempted. The state events carry `repo`, and there is **no aggregate per-task state
 event** on purpose: a single-repository log still reads `running → delivered`, which is
-what its tests assert.
+what its tests assert. Because publishing is serial, the sibling paragraph is written from
+what the run knew *at that moment* and rewritten once every delivery has an outcome (the
+`task/published` events; see below) — the opening body of a plural ticket's first pull
+request is the one place the run has to say "not yet" and then stop saying it.
 
 **What is still not covered, and it is a real gap rather than a detail:** an integration
 suite that needs **both** repositories in one directory. There is no merged checkout, and
 there is no per-repository `test`/`test_paths` — every repository runs the project's one
 command in its own tree. A deployment that needs the merged shape adds it; the seam does
-not foreclose it, and the plan's D3 records that we chose not to build it now. Two smaller
-ones: `examples/stat-fix/github/` was not extended to two repositories, so publishing two
-pull requests against a real host is exercised by the local provider and the mock, not
-there; and `README.md`'s「跨仓」and the design doc's 300GB-across-repos premise are now
+not foreclose it, and the plan's D3 records that we chose not to build it now.
+
+**Two pull requests against a real host — measured 2026-10-18, not asserted.** A single run
+of `BUG-2` through `examples/stat-fix/two-repos/github/` (the layout this section used to
+say did not exist) delivered both repositories to `github.com/1311000`: draft
+[#3](https://github.com/1311000/test/pull/3) changing `stats.py` with the checks at
+`8 passed`, and draft [#1](https://github.com/1311000/test-reporting/pull/1) changing
+`reporting/windows.py` with `7 passed` — two mirrors, two worktrees, two branches
+(`forgepilot/session-<stamp>/<slug>`), one commit and one pull request each, and each pull
+request's body naming the sibling.
+
+That run found a defect **the local and mock providers could not show**, and it is the same
+shape this repository keeps finding: a sentence that looks like it was computed from the
+outcome and was computed from the *run order*. Publishing is serial, so `#3`'s body was
+written while `test-reporting` had no verdict yet, and it said "not attempted by this run,
+which delivers one repository at a time and stops at the first failure" — about a repository
+that was delivered as `#1` seconds later. Nothing rewrote it. The fix is
+`Vcs.update_pull_request_body()` plus `_rewrite_sibling_sections()` in
+`orchestration/modes/task.py`: once every delivery has an outcome, each body's sibling
+paragraph is recomposed from the same recorded values and `PATCH`ed, and each rewrite (or
+its failure) is a `task/published` event, because a stale body is a fact about the run and
+not something a reader should have to infer. A failed rewrite does **not** fail the task:
+the change is in the pull request, the description is stale, and the log says so. The
+already-open `#3` was corrected on the host with the same wording by
+`.tmp/fix_pr3_body.py` (gitignored), so the artifact and the code now agree.
+
+Two smaller notes. `examples/stat-fix/two-repos/github/` is a *third* deployment directory
+rather than a flag on the second, because `ProjectConfig.repos` is what ticket text is
+resolved against — mutating slugs at run time would make the text and the project disagree.
+And `README.md`'s「跨仓」and the design doc's 300GB-across-repos premise are now
 served by the runner as well as by the seam (`ProjectConfig.repos` is a tuple,
 `Retriever.search` takes `repos`), but only within one deployment's declared slug list.
+
 
 ## Task entry point notes (`--task`, `examples/stat-fix/`, `providers/tickets/file.py`)
 

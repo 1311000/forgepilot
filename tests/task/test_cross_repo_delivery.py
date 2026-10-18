@@ -363,6 +363,62 @@ async def test_two_repositories_get_two_trees_two_commits_and_two_pull_requests(
 
 
 # ---------------------------------------------------------------------------
+# End to end: the first body is rewritten once the second verdict exists
+# ---------------------------------------------------------------------------
+async def test_the_first_pull_requests_body_is_rewritten_once_both_verdicts_exist(
+    cross_repo_task_rig,
+) -> None:
+    """Publishing is serial, so the first body is written before the second runs.
+
+    At that moment the honest sentence is "not attempted yet" — and it stops being
+    the whole truth the instant the second repository is delivered. A reviewer who
+    reads pull request #1 must not have to reconstruct the run order to discover
+    that #2 exists, passed, and carries the sibling half of the change.
+    """
+    rig = cross_repo_task_rig
+    plan = await plan_for(rig, REPO_A, REPO_B)
+
+    rig.llm.script(
+        write_file("src/login.py", FIX_A),
+        text_turn("bounded the retry loop"),
+        write_file("src/report.py", FIX_B),
+        text_turn("summarise now totals the rows"),
+    )
+    rig.sandbox.script(
+        ScriptedResult(exit_code=0, stdout="1 passed"),
+        ScriptedResult(exit_code=0, stdout="1 passed"),
+    )
+
+    outcome = await run(rig, plan)
+    assert outcome.state is TaskState.DELIVERED, outcome.reason
+
+    opened = {draft.repo.slug: draft.body_md for draft in rig.vcs.pull_requests}
+    assert "not attempted" in opened[REPO_A.slug], (
+        "the opening body is written before B has a verdict - this is the sentence "
+        "the rewrite exists to replace"
+    )
+
+    rewritten = {pull.repo.slug: body for pull, body in rig.vcs.pull_request_bodies}
+    assert set(rewritten) == {REPO_A.slug, REPO_B.slug}, (
+        "both bodies are rewritten, not only the stale one: the run knows the same "
+        "facts for both, and rewriting one would make the two disagree"
+    )
+    assert "not attempted" not in rewritten[REPO_A.slug]
+    assert f"- `{REPO_B.slug}` — #2" in rewritten[REPO_A.slug], (
+        "A's rewritten body has to point at B's pull request by number"
+    )
+    assert f"- `{REPO_A.slug}` — #1" in rewritten[REPO_B.slug]
+    assert f"- `{REPO_A.slug}` — **this pull request**" in rewritten[REPO_A.slug]
+
+    # The rest of the body is the same one the run already had: the checks, the
+    # diff and the symptom are recomputed from the same recorded values, so this is
+    # not a second, differently-worded description of the same delivery.
+    for body in rewritten.values():
+        assert body.startswith(f"Fixes {plan.ticket.id}.")
+        assert "## Checks" in body
+
+
+# ---------------------------------------------------------------------------
 # End to end: a failure stops the run and the rest are reported
 # ---------------------------------------------------------------------------
 async def test_a_failed_delivery_stops_the_run_and_the_rest_are_not_attempted(
