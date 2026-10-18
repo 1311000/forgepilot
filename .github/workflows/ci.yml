@@ -353,14 +353,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ⚠️ **The matrix cannot run without this, and that is the system working.** Every
+      # session's `ExecutionConstraints` are signed, and `load_key()` refuses to sign with
+      # no key rather than run with unverifiable authority — so the first dispatch of this
+      # job failed all 78 expected-pass cells with `SigningKeyMissing`. A throwaway key is
+      # the right answer *here* (nothing is trusted afterwards, the run is a fixture of its
+      # own), and it is emphatically not the answer for a deployment: there the key comes
+      # from a secret and the same refusal is what stops a keyless server from starting.
       - name: state outside the checkout
         run: |
           echo "FORGEPILOT_HOME=$RUNNER_TEMP/forgepilot-home" >> "$GITHUB_ENV"
           echo "FORGEPILOT_TMP=$RUNNER_TEMP/forgepilot-workspaces" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          echo "FORGEPILOT_SIGNING_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')" >> "$GITHUB_ENV"
 
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
