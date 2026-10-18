@@ -35,6 +35,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # ⚠️ **The only job here that is not a push gate.** `evals/matrix.py` runs the eight
+  # offline arms over the ten tasks — the harness's own shapes, not the agent — and
+  # compares the verdicts with the table measured on 2026-10-18. It costs nothing (the
+  # replay model reads no files) and it is the only eval a schedule can afford: the
+  # question the arms exist to answer needs `--live`, money and a credential CI does not
+  # have. Weekly rather than per-push because a mechanism's offline verdict should not
+  # change with an unrelated commit; `workflow_dispatch` so it can be asked on demand.
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
 
 jobs:
   check:
@@ -320,3 +330,34 @@ jobs:
             echo "::error::the check passed without saying how the capability was obtained"
             exit 1
           fi
+
+  # ⚠️ **The one job that measures the harness rather than the code — and says so.**
+  # `evals/matrix.py` runs every arm over every task with `--scripted` (the replay model:
+  # no network, no credential, nothing spent) and then compares the result with the table
+  # measured on 2026-10-18: 78 of 80 cells pass, and the two that do not are `two-attempts`
+  # under `baseline` and `no-repair`, which is exactly what that task exists to say. The
+  # value is not the number — a scripted run measures no capability — it is that the shapes
+  # this harness claims to distinguish are still distinguished after a week of changes.
+  #
+  # `FORGEPILOT_HOME` points outside the checkout so the session stores and workspaces the
+  # run creates land in `runner.temp`; `FORGEPILOT_TMP` pins `tempfile` for the same reason
+  # M15 pinned it. The results file lands in `evals/results/`, which is gitignored, and is
+  # uploaded on failure only — a green run's artifact is the log.
+  evals:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    env:
+      FORGEPILOT_HOME: ${{ runner.temp }}/forgepilot-home
+      FORGEPILOT_TMP: ${{ runner.temp }}/forgepilot-workspaces
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+
+      - name: the offline matrix, against the verdicts this repository recorded
+        run: python evals/matrix.py

@@ -588,3 +588,31 @@ above states still stands, and it is why this took a tool rather than a test: a 
 nothing reaches is a seam method nobody has exercised against a real caller, and the caller
 is what found both.
 
+
+## The offline matrix runs on a schedule (M21's third item)
+
+`evals/matrix.py` runs all eight arms over all ten tasks with `--scripted` and compares
+the result with the table in that file, measured on 2026-10-18 (`78/80`; the two failures
+are `two-attempts` under `baseline` and `no-repair`, which is the task's whole point).
+`.github/workflows/ci.yml` grows a fourth job — `evals`, on `schedule` (Mondays 03:00 UTC)
+and `workflow_dispatch`, never on a push — for one reason: **a scripted run measures no
+capability, so it must not look like a gate that does.** What it does verify is a property
+of this tree that nothing else checks: the shapes the harness claims to tell apart are
+still told apart, and each arm still switches exactly what it says it switches (a `full`
+row with a non-empty `arm_changes` is a mismatch).
+
+Two decisions worth keeping:
+
+- **The expectations are written down, not derived.** A checker that computed its verdict
+  from the run it was checking could not fail. `EXPECTED_FAILURES` is the measurement, and
+  a row that moves is a change to decide rather than absorb — `tests/evals/test_the_scripted_matrix.py`
+  drives it with a flipped row, a missing cell, a duplicated cell and an arm that claims to
+  have changed nothing, so the checker is falsified rather than trusted.
+- **The results stay out of the checkout.** The job points `FORGEPILOT_HOME` and
+  `FORGEPILOT_TMP` at `runner.temp`, so session stores and workspaces land outside the tree
+  — the same rule `tests/conftest.py` pins for pytest, and the reason M20's gate now refuses
+  untracked files a run leaves behind.
+
+What it deliberately does **not** do: `--live`. That needs a credential and money, it is
+what `evals/report.py` and the arms are *for*, and a scheduled spend on a public repository
+is a decision nobody has made.
