@@ -441,11 +441,19 @@ async def test_the_log_records_a_state_per_delivery_and_never_a_second_verdict(
     await run(rig, plan)
 
     events = state_events(rig.session)
-    assert [event["state"] for event in events] == ["running", "delivered", "delivered"]
-    assert [event.get("repo") for event in events] == [None, REPO_A.slug, REPO_B.slug], (
+    assert [event["state"] for event in events] == [
+        "running",
+        "delivered",
+        "delivered",
+        "delivered",
+    ], "two deliveries, then the task's own verdict"
+    assert [event.get("repo") for event in events] == [None, REPO_A.slug, REPO_B.slug, None], (
         "with several deliveries, `the task delivered` does not say which work did"
     )
     assert events[0]["repositories"] == [REPO_A.slug, REPO_B.slug]
+    assert events[-1]["repositories"] == [REPO_A.slug, REPO_B.slug], (
+        "the closing verdict names the same repositories the plan did"
+    )
 
     checks = [
         dict(event.data)

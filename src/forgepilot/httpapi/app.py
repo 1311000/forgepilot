@@ -156,6 +156,19 @@ def resolve_project(workspace_root: Path | None):
     return project_from_mapping({}, name="default"), ProjectPolicy.open_project()
 
 
+def has_project(workspace_root: Path | None) -> bool:
+    """Whether a project is actually configured, not merely assumed.
+
+    `resolve_project` has to return *something* to keep chat working, so it falls
+    back to an open project and warns. Task mode cannot use that fallback: a task
+    delivers to repositories, and "permit everything, deliver nowhere" would accept
+    a ticket and then fail at planning with nothing on screen saying why.
+    """
+    from forgepilot.config.project import find_project
+
+    return workspace_root is not None and find_project(Path(workspace_root)) is not None
+
+
 def build_app(
     root: Any,
     *,
@@ -184,7 +197,14 @@ def build_app(
         return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
     app.include_router(
-        build_router(root, registry, workspace_root=workspace_root, policy=policy, project=project)
+        build_router(
+            root,
+            registry,
+            workspace_root=workspace_root,
+            policy=policy,
+            project=project,
+            project_configured=has_project(workspace_root),
+        )
     )
 
     @app.get("/healthz")

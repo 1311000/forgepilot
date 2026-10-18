@@ -61,6 +61,7 @@ def build_router(
     workspace_root: Path | None = None,
     policy: Any = None,
     project: Any = None,
+    project_configured: bool = False,
 ):
     """Build the FastAPI router.
 
@@ -78,6 +79,16 @@ def build_router(
 
     router = APIRouter()
     who = credential_dependency(root, policy)
+
+    from forgepilot.httpapi.tasks import TaskRefused, TaskService
+
+    tasks = TaskService(
+        root,
+        registry,
+        project=project,
+        workspace_root=workspace_root,
+        project_configured=project_configured,
+    )
 
     # -- sessions ----------------------------------------------------------
     @router.get("/sessions")
@@ -116,6 +127,45 @@ def build_router(
                 for p in registry.pending_approvals(live.session_id)
             ],
         }
+
+    # -- tasks -------------------------------------------------------------
+    @router.post("/tasks", status_code=202)
+    async def start_task(body: dict[str, Any], cred=Depends(who)) -> dict[str, Any]:
+        """Start a ticket. **202, not 200**, for the same reason a turn is 202:
+        the task blocks on approvals that arrive on other requests, so holding
+        this one open would make them undeliverable.
+
+        The task id *is* the session id. There is no second identity to keep in
+        step, and the event stream a client already knows how to follow is the
+        task's timeline — `GET /tasks/{id}` reads the same log.
+        """
+        ticket_id = body.get("ticketId", body.get("ticket_id"))
+        try:
+            task_id = await tasks.start(cred, "" if ticket_id is None else str(ticket_id))
+        except TaskRefused as exc:
+            raise ApiError(exc.status, str(exc)) from exc
+        return {"accepted": True, "taskId": task_id, "sessionId": task_id}
+
+    @router.get("/tasks")
+    async def list_tasks(cred=Depends(who)) -> dict[str, Any]:
+        """The tasks this process is running. Not a durable listing: the store's
+        summaries do not carry a principal, and an unscoped list is worse than a
+        short one that is honest about its scope."""
+        views = await tasks.live_views(str(cred.principal.principal_id))
+        return {"tasks": [view.to_payload() for view in views]}
+
+    @router.get("/tasks/{task_id}")
+    async def task_detail(task_id: str, cred=Depends(who)) -> dict[str, Any]:
+        """A task's state, reconstructed from the session log.
+
+        Works after a restart because the log is durable, and answers 404 rather
+        than 403 for a task that exists and is not yours — the same rule the
+        session endpoints follow, so the API cannot be used to probe for ids.
+        """
+        view = await tasks.view(task_id, str(cred.principal.principal_id))
+        if view is None:
+            raise ApiError(404, f"no task {task_id!r}")
+        return view.to_payload()
 
     # -- turns -------------------------------------------------------------
     @router.post("/sessions/{session_id}/messages", status_code=202)

@@ -78,6 +78,32 @@ def run(label: str, argv: list[str]) -> bool:
     return True
 
 
+def working_tree() -> set[str] | None:
+    """What `git status` says changed, or `None` when git cannot answer.
+
+    The rule this serves is already written down — *a test run must not write into
+    the repository* — and until now it was defended only by pins on `tmp_path`
+    (`tests/conftest.py`) and by a test asserting the pin is in place. A pin cannot
+    see a provider that opens a file beside the tree it was pointed at, and that is
+    how two zero-byte `tmp*` files came to sit at the root of this checkout: nothing
+    in the gate was looking. Comparing the tree before the steps with the tree after
+    them is the version of the rule that does not depend on anybody remembering.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(FORGE), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        # Not a git checkout (a source tarball), or no git on the machine. The gate
+        # still has its other steps; refusing to run because the *check* could not
+        # run would make a green run depend on a tool nobody asked for.
+        return None
+    return {line for line in completed.stdout.splitlines() if line.strip()}
+
+
 def main(argv: list[str] | None = None) -> int:
     from forgepilot.console import use_utf8_output
 
@@ -105,8 +131,23 @@ def main(argv: list[str] | None = None) -> int:
         ("pytest with coverage", [sys.executable, "-m", "pytest", "tests/", "-q", "--cov"])
     )
 
+    before = working_tree()
     for label, command in steps:
         if not run(label, command):
+            return 1
+
+    after = working_tree()
+    if before is not None and after is not None:
+        leaked = sorted(after - before)
+        if leaked:
+            print(
+                "\nFAILED: the steps above wrote into the repository. Every file a "
+                "test needs belongs under `tmp_path` — a checkout inside the tree is "
+                "seen by `git status`, by the retriever, and by the next run:",
+                file=sys.stderr,
+            )
+            for line in leaked:
+                print(f"  {line}", file=sys.stderr)
             return 1
 
     print("\nAll gates passed.")

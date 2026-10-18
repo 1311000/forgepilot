@@ -499,6 +499,20 @@ async def run_task(
 
     state, reason = _task_verdict(deliveries)
     machine.to(state, reason)
+    # **The task's own verdict, in the log.** Every `task/state` event so far
+    # describes one repository; the verdict the runner returned described all of
+    # them and existed only in that return value, so a reader — or a process that
+    # restarts and has nothing but the log — could not answer "what happened to
+    # this ticket?" without re-deriving the rule. It carries no `repo`, which is
+    # how a reader tells the aggregate from a delivery.
+    await session.append(
+        EventKind.TASK_STATE,
+        {
+            "state": str(state),
+            "reason": reason,
+            "repositories": [delivery.repo.slug for delivery in deliveries],
+        },
+    )
     # A finished task's log must be durable. Without this the closing events sit in
     # the buffer, and a reader — or a crash — sees a task that never ended.
     await session.flush()
@@ -833,6 +847,10 @@ async def _deliver_repository(
                     "state": str(TaskState.READY),
                     "repo": repo.slug,
                     "branch": branch,
+                    "commit": _commit_sha(commit),
+                    # Named rather than counted, so a panel can say *which* files
+                    # without a second request to a runner that no longer exists.
+                    "changed": list(changed),
                     "pullRequest": None,
                     "reason": authorisation.reason,
                     "asked": authorisation.asked,
@@ -877,6 +895,8 @@ async def _deliver_repository(
                 "state": str(TaskState.READY),
                 "repo": repo.slug,
                 "branch": branch,
+                "commit": _commit_sha(commit),
+                "changed": list(changed),
                 # Explicitly absent, so a reader does not have to infer it.
                 "pullRequest": None,
                 "reason": "no repo host configured",
@@ -913,6 +933,8 @@ async def _deliver_repository(
             "state": str(TaskState.DELIVERED),
             "repo": repo.slug,
             "branch": branch,
+            "commit": _commit_sha(commit),
+            "changed": list(changed),
             "pullRequest": pull_request.url,
         },
     )
@@ -942,6 +964,17 @@ _NOT_ATTEMPTED = (
     "not attempted: an earlier repository's delivery did not succeed, and the remaining "
     "repositories are not started after a failure"
 )
+
+
+def _commit_sha(commit: Any) -> str | None:
+    """The commit as it goes into the log, or `None` when none was made.
+
+    `None` rather than `""`: a commit that does not exist and a commit whose sha
+    could not be read are different facts, and an empty string would make the
+    second look like the first.
+    """
+    return None if commit is None else str(commit.sha)
+
 
 
 def _task_verdict(deliveries: Sequence[RepoDelivery]) -> tuple[TaskState, str]:

@@ -74,6 +74,21 @@
   .banner { padding: 10px 22px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px; }
   .hidden { display: none !important; }
   .tag { font: 11px/1 var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; color: var(--dim); }
+  /* The task strip is a *reading* of the log, so it sits above it: what state the
+     task is in, and what it delivered, without scrolling to the last event. */
+  #taskbar { border-bottom: 1px solid var(--line); padding: 10px 22px; background: #171a20; }
+  #taskbar .head { display: flex; gap: 10px; align-items: baseline; }
+  #taskState { font-size: 13px; letter-spacing: .03em; }
+  #taskState.running { color: var(--accent); }
+  #taskState.delivered, #taskState.ready { color: var(--ok); }
+  #taskState.failed, #taskState.cancelled { color: var(--bad); }
+  #taskState.awaiting_info, #taskState.awaiting_approval { color: var(--warn); }
+  #taskbar .repos { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .repo { font: 12px/1.5 var(--mono); color: var(--dim); }
+  .repo b { color: var(--fg); font-weight: 600; }
+  .repo .check.bad { color: var(--bad); }
+  .repo .check.good { color: var(--ok); }
+  .repo a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -89,12 +104,28 @@
   <div class="row" style="margin-top:18px">
     <button id="showReview">评审模式</button>
   </div>
+
+  <label class="muted" for="ticket" style="display:block;margin-top:18px">任务模式</label>
+  <input id="ticket" placeholder="工单号，例如 BUG-1" autocomplete="off">
+  <div class="row" style="margin-top:8px">
+    <button id="startTask" class="primary">开始任务</button>
+  </div>
+  <p class="muted" style="margin:6px 0 0">
+    一次任务就是一条会话：它的进度是同一份事件流，状态条读的是同一份日志。
+  </p>
 </aside>
 
 <main>
   <div class="banner" id="banner">未连接</div>
 
   <section id="chat" style="display:flex;flex-direction:column;height:100%;min-height:0">
+    <div id="taskbar" class="hidden">
+      <div class="head">
+        <span id="taskState"></span>
+        <span class="muted" id="taskReason"></span>
+      </div>
+      <div class="repos" id="taskRepos"></div>
+    </div>
     <div id="log"></div>
     <form id="compose">
       <input id="text" placeholder="问一个关于代码库的问题…" autocomplete="off">
@@ -196,6 +227,8 @@ function describe(kind, payload) {
     case "approval/asked": return `${data.tool} — ${data.reason || "需要确认"}`;
     case "approval/decided": return data.outcome;
     case "turn/end": return data.reason;
+    case "task/state":
+      return [data.state, data.repo || "", data.reason || ""].filter(Boolean).join(" · ");
     case "task/check": return `${data.command ?? ""}\n${data.output ?? ""}`.trim();
     case "stream/lost": return String(payload);
     default: return JSON.stringify(data);
@@ -260,6 +293,10 @@ function handleFrame(raw) {
   if (kind === "approval/decided") return markApprovalAnswered(payload);
 
   addEvent(kind, payload);
+
+  // The strip is a reading of the same log, so it is refreshed by the log rather
+  // than by a timer. A task/state is exactly the moment the answer changes.
+  if (kind === "task/state" || kind === "turn/end") refreshTaskLater();
 }
 
 // -- approvals --------------------------------------------------------------
@@ -361,10 +398,113 @@ async function openSession(sessionId) {
   current = sessionId;
   lastEventId = null;
   $("log").replaceChildren();
+  $("taskbar").classList.add("hidden");
   note("会话 " + sessionId);
   await refreshSessions();
   stream(sessionId); // replays the whole log from seq 0
+  // A history entry may be a task — including one whose process is gone. The strip
+  // says so, and a 404 (this really was a chat) puts it away again.
+  refreshTask().catch(() => {});
 }
+
+// -- task mode --------------------------------------------------------------
+// A task *is* a session: `POST /tasks` returns the session id as the task id, the
+// progress is the same event stream, and the strip below is `GET /tasks/{id}` —
+// a fold of the log, not a second source of truth that could disagree with it.
+const STATE_TEXT = {
+  queued: "排队中", running: "运行中", awaiting_info: "需要补充信息",
+  awaiting_approval: "等待审批", ready: "已就绪（未发布）",
+  delivered: "已交付", failed: "失败", cancelled: "已取消",
+};
+
+let taskRefresh = null;
+
+function refreshTaskLater() {
+  // Coalesced: a burst of events means the strip is redrawn once, not once each.
+  if (taskRefresh) return;
+  taskRefresh = setTimeout(() => {
+    taskRefresh = null;
+    refreshTask().catch(() => {});
+  }, 120);
+}
+
+async function refreshTask() {
+  if (!current) return;
+  const response = await fetch(`${API}/tasks/${encodeURIComponent(current)}`, { headers: auth() });
+  if (response.status === 404) { $("taskbar").classList.add("hidden"); return; }
+  if (!response.ok) return;
+  renderTask(await response.json());
+}
+
+function renderTask(view) {
+  $("taskbar").classList.remove("hidden");
+
+  const state = $("taskState");
+  state.textContent = `${view.state} · ${STATE_TEXT[view.state] || view.state}`;
+  state.className = view.state;
+
+  let reason = view.reason || (view.ticketId ? `工单 ${view.ticketId}` : "");
+  if (view.interrupted) {
+    reason = "日志在给出结论之前就停了（运行它的进程已不在）" + (reason ? " · " + reason : "");
+  }
+  $("taskReason").textContent = reason;
+
+  const box = $("taskRepos");
+  box.replaceChildren();
+  for (const repo of view.repositories) {
+    const line = document.createElement("div");
+    line.className = "repo";
+
+    const bits = [`<b>${escape(repo.repo)}</b>`, escape(repo.state)];
+    if (repo.branch) bits.push(escape(repo.branch));
+    if (repo.commit) bits.push("commit " + escape(repo.commit.slice(0, 8)));
+    if (repo.changed?.length) bits.push(`${repo.changed.length} 个文件`);
+    let html = bits.join(" · ");
+    if (repo.reason) html += ` <span class="muted">${escape(repo.reason)}</span>`;
+    if (repo.pullRequest) {
+      html += ` <a href="${escape(repo.pullRequest)}" target="_blank" rel="noreferrer">PR</a>`;
+    }
+    for (const check of repo.checks || []) {
+      const mark = check.passed ? "✓" : "✗";
+      const why = check.reason ? " — " + check.reason : "";
+      html += `<div class="check ${check.passed ? "good" : "bad"}">${mark} ` +
+        `${escape(check.command || "")}${escape(why)}</div>`;
+    }
+    line.innerHTML = html;
+    box.appendChild(line);
+  }
+}
+
+async function openTask(taskId) {
+  current = taskId;
+  lastEventId = null;
+  $("log").replaceChildren();
+  $("taskbar").classList.remove("hidden");
+  $("taskState").textContent = "queued · 排队中";
+  $("taskState").className = "queued";
+  $("taskRepos").replaceChildren();
+  await refreshSessions();
+  stream(taskId);
+  await refreshTask().catch(() => {});
+}
+
+$("startTask").onclick = async () => {
+  const ticketId = $("ticket").value.trim();
+  if (!ticketId) return;
+  try {
+    // Not `call()`: it returns null for a 202 (right for a chat turn that already
+    // has an id), and here the 202 carries the task id.
+    const response = await fetch(API + "/tasks", {
+      method: "POST",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketId }),
+    });
+    if (!response.ok) throw new Error(`${response.status} ${(await response.text()).slice(0, 300)}`);
+    const accepted = await response.json();
+    note(`任务已开始：${accepted.taskId}（工单 ${ticketId}）`);
+    await openTask(accepted.taskId);
+  } catch (err) { note(err.message, "err"); }
+};
 
 $("newSession").onclick = async () => {
   try {

@@ -167,7 +167,17 @@ async def test_the_session_records_the_full_task_trace(task_rig) -> None:
     states = [
         e.data["state"] for e in task_rig.session.committed_events if e.kind == EventKind.TASK_STATE
     ]
-    assert states == ["running", "delivered"]
+    # The delivery's own state, then the task's verdict. The verdict reads
+    # `delivered` again because it is a different fact: one says what happened to
+    # this repository, the other what happened to the ticket.
+    assert states == ["running", "delivered", "delivered"]
+    closing = next(
+        e.data
+        for e in reversed(task_rig.session.committed_events)
+        if e.kind == EventKind.TASK_STATE
+    )
+    assert "repo" not in closing, "the aggregate must not look like a delivery"
+    assert closing["repositories"], "the verdict names the repositories it is about"
 
 
 # ---------------------------------------------------------------------------
@@ -517,9 +527,13 @@ async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
     await run(task_rig, plan)
 
     states = [e for e in task_rig.session.events if e.kind == EventKind.TASK_STATE]
-    final = states[-1].data
-    assert final['state'] == TaskState.READY.value
-    assert not final.get('pullRequest'), 'a PR was reported that was never opened'
+    delivery = next(e.data for e in states if e.data.get("repo"))
+    assert delivery['state'] == TaskState.READY.value
+    assert not delivery.get('pullRequest'), 'a PR was reported that was never opened'
+    assert delivery['changed'], 'a READY delivery still names the files it changed'
+    assert states[-1].data['state'] == TaskState.READY.value, (
+        'the task\'s own verdict is in the log too'
+    )
 
 
 # ---------------------------------------------------------------------------
