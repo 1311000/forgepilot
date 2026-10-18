@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +102,18 @@ class ProjectConfig:
     build: tuple[str, ...] = ()
     test: tuple[str, ...] = ()
     lint: tuple[str, ...] = ()
+    #: The ``build:``/``test:``/``lint:`` lines **as the project wrote them**,
+    #: before ``${VAR}`` expansion. ``load_project`` fills this; a caller that
+    #: builds from an already-expanded mapping leaves it empty, and readers fall
+    #: back to the expanded form.
+    #:
+    #: It exists for the pull request body, which quotes the check commands. The
+    #: expanded form of ``${FORGEPILOT_PYTHON} -m pytest -q`` is
+    #: ``D:\…\.venv\Scripts\python.exe -m pytest -q`` — one machine's interpreter
+    #: path, inside an artifact that outlives the machine and is read by people
+    #: who do not have that path. Quoting the declaration is both portable and
+    #: more accurate about what the project asked for.
+    commands_declared: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     allowed_operations: frozenset[Operation] = frozenset()
     writable_paths: tuple[str, ...] = ()
     #: Programs a `run` call in this project may start. ⚠️ **Absent is not the
@@ -303,9 +315,28 @@ def load_project(path: Path) -> ProjectConfig:
     # config is deployment-wide, while a `test:` command is a *machine's*
     # business — the interpreter that has pytest, the path to a checkout. Those
     # differ per developer, and `project.yaml` is a file teams check in.
+    #
+    # The declared lines are kept before expanding, for the pull request body:
+    # expansion is how the check runs, not how the project described itself.
+    declared = {
+        key: _declared_commands(raw.get(key)) for key in ("build", "test", "lint")
+    }
     raw = expand_env(raw, where=str(path))
 
-    return project_from_mapping(raw, name=path.parent.name)
+    return replace(
+        project_from_mapping(raw, name=path.parent.name),
+        commands_declared={key: value for key, value in declared.items() if value},
+    )
+
+
+def _declared_commands(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(str(v) for v in value)
+    raise ConfigError(f"a check command must be a string or a list, not {value!r}")
 
 
 def find_project(start: Path | None = None) -> ProjectConfig | None:

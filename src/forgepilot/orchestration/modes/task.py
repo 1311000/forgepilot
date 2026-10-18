@@ -504,6 +504,7 @@ async def run_task(
         vcs=vcs,
         constraints=constraints,
         session=session,
+        project=project,
     )
 
     state, reason = _task_verdict(deliveries)
@@ -806,7 +807,16 @@ async def _deliver_repository(
         # only the ones already finished: this run publishes as it goes, so a
         # sibling that has not been attempted yet is described as exactly that
         # rather than as a pull request that does not exist.
-        body_md=_pull_request_body(plan, checks, changed, diff, pinned, opened=opened, repo=repo),
+        body_md=_pull_request_body(
+            plan,
+            checks,
+            changed,
+            diff,
+            pinned,
+            opened=opened,
+            repo=repo,
+            declared=_declared_checks(project),
+        ),
         # Traceable back to the work item, not only to a branch name.
         ticket_id=str(plan.ticket.id),
         draft=True,
@@ -1027,6 +1037,7 @@ async def _rewrite_sibling_sections(
     vcs: Vcs,
     constraints: ExecutionConstraints,
     session: Any,
+    project: ProjectConfig,
 ) -> None:
     """Give every pull request the sibling account the run can now write.
 
@@ -1064,6 +1075,7 @@ async def _rewrite_sibling_sections(
             delivery.pinned_tests,
             opened=finished,
             repo=delivery.repo,
+            declared=_declared_checks(project),
         )
         try:
             await vcs.update_pull_request_body(delivery.pull_request, body, constraints)
@@ -1140,6 +1152,16 @@ def _split_section(
     return lines
 
 
+def _declared_checks(project: ProjectConfig) -> tuple[str, ...]:
+    """The ``test:`` lines as the project wrote them, for the pull request body.
+
+    Falls back to the expanded form: a project built from an already-expanded
+    mapping has no declaration to quote, and a body that names the interpreter
+    that happened to run the check is worse than one that names nothing.
+    """
+    return project.commands_declared.get("test") or project.test
+
+
 def _pull_request_body(
     plan: TaskPlan,
     checks: Sequence[Any],
@@ -1149,6 +1171,7 @@ def _pull_request_body(
     *,
     opened: Sequence[RepoDelivery] = (),
     repo: RepoRef | None = None,
+    declared: Sequence[str] = (),
 ) -> str:
     """Assemble the PR description from what actually happened.
 
@@ -1160,14 +1183,21 @@ def _pull_request_body(
     `repo` is the delivery this body belongs to. Omitted — as the single-repository
     callers and the tests written before M13 do — the body is exactly what it always
     was.
+
+    `declared` is the project's check commands **before** `${VAR}` expansion, and it
+    is preferred over `check.command` position by position. The expanded form of
+    `${FORGEPILOT_PYTHON} -m pytest -q` is one machine's interpreter path; the body is
+    read by reviewers whose machines do not have it, so it quotes what the project
+    asked for rather than where the check happened to run.
     """
     lines = [f"Fixes {plan.ticket.id}."]
     if repo is not None:
         lines.extend(_split_section(plan, opened, repo=repo))
     lines.extend(["", "## Checks"])
-    for check in checks:
+    for index, check in enumerate(checks):
+        command = declared[index] if index < len(declared) else check.command
         status = "passed" if check.passed else "FAILED"
-        lines.append(f"- `{check.command}` — {status}")
+        lines.append(f"- `{command}` — {status}")
     if pinned:
         # A reviewer reading "checks passed" has to know what they were run
         # against, or the sentence means nothing in the one case it matters.

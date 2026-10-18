@@ -138,6 +138,18 @@ the change is in the pull request, the description is stale, and the log says so
 already-open `#3` was corrected on the host with the same wording by
 `.tmp/fix_pr3_body.py` (gitignored), so the artifact and the code now agree.
 
+The same run showed a second, quieter leak in the outward artifact: the `## Checks`
+line quoted `D:\…\.venv\Scripts\python.exe -m pytest -q`. The command is expanded from
+`${FORGEPILOT_PYTHON}` at `project.yaml` load time because the sandbox's environment is
+an allow-list and the check really has to start a concrete interpreter — but *where it
+ran* is not what the body is for, and it is read on machines that do not have that path.
+`ProjectConfig.commands_declared` keeps the line as the project wrote it,
+`_declared_checks()` falls back to the expanded form when a project was built from an
+already-expanded mapping, and `_pull_request_body(declared=…)` prefers the declaration.
+All four open bodies on the two fixture repositories were corrected in place on
+2026-10-18 with the declared line (`${FORGEPILOT_PYTHON} -m pytest -q`), including the
+two older drafts from 2026-10-10 that carried the same expanded path.
+
 Two smaller notes. `examples/stat-fix/two-repos/github/` is a *third* deployment directory
 rather than a flag on the second, because `ProjectConfig.repos` is what ticket text is
 resolved against — mutating slugs at run time would make the text and the project disagree.

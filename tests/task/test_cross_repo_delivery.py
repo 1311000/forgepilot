@@ -221,6 +221,32 @@ def test_a_plural_body_says_where_the_other_repositories_stand() -> None:
     )
 
 
+def test_the_body_quotes_the_command_the_project_declared() -> None:
+    """The body is read by reviewers whose machines do not have this one's venv.
+
+    A check command is expanded from `${FORGEPILOT_PYTHON} -m pytest -q` into an
+    absolute interpreter path at load time. Publishing the expanded form puts *this*
+    machine's path in an artifact that outlives it — measured on the first real
+    two-repository run, whose bodies said
+    ``D:\\…\\.venv\\Scripts\\python.exe -m pytest -q``.
+    """
+    from forgepilot.runtime.repair import CheckResult
+
+    plan = a_plan(REPO_A)
+    ran = CheckResult(passed=True, command=r"D:\work\repo\.venv\Scripts\python.exe -m pytest -q")
+
+    body = _pull_request_body(
+        plan,
+        [ran],
+        ("stats.py",),
+        "diff",
+        declared=("${FORGEPILOT_PYTHON} -m pytest -q",),
+    )
+
+    assert "- `${FORGEPILOT_PYTHON} -m pytest -q` — passed" in body
+    assert "python.exe" not in body, "the declaring project's placeholder is what a reader can act on"
+
+
 def test_a_sibling_already_opened_is_named_by_its_number() -> None:
     plan = a_plan(REPO_A, REPO_B)
     opened = [
