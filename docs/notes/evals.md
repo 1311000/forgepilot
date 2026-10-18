@@ -616,3 +616,38 @@ Two decisions worth keeping:
 What it deliberately does **not** do: `--live`. That needs a credential and money, it is
 what `evals/report.py` and the arms are *for*, and a scheduled spend on a public repository
 is a decision nobody has made.
+
+## The probe before the matrix: 24 live cells, and what they cost (2026-10-18)
+
+The last live run before this was `20261012T104203-live.jsonl` — six rows, three arms, one
+task — so M12 through M22 had never been priced. Before spending on the full matrix
+(10 tasks × 8 arms × 2 reps), three tasks were run once per arm: `bug-fix` (a task every arm
+should solve), `find-the-rule` (the one that needs search) and `two-repos` (the one that
+needs cross-repository delivery). Result file `evals/results/20261018T122157-live.jsonl`,
+24 cells, ~14 minutes, **17 passed**.
+
+| Task | Passed | Calls | Wall clock |
+|---|---|---|---|
+| `bug-fix` | 8/8 | 10–15 | 15–32 s |
+| `find-the-rule` | 8/8 | 17–29 | 17–40 s |
+| `two-repos` | **2/8** | 27–34 | 43–68 s |
+
+The six `two-repos` failures are two different findings, and only one of them was a defect:
+
+- **Two `failed` cells** (`baseline`, `full`) were the commit defect described in
+  `docs/notes/task-delivery.md`: the model fixed the second repository, committed it with the
+  `run` tool, and the delivery reported "the checks passed but nothing was changed" while the
+  same record said `changed: ["reporting/windows.py"]`. Fixed; the probe is what found it.
+- **Four `ready` cells that broke the scope limit** (`no-distill` 3 paths, `no-memory` 4,
+  `no-repair` 3, `tight-window` 3 against `max_changed: 2`) failed because the model wrote its
+  commit message to a file and left it in the tree: `_commit_msg.txt`, `BUG2_MSG.txt`,
+  `_bug2_msg.txt`, `BUG2_COMMIT_MSG.txt`, and once `README.md`. That is **the limit doing its
+  job** — debris in a delivered diff is a review cost, and the expectation is not adjusted to
+  accommodate it. It is also the first thing the probe says about *model* behaviour that no
+  scripted run can: the replay model is deterministic and reads no files, so the offline matrix
+  cannot see a scratch file at all.
+
+Neither `bug-fix` nor `find-the-rule` moved between arms, which is the shape to expect from a
+deterministic task: the arms are mechanism ablations, and a task that needs none of the
+ablation targets passes with all of them removed. Whether an arm *earns its place* is a
+question the full matrix and its cost table answer together, not a question 24 cells settle.

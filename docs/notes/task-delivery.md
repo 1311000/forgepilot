@@ -193,6 +193,16 @@ Three smaller things, each found by running it:
 
 **The "the agent can edit the tests" gap is closed** — see "The oracle is held fixed" below. It was the largest hole left: `run_checks` passed whether the code was fixed or the assertion was relaxed, and nothing in the harness could tell the two apart.
 
+## The commit step, when the agent already committed (measured 2026-10-18)
+
+`providers/workspace/git_worktree.py::commit` runs once per delivery, after the checks. It stages the whole tree with `git add -A` and asks git whether anything is staged; an empty answer means "no change was produced", so it raised `NothingToCommit` and `run_task` reported `the checks passed but nothing was changed, so there is nothing to deliver`.
+
+That reasoning is sound only if nobody else commits. **`run` is a shell, and `git commit` is a command the agent can type.** Measured live on the second repository of a two-repository task: the same delivery record carried `changed: ["reporting/windows.py"]` and `checks_passed: true` **and** `state: failed`, because the model had run `git add reporting/windows.py && git commit -F _commit_msg.txt` itself. The working tree was clean and the branch was ahead — a true statement about `git status`, a false one about the delivery.
+
+The rule now: nothing staged, but `git diff --name-only <base_ref>..HEAD` is non-empty, means the branch already carries the work. `commit` then returns `HEAD` as the delivery's commit and **does not** create a second one (an empty commit would be a lie about who changed what). If the branch is ahead while the net change is empty — commits that cancel out — `NothingToCommit` still stands, and `test_a_commit_that_changes_nothing_back_is_still_refused` is the guard against broadening "ahead" into "delivered".
+
+Nothing about the boundary moved: a commit the agent typed is subject to the same diff, the same `writable_paths`, the same pinned tests and the same review. What changed is that the platform stopped treating one particular way of producing the change as the absence of one. Reverting the branch-diff check fails `test_a_change_the_agent_committed_itself_is_still_delivered` with the production message.
+
 ## TAPD as a ticket source (`providers/tickets/tapd.py`, `bundles/tickets_tapd/`)
 
 The seam was modelled on TAPD's field shapes from M2 and the design doc named

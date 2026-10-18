@@ -289,6 +289,20 @@ class GitWorktreeWorkspacePlugin(PluginService):
         # the last step of a run that otherwise succeeded — which reads as a git
         # problem when the outcome is "no change was produced".
         if not self._git("diff", "--cached", "--name-only", cwd=handle.root).strip():
+            # ...unless the agent already committed. `run` is a shell, and `git commit`
+            # is a command it can type; the tree is then clean *and* the branch is
+            # ahead. Refusing here would report work that is sitting on the branch as
+            # "nothing was changed", which is a true statement about `git status` and a
+            # false one about the delivery — measured live, on the second repository of
+            # a two-repository task.
+            ahead = self._git(
+                "diff", "--name-only", f"{handle.base_ref}..HEAD", cwd=handle.root
+            ).strip()
+            if ahead:
+                return CommitRef(
+                    repo=handle.repo,
+                    sha=self._git("rev-parse", "HEAD", cwd=handle.root).strip(),
+                )
             raise NothingToCommit(
                 f"there is nothing to commit on {handle.repo.slug!r}: the working tree "
                 f"is identical to {handle.base_ref!r}. A task that reached here passed "

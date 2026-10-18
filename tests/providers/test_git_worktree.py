@@ -323,6 +323,61 @@ async def test_commit_records_the_working_tree_as_a_real_commit(workspace, origi
     assert git("log", "-1", "--format=%an", cwd=handle.root).strip() == "nil"
 
 
+async def test_a_change_the_agent_committed_itself_is_still_delivered(workspace) -> None:
+    """``run`` is a shell, so ``git commit`` is a command the agent can type.
+
+    Measured live: on the second repository of a two-repository task the model fixed
+    the file, committed it with the ``run`` tool, and the delivery failed with "the
+    checks passed but nothing was changed" — a true statement about ``git status`` and
+    a false one about the branch. The work was on the branch the whole time.
+    """
+    from forgepilot.seams.refs import CommitAuthor
+
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    (handle.root / "src" / "app.py").write_text("def main():\n    return 7\n", encoding="utf-8")
+    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
+        "commit", "-am", "fix: done by the tool", cwd=handle.root)
+    theirs = git("rev-parse", "HEAD", cwd=handle.root).strip()
+
+    ref = await workspace.commit(
+        handle,
+        "fix: bounded retry",
+        CommitAuthor(name="nil", email="nil@example.test"),
+        writer(),
+    )
+
+    assert ref.sha == theirs, "the branch already carried the change; nothing was re-committed"
+    assert git("log", "-1", "--format=%s", cwd=handle.root).strip() == "fix: done by the tool"
+    assert git("diff", "--name-only", "main..HEAD", cwd=handle.root).split() == ["src/app.py"]
+
+
+async def test_a_commit_that_changes_nothing_back_is_still_refused(workspace) -> None:
+    """The escape above must not bless a branch whose commits cancel out.
+
+    Two commits that restore the file leave the branch *ahead* of the base and the net
+    change empty; "ahead" alone would deliver nothing under a delivery.
+    """
+    from forgepilot.providers.workspace.git_worktree import NothingToCommit
+    from forgepilot.seams.refs import CommitAuthor
+
+    handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
+    original = (handle.root / "src" / "app.py").read_text(encoding="utf-8")
+    (handle.root / "src" / "app.py").write_text("def main():\n    return 7\n", encoding="utf-8")
+    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
+        "commit", "-am", "fix: attempt", cwd=handle.root)
+    (handle.root / "src" / "app.py").write_text(original, encoding="utf-8")
+    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
+        "commit", "-am", "revert: undo it", cwd=handle.root)
+
+    with pytest.raises(NothingToCommit):
+        await workspace.commit(
+            handle,
+            "fix: bounded retry",
+            CommitAuthor(name="nil", email="nil@example.test"),
+            writer(),
+        )
+
+
 async def test_commit_refuses_when_the_caller_may_not_write_code(workspace) -> None:
     """The check that used to live on ``vcs.commit`` must not be lost in the move."""
     from forgepilot.seams.refs import PrincipalId, TenantId
