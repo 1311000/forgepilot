@@ -344,12 +344,24 @@ class JsonlSessionStorePlugin(PluginService):
         return header
 
     async def summaries(self, *, limit: int = 50, cursor: str | None = None) -> Page:
-        headers = sorted(self._root.glob("*/*/*.header.json"))
-        start = int(cursor) if cursor else 0
-        window = headers[start : start + limit]
-        items = []
-        for path in window:
+        """Session headers, newest first — the order the seam promises.
+
+        Sorting costs a read of every header, because the store keeps no time index.
+        The alternative is to paginate the directory in path order, which within one
+        tenant *is* chronological (the session id carries its timestamp) but across
+        tenants groups by name — so the first page could be the oldest sessions of the
+        alphabetically-first tenant. A listing that cannot answer "what just happened"
+        is the reason nothing called this for two eras.
+        """
+        found: list[tuple[str, dict[str, Any]]] = []
+        for path in self._root.glob("*/*/*.header.json"):
             raw = json.loads(path.read_text(encoding="utf-8"))
+            found.append((str(raw.get("created_at") or ""), raw))
+        found.sort(key=lambda pair: pair[0], reverse=True)
+        start = int(cursor) if cursor else 0
+        window = found[start : start + limit]
+        items = []
+        for _created, raw in window:
             sid = SessionId(raw["session_id"])
             created = raw.get("created_at")
             items.append(
@@ -358,9 +370,10 @@ class JsonlSessionStorePlugin(PluginService):
                     created_at=datetime.fromisoformat(created) if created else None,
                     event_count=await self.high_water(sid),
                     tenant=str(raw.get("tenant", "")),
+                    principal=str(raw.get("principal", "")),
                 )
             )
-        next_cursor = str(start + limit) if start + limit < len(headers) else None
+        next_cursor = str(start + limit) if start + limit < len(found) else None
         return Page(items=tuple(items), next_cursor=next_cursor)
 
     async def delete(self, session_id: SessionId) -> None:

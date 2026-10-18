@@ -415,6 +415,86 @@ async def test_a_chat_session_is_not_a_task(tmp_path: Path, signing_env) -> None
         await booted.close()
 
 
+async def test_the_listing_survives_a_restart_and_stops_at_this_principal(
+    tmp_path: Path, signing_env
+) -> None:
+    """`GET /tasks` was live-only because a summary could not answer "whose?".
+
+    It can now, so the list is the log's: a task that finished before this process
+    started is still a task, a chat session is not, and another principal's task never
+    appears.
+    """
+    import httpx
+
+    from forgepilot.httpapi.app import build_app
+    from forgepilot.runtime.session import Session
+    from forgepilot.seams.refs import SessionId
+    from forgepilot.seams.session import EventKind, SessionHeader
+
+    booted = await _boot(tmp_path)
+    try:
+        store = booted.root.sessionPersistence
+
+        async def a_task(sid: str, principal: str) -> None:
+            await store.create(
+                SessionHeader(
+                    session_id=SessionId(sid),
+                    created_at=datetime.now(UTC),
+                    tenant="acme",
+                    principal=principal,
+                )
+            )
+            session = await Session.open(store, SessionId(sid))
+            await session.append(
+                EventKind.TASK_STATE,
+                {"state": "running", "ticket": "BUG-9", "repositories": [REMOTE]},
+            )
+            await session.append(
+                EventKind.TASK_STATE,
+                {
+                    "state": "ready",
+                    "repo": REMOTE,
+                    "branch": "forgepilot/bug-9",
+                    "commit": "b" * 40,
+                    "changed": ["src/app.py"],
+                    "pullRequest": None,
+                    "reason": "no repo host configured",
+                },
+            )
+            await session.flush()
+
+        await a_task("alice-task", "alice")
+        await a_task("bobs-task", "bob")
+
+        # A session that ran a turn and never touched a ticket.
+        await store.create(
+            SessionHeader(
+                session_id=SessionId("alice-chat"),
+                created_at=datetime.now(UTC),
+                tenant="acme",
+                principal="alice",
+            )
+        )
+        chat = await Session.open(store, SessionId("alice-chat"))
+        await chat.append(EventKind.USER_MESSAGE, {"text": "hello"})
+        await chat.flush()
+
+        restarted = build_app(booted.root, workspace_root=booted.workspace)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted), base_url="http://test"
+        ) as client:
+            listing = (await client.get("/tasks", headers=booted.auth())).json()["tasks"]
+            assert [task["taskId"] for task in listing] == ["alice-task"]
+            assert listing[0]["live"] is False, "nobody in this process is running it"
+            assert listing[0]["state"] == "ready"
+            assert listing[0]["repositories"][0]["commit"] == "b" * 40
+
+            theirs = (await client.get("/tasks", headers=booted.auth("tok-bob"))).json()
+            assert [task["taskId"] for task in theirs["tasks"]] == ["bobs-task"]
+    finally:
+        await booted.close()
+
+
 pytestmark = pytest.mark.skipif(
     __import__("shutil").which("git") is None, reason="the workspace provider needs git"
 )

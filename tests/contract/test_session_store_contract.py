@@ -225,6 +225,55 @@ async def test_fork_refuses_when_a_tool_call_has_no_result(store) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Listings: the order is the contract
+# ---------------------------------------------------------------------------
+async def test_summaries_are_newest_first_and_carry_their_principal(store) -> None:
+    """Newest first, and each summary says whose session it is.
+
+    Both halves exist because of what a caller does with a page. A listing whose first
+    page is the *oldest* sessions cannot answer "what just happened", and a summary
+    without a principal cannot be scoped — so `GET /tasks` listed only live sessions
+    for two eras, which after a restart is a listing of nothing.
+
+    The order cannot be left to the storage: the durable store's directory is
+    alphabetical by session id and the memory store's is insertion order, so "whatever
+    the implementation returns" would push a sort into every caller.
+    """
+    older = SessionId("session-older")
+    newer = SessionId("session-newer")
+    await store.create(
+        SessionHeader(
+            session_id=older,
+            created_at=datetime(2026, 10, 1, tzinfo=UTC),
+            tenant="acme",
+            principal="alice",
+        )
+    )
+    await store.create(
+        SessionHeader(
+            session_id=newer,
+            created_at=datetime(2026, 10, 2, tzinfo=UTC),
+            tenant="acme",
+            principal="bob",
+        )
+    )
+
+    page = await store.summaries(limit=10)
+
+    assert [str(item.session_id) for item in page.items] == ["session-newer", "session-older"]
+    assert [item.principal for item in page.items] == ["bob", "alice"]
+    assert page.items[0].created_at == datetime(2026, 10, 2, tzinfo=UTC)
+
+
+async def test_a_summary_without_a_principal_is_nobody_s(store) -> None:
+    """Empty is "not yours", never "everyone's": the empty string is what a header
+    written before the field existed carries."""
+    await new_session(store, sid="anonymous")
+    page = await store.summaries(limit=10)
+    assert [item.principal for item in page.items] == [""]
+
+
+# ---------------------------------------------------------------------------
 # Durable-store-only failure modes
 # ---------------------------------------------------------------------------
 async def test_jsonl_log_lines_are_self_contained_and_framed_with_lf(tmp_path: Path) -> None:

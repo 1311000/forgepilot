@@ -151,8 +151,13 @@ class InMemorySessionStorePlugin(PluginService):
         return header
 
     async def summaries(self, *, limit: int = 50, cursor: str | None = None) -> Page:
+        """Session headers, newest first — the order the seam promises.
+
+        Insertion order is creation order here, so reversing it is the whole sort; the
+        durable store has to read timestamps because its directory is not ordered.
+        """
         start = int(cursor) if cursor else 0
-        entries = list(self._events.items())[start : start + limit]
+        entries = list(reversed(self._events.items()))[start : start + limit]
         items = tuple(
             SessionSummary(
                 session_id=sid,
@@ -160,6 +165,7 @@ class InMemorySessionStorePlugin(PluginService):
                 last_event_at=events[-1].ts if events else None,
                 event_count=len(events),
                 tenant=self._headers[sid].tenant if sid in self._headers else "",
+                principal=self._headers[sid].principal if sid in self._headers else "",
             )
             for sid, events in entries
         )

@@ -37,8 +37,25 @@ FORGE = Path(__file__).resolve().parents[2]
 FRONT_DOOR = FORGE / "CLAUDE.md"
 NOTES_DIR = FORGE / "docs" / "notes"
 
-#: The workspace-instruction budget: what the harness injects before truncating.
-BUDGET = 65_536
+#: What the harness *documents*: it injects the first 65 536 bytes of `CLAUDE.md`.
+HARNESS_CAP = 65_536
+
+#: The bytes the harness spends wrapping that content before it reaches the model.
+#: **Measured, not assumed.** When the front door stood at 65 503 bytes the harness
+#: reported `truncated CLAUDE.md from 65503 to 65244 bytes` — so the last 259 bytes of
+#: *content* never arrived, while the nominal cap still showed 33 bytes of headroom. The
+#: earlier constant here was `65_536`, the nominal cap, which meant the gate was green
+#: for a stretch of the file that no reader received: the same shape as every other row
+#: in `docs/notes/defect-shape.md` — a number that looks like a constraint with nothing
+#: measuring the thing it constrains.
+#:
+#: To re-measure: grow this file to just under the cap and read the harness's own
+#: `truncated … to N bytes` notice. If that notice disappears, the wrapper shrank and
+#: this number is stale in the safe direction (the gate is stricter than the harness).
+WRAPPER = 292
+
+#: The budget the gate actually enforces: bytes of the file that a reader receives.
+BUDGET = HARNESS_CAP - WRAPPER
 
 if not FRONT_DOOR.exists():
     pytest.skip(
@@ -108,9 +125,25 @@ def _resolves(reference: str) -> bool:
 def test_the_front_door_fits_the_budget() -> None:
     size = FRONT_DOOR.stat().st_size
     assert size <= BUDGET, (
-        f"CLAUDE.md is {size} bytes and the harness injects only the first {BUDGET}, so "
-        f"{size - BUDGET} bytes at the end are read by nobody. Move the evidence into "
-        f"docs/notes/ and leave the rule behind."
+        f"CLAUDE.md is {size} bytes and the harness delivers only {BUDGET} of them "
+        f"({HARNESS_CAP} minus the {WRAPPER}-byte wrapper it adds), so {size - BUDGET} "
+        f"bytes at the end are read by nobody. Move the evidence into docs/notes/ and "
+        f"leave the rule behind."
+    )
+
+
+def test_the_budget_is_the_delivered_size_not_the_documented_cap() -> None:
+    """Pin the arithmetic, so a later tidy-up cannot restore the number that was wrong.
+
+    The defect this whole module exists for was "a cap with nothing measuring delivery".
+    Setting the constant back to `HARNESS_CAP` would recreate it in the guard itself:
+    green for up to 292 bytes that never arrive.
+    """
+    assert BUDGET == HARNESS_CAP - WRAPPER
+    assert 0 < WRAPPER < HARNESS_CAP
+    assert BUDGET < HARNESS_CAP, (
+        "the enforced budget must be strictly below the documented cap — the wrapper is "
+        "not free, and a guard that ignores it is green about text nobody reads"
     )
 
 

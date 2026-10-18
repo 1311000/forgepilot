@@ -46,7 +46,17 @@ Two smaller things, both consequences of reusing what exists:
 - **The ticket is fetched before the session exists.** An unknown id answers 404 and leaves no session behind — a log holding one message from the human and nothing else is worse than no log. `plan_task` takes no session, so the `awaiting_info` refusal (preprocessing decided a human must complete the ticket) is written by the service; without that event the panel would spin on a task that had already decided it could not start.
 - **`TaskService.start` refuses without a project.** `build_app` still falls back to an open policy when no `project.yaml` is found, because a chat that cannot run is worse than a permissive one that says so; task mode must not inherit that fallback, so `has_project()` is checked separately and `POST /tasks` answers 409. The page's task strip is refreshed by `task/state` frames rather than a timer, for the same reason the strip exists at all: the log is the truth, and the strip is a reading of it.
 
-`SessionSummary` carries no `principal`, so `GET /tasks` (the list) is deliberately **this process's live tasks only**. A durable list filtered by principal would need the summary to carry it; an unfiltered one would show other tenants' ids. The short list is the honest one, and it says so in the route.
+`SessionSummary` carried no `principal`, so `GET /tasks` (the list) was deliberately **this process's live tasks only** — an unfiltered list would have shown other tenants' ids, and a filtered one had nothing to filter on. That held until the fix below.
+
+## The listing, and the field that had no reader
+
+The paragraph above was true for two eras and it named its own cause. `SessionSummary.principal` is now carried by both stores, so `GET /tasks` answers from the log: live tasks first (the registry also has their buffered events), then the durable ones, each scoped to the caller's principal.
+
+Three things are worth keeping, because the shape recurs:
+
+- **`SessionStore.summaries` had no caller anywhere in `src/`.** Two implementations and a Protocol entry, and a route that explained why it could not be *used* — the "a field with no consumer because the consumer does not exist is a gap" shape from `defect-shape.md`, except that here the gap and the reason it was invisible were the same sentence. The fix gave it its first reader rather than a second correction.
+- **The order is a contract now.** Both stores return **newest first**, stated on the Protocol. The durable store sorts headers by `created_at` (a read of every header — it keeps no time index), because paginating its directory would group by tenant first and hand the first page the alphabetically-first tenant's oldest sessions. Newest-first is what a listing is for; leaving it to storage would push a sort into every caller, which is how a method ends up with none.
+- **A listing may not read every session on disk.** A summary carries no events, so telling a task from a chat means opening the log; `DURABLE_SCAN = 50` bounds how many summaries a page will open, and a chat session that happens to be in that window is filtered out by having no `task/state` event rather than by a flag that would need to be kept true.
 
 ## M20 — the process became stoppable and countable
 

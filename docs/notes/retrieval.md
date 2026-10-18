@@ -192,7 +192,9 @@ overlay at once; `covers_working_tree: false` is the honest capability, and the 
 bundle therefore replaces local retrieval rather than adding to it. (2) The eval task
 whose answer is **only** in the index is still unwritten — the shape that would finally
 price retrieval, since `find-the-rule`'s own note records that `findstr /s` matches
-`code_search` on a local checkout. It still needs a task-level patch row (`EvalTask` has
-`project`, not `patches`), and a field added before its first consumer is the defect this
-repository's table is about.
+`code_search` on a local checkout. The row it needs exists — `EvalTask.patches`
+(`evals/harness.py`) lets a task override a plugin row, and that is exactly the row that
+points `retriever` at the index; the earlier version of this paragraph said the field did
+not exist, which was true when it was written and stopped being true at `7d7579d`. What is
+still unwritten is the task itself, not the mechanism underneath it.
 

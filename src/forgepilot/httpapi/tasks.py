@@ -38,6 +38,13 @@ from forgepilot.httpapi.registry import (
 from forgepilot.seams.refs import SessionId, TicketId
 from forgepilot.seams.session import EventKind
 
+#: How many durable summaries a listing will open to find the tasks among them.
+#:
+#: A summary carries no events, so telling a task from a chat means reading the log;
+#: without a bound the listing would read every session on disk. Fifty is more than a
+#: browser shows and small enough that an unlucky page costs one directory scan.
+DURABLE_SCAN = 50
+
 __all__ = ["RepoView", "TaskRefused", "TaskService", "TaskView"]
 
 
@@ -274,21 +281,51 @@ class TaskService:
             header = await store.header(sid)
         except FileNotFoundError:
             return None
-        # The header carries the principal, so ownership survives a restart
-        # without a second index. `SessionSummary` does not, which is why the
-        # listing below is live-only.
+        # The header carries the principal, so ownership survives a restart without a
+        # second index — and since M23 so does the *summary*, which is what lets the
+        # listing below answer for sessions this process never saw.
         if header.principal != principal:
             return None
         events = [event async for event in store.read(sid)]
         return self._from_events(events, sid=sid, live=False, started=False, ticket_id="")
 
-    async def live_views(self, principal: str) -> tuple[TaskView, ...]:
-        """The tasks this process is running, for this principal.
+    async def views(self, principal: str) -> tuple[TaskView, ...]:
+        """Every task this principal can see: the live ones, then what the log holds.
 
-        Deliberately not a durable listing: the store's summaries carry no
-        principal, so a list built from them could not be scoped, and one that is
-        not scoped is worse than one that is absent.
+        This listing used to be live-only and said why: `SessionSummary` carried no
+        principal, so a durable list could not be scoped. M23 fixed the summary, so the
+        reason is gone and so is the limitation — which matters after a restart, when a
+        browser that reconnects is looking at a registry that knows nothing.
+
+        Two bounds, both deliberate. Only summaries whose principal matches are opened,
+        and at most `DURABLE_SCAN` of them are read: a summary carries no events, so
+        telling a task from a chat means reading the log, and a listing must not turn
+        into "read every session on disk".
         """
+        live = await self.live_views(principal)
+        seen = {str(view.session_id) for view in live}
+        store = getattr(self._root, "sessionPersistence", None)
+        if store is None:
+            return live
+        page = await store.summaries(limit=DURABLE_SCAN)
+        durable: list[TaskView] = []
+        opened = 0
+        for summary in page.items:
+            if summary.principal != principal or str(summary.session_id) in seen:
+                continue
+            if opened >= DURABLE_SCAN:
+                break
+            opened += 1
+            events = [event async for event in store.read(summary.session_id)]
+            view = self._from_events(
+                events, sid=summary.session_id, live=False, started=False, ticket_id=""
+            )
+            if view is not None:
+                durable.append(view)
+        return live + tuple(durable)
+
+    async def live_views(self, principal: str) -> tuple[TaskView, ...]:
+        """The tasks this process is running, for this principal."""
         views: list[TaskView] = []
         for live in self._registry.visible_to(principal):
             view = self._from_events(

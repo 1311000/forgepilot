@@ -369,6 +369,11 @@ class SessionSummary:
     event_count: int = 0
     title: str = ""
     tenant: str = ""
+    #: Who opened the session, copied from the header. It is here so a **listing** can be
+    #: scoped: without it, a list built from summaries either shows every principal's
+    #: sessions or cannot be built at all, and the API spent two eras choosing the second.
+    #: Empty means the store could not say — treated as "not yours", never as "everyone's".
+    principal: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +441,15 @@ class SessionStore(Protocol):
         """
         ...
 
-    async def summaries(self, *, limit: int = 50, cursor: str | None = None) -> Page: ...
+    async def summaries(self, *, limit: int = 50, cursor: str | None = None) -> Page:
+        """A page of session headers, **newest first**.
+
+        The order is part of the contract rather than an accident of storage: a listing
+        exists to find what just happened, and a store that returned its oldest sessions
+        first would make every caller reverse it (or, as happened here, no one call it).
+        ``cursor`` is opaque to the caller and means "continue where the last page
+        stopped" under that order.
+        """
+        ...
 
     async def delete(self, session_id: SessionId) -> None: ...

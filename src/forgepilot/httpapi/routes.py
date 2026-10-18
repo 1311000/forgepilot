@@ -150,10 +150,15 @@ def build_router(
 
     @router.get("/tasks")
     async def list_tasks(cred=Depends(who)) -> dict[str, Any]:
-        """The tasks this process is running. Not a durable listing: the store's
-        summaries do not carry a principal, and an unscoped list is worse than a
-        short one that is honest about its scope."""
-        views = await tasks.live_views(str(cred.principal.principal_id))
+        """Every task this principal can see, newest first.
+
+        Live ones come from the registry, and the rest from the log: `task_id` is a
+        session id, so the store's headers are the index. The listing is scoped by
+        principal (the header answers "is this yours?"), which is why it can be
+        durable at all — and why a session that is not a task is filtered out by
+        reading its log rather than by trusting a flag.
+        """
+        views = await tasks.views(str(cred.principal.principal_id))
         return {"tasks": [view.to_payload() for view in views]}
 
     @router.get("/tasks/{task_id}")
