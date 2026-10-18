@@ -367,3 +367,24 @@ from the returned value — the repository's own principle, so only the binding 
 seven `B008` findings are FastAPI's documented `Depends(...)` idiom, declared precisely
 through `flake8-bugbear.extend-immutable-calls` rather than waived wholesale.
 
+## M21: a workflow file that parses and is still rejected
+
+The weekly `evals` job was written with `FORGEPILOT_HOME` and `FORGEPILOT_TMP` in
+`jobs.evals.env`, computed from `${{ runner.temp }}`. **A YAML parser accepts that and GitHub
+does not**: the `runner` context is not available at job level, so every push afterwards
+produced a **red run with zero jobs** — `gh run view` prints *"This run likely failed because
+of a workflow file issue"* and there is no log to read, because no job ever started. The
+sentence GitHub only gives on a *dispatch* is the useful one:
+
+```
+HTTP 422: Invalid Argument - failed to parse workflow:
+(Line: 350, Col: 24): Unrecognized named-value: 'runner'.
+Located at position 1 within expression: runner.temp
+```
+
+The fix is one step that exports both variables through `$GITHUB_ENV`, where `RUNNER_TEMP`
+is an ordinary shell variable. The lesson is about what a local check can prove: `yaml.safe_load`
+answers "is this well-formed", and the question GitHub asks is "are these names in scope here".
+Only `gh workflow run` asks the second one, so **a new job is not verified until it has been
+dispatched at least once** — the push gate cannot speak for a job whose `if:` excludes pushes.
+

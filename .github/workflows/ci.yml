@@ -340,17 +340,23 @@ jobs:
   # this harness claims to distinguish are still distinguished after a week of changes.
   #
   # `FORGEPILOT_HOME` points outside the checkout so the session stores and workspaces the
-  # run creates land in `runner.temp`; `FORGEPILOT_TMP` pins `tempfile` for the same reason
-  # M15 pinned it. The results file lands in `evals/results/`, which is gitignored, and is
-  # uploaded on failure only — a green run's artifact is the log.
+  # run creates land in `RUNNER_TEMP`; `FORGEPILOT_TMP` pins `tempfile` for the same reason
+  # M15 pinned it. Both are exported by a step rather than written into `jobs.<id>.env`,
+  # because **the `runner` context does not exist there** — GitHub rejects the file with
+  # `Unrecognized named-value: 'runner'` at parse time, which is a red run with **zero
+  # jobs** rather than a failing step. A local `yaml.safe_load` accepts it; only a
+  # `workflow_dispatch` says why. The results file lands in `evals/results/`, which is
+  # gitignored, and is deliberately not uploaded: a green run's artifact is this log.
   evals:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
-    env:
-      FORGEPILOT_HOME: ${{ runner.temp }}/forgepilot-home
-      FORGEPILOT_TMP: ${{ runner.temp }}/forgepilot-workspaces
     steps:
       - uses: actions/checkout@v4
+
+      - name: state outside the checkout
+        run: |
+          echo "FORGEPILOT_HOME=$RUNNER_TEMP/forgepilot-home" >> "$GITHUB_ENV"
+          echo "FORGEPILOT_TMP=$RUNNER_TEMP/forgepilot-workspaces" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
