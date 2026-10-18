@@ -1,0 +1,137 @@
+# Deployment: one image, one process, one TLS terminator
+
+This note is about running ForgePilot as **a service** rather than as a local CLI
+— the container, what it needs, and the two properties (shutdown and
+single-replica) that a browser and an orchestrator can each notice.
+
+The seams are unchanged. A deployment that needs a different ticket source, repo
+host, retriever or identity provider replaces a *row* in a bundle; nothing here
+is a code branch for production.
+
+## What the image is
+
+`Dockerfile` is two stages:
+
+- **build** installs the package and its `web` extra into wheels;
+- **runtime** installs *only* those wheels, so what reaches production is the set
+  the build resolved rather than whatever pip finds on rebuild day.
+
+Then it stops:
+
+- it runs as uid **10001** (`forgepilot`), because the sandbox's boundary is the
+  workspace and a root process has already escaped it;
+- `FORGEPILOT_HOME=/data`, on a **volume**, because the serve lock and the
+  distillation watermark are durable state and a container that loses them on
+  restart can start twice;
+- `ripgrep` is installed, because the default retriever shells out to the real
+  `rg` and deliberately has no Python fallback — without it the image boots and
+  every `code_search` fails at the first tool call;
+- the `HEALTHCHECK` asks `GET /healthz`, not the port, so a container that bound
+  a socket but failed to assemble the app is **unhealthy** rather than "starting"
+  forever.
+
+`configs/` is baked in. That is what makes `--dump-config` and `--boot` in a
+container answer the same question they answer on a laptop: *which composition is
+running*.
+
+## The single-replica rule, enforced rather than documented
+
+`httpapi/registry.py` holds sessions in process memory. Two replicas over one
+workspace each hold half the sessions and can stream only their own — a split
+brain that looks like a working deployment until someone reconnects.
+
+So `runtime/serve_lock.py` takes an advisory lock at
+`$FORGEPILOT_HOME/serve.lock` before serving, and a second process **fails to
+start** with the path and the recorded pid:
+
+```
+error: another ForgePilot is already serving this workspace: the lock
+/data/serve.lock is held by pid 41. One process owns the session registry; run
+two replicas only once the registry is shared.
+```
+
+Two things about that lock are load-bearing:
+
+- **correctness comes from the kernel, not from the file.** A pid file survives a
+  `kill -9` and needs a human to decide whether the pid is real; an `flock`/
+  `LockFile` is released when the holder exits, however it exits.
+- **the pid lives outside the locked region.** On Windows a byte-range lock also
+  denies *reads* of the bytes it covers, so a pid written at offset 0 is
+  unreadable by exactly the process that wants to report it. It is written at the
+  start of the file and the locked byte sits at offset 4096.
+
+`deploy/compose.yaml` therefore has no `deploy.replicas` key on `api`. Scaling
+past one process is a **design change** — a shared registry and a message bus —
+not a flag, and the lock exists so that the change cannot be skipped by accident.
+
+## Shutdown: streams end, new work is refused
+
+uvicorn's order is: stop accepting, wait for in-flight connections, *then* run the
+ASGI lifespan shutdown. An SSE stream has no reason to finish, so that middle step
+is the graceful-shutdown timeout long at best (unbounded by default). A workbench
+tab left open would turn `Ctrl-C` — or a rolling deploy's `SIGTERM` — into a hang.
+
+The signal handler therefore raises the flag **before** uvicorn waits
+(`cli/main.py::_end_streams_on_signals`), and the consequences are:
+
+| What | Behaviour | Why |
+|---|---|---|
+| SSE stream | ends *cleanly*, no synthetic final event | the client reconnects with `Last-Event-ID`; inventing an event would put something in the UI the log never said |
+| `POST …/messages`, `POST /tasks` | `503` | not `409`: nothing is busy about the session, and another replica could accept it |
+| an approval waiting on a human | released as `UNAVAILABLE` | every consumer already reads that as "no", so the turn takes its ordinary refusal path and the log records a refusal rather than a mystery cancellation |
+| `GET /healthz` | still `200` | the drain must finish *before* the load balancer removes the instance; erroring first cuts streams at the proxy instead of ending them |
+
+`timeout_graceful_shutdown` (15 s by default, `httpapi.shutdown_timeout` in the
+profile) is a backstop for a stuck *reply*, not the mechanism.
+
+## Metrics
+
+`GET /metrics` speaks the Prometheus text format (`text/plain; version=0.0.4`).
+
+- **Counts, in route templates.** `/sessions/{session_id}` is one series;
+  a scanner probing `/.env`, `/nope-1`, `/nope-2` lands in one `unmatched` series.
+- **Gauges are read at scrape time** from the registry that owns the truth —
+  `forgepilot_sessions_live`, `forgepilot_turns_running`,
+  `forgepilot_approvals_pending`. A pushed gauge is the one that silently stops
+  falling.
+- **No identifiers.** No tenant, principal, session or ticket in a label, which is
+  also why the endpoint is deliberately unauthenticated: every number is a count,
+  and a scrape endpoint that needs a credential is one a monitoring system cannot
+  be given safely. The moment a label names a tenant, that stops being true and
+  the handler has to grow an authorisation check in the same change.
+- **No latency histogram.** Buckets should be chosen from measured traffic, and
+  per-turn token counts already live in the session log, which is this platform's
+  record. A second copy in a metric is a second thing to keep in sync.
+
+## What the deployment needs
+
+| Variable | Required | What it is |
+|---|---|---|
+| `FORGEPILOT_DEV_TOKENS` | yes (until OIDC lands) | JSON array of principals — see `api-and-workbench.md` |
+| `FORGEPILOT_SIGNING_KEY` | yes | HMAC key for `ExecutionConstraints`; rotating it invalidates in-flight constraints by design |
+| `FORGEPILOT_HOME` | yes (image sets `/data`) | durable state: serve lock, watermarks |
+| `FORGEPILOT_TMP` | recommended | where worktrees are created; must be writable and **outside** the served checkout |
+| `FORGEPILOT_LLM_API_KEY` / `_BASE_URL` / `_MODEL` | for a real model | without them, the replay provider answers deterministically and the server still serves |
+| `FORGEPILOT_GITHUB_TOKEN` | to publish | `repo` scope; without it a task ends at `READY` (draft) rather than `DELIVERED` |
+| `SITE_ADDRESS`, `ACME_EMAIL` | for `deploy/` | the proxy's hostname; `localhost` uses Caddy's internal CA |
+
+Prerequisites that are not variables:
+
+- **A project directory with `project.yaml`** mounted at `/workspace`. Chat works
+  without one; task mode answers `409` naming the file, which is the designed
+  behaviour rather than a missing default. The compose default points at
+  `examples/stat-fix` as a *demonstration*, and that example's `test:` lines name
+  `FORGEPILOT_PYTHON` — it needs `prepare_repo.py` run first (see its README), so
+  a first container run should mount a project whose checks can actually run
+  rather than the example.
+- **`kernel.apparmor_restrict_unprivileged_userns=0` on Ubuntu 24.04+**, or the
+  sandbox refuses to build its boundary — see `gates-on-linux.md`. On the pinned
+  `ubuntu-22.04` base no host change is needed.
+- **ripgrep** for `code_search` (in the image).
+
+## What is deliberately not here
+
+Kubernetes manifests, a Postgres-backed session registry, OIDC/SSO (the static
+token table is still the only identity provider), and the enterprise retrieval
+index. Each is a seam that a deployment plugs into, not a gap in the seams — the
+list is in `CLAUDE.md` under the tracks still unstarted.

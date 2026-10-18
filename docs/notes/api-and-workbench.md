@@ -48,4 +48,33 @@ Two smaller things, both consequences of reusing what exists:
 
 `SessionSummary` carries no `principal`, so `GET /tasks` (the list) is deliberately **this process's live tasks only**. A durable list filtered by principal would need the summary to carry it; an unfiltered one would show other tenants' ids. The short list is the honest one, and it says so in the route.
 
+## M20 — the process became stoppable and countable
+
+Three things about the *process* rather than the API, and each was a real
+behaviour a browser or an orchestrator would have hit:
+
+- **A stream must end when the server goes away.** uvicorn waits for in-flight
+  connections before it runs the lifespan shutdown, and an SSE stream has no
+  reason to finish — so a workbench tab turned `Ctrl-C` into a hang for the
+  graceful-shutdown timeout, which is unbounded by default. The signal handler
+  now raises the registry's stop flag itself (`cli/main.py::_end_streams_on_signals`),
+  the SSE tail races `queue.get()` against that event, and the client reconnects
+  with `Last-Event-ID` because the cursor stays valid. A refused turn answers
+  **503** (not 409: nothing is busy, another replica could accept), and a waiting
+  approval is released as `UNAVAILABLE` so the turn records its ordinary refusal.
+- **`/metrics` is aggregate-only, and that is why it needs no credential.** Labels
+  are route templates, so a scanner probing `/.env`, `/nope-1`, `/nope-2` lands in
+  one `unmatched` series; the gauges (`sessions_live`, `turns_running`,
+  `approvals_pending`) are read at scrape time from the registry that owns the
+  truth, because a pushed gauge is the one that silently stops falling. No
+  histogram: buckets should come from measured traffic, and token counts already
+  live in the session log.
+- **One server per state directory.** The registry is process memory, so a second
+  process would hold half the sessions; `runtime/serve_lock.py` refuses it, with
+  the path and the pid in the message. `deploy/compose.yaml` therefore has no
+  `replicas` key on `api` — scaling past one process is a design change (shared
+  registry and a bus), not a flag.
+
+The container, the proxy and the environment table are in `deployment.md`.
+
 

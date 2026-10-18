@@ -73,11 +73,17 @@ ast = [
 forgepilot = "forgepilot.cli.main:main"
 
 [tool.hatch.build.targets.wheel]
+# The package *is* `src/forgepilot`, and hatchling already ships every file under
+# it — Python, and the in-tree bundle YAML alike. A `force-include` mapping
+# `src/forgepilot/bundles` to `forgepilot/bundles` used to sit below this line and
+# was wrong twice over: it mapped a directory the package already contained, and
+# current hatchling refuses that outright —
+#   ValueError: A second file is being added to the wheel archive at the same
+#   path: `forgepilot/bundles/base/patch.yaml`.
+# Every non-editable install died on it, including the container build. Verified
+# by building the wheel and listing it: `forgepilot/bundles/base/patch.yaml` is
+# present without the mapping.
 packages = ["src/forgepilot"]
-
-# The in-tree bundles are data, not code; they must ship with the package.
-[tool.hatch.build.targets.wheel.force-include]
-"src/forgepilot/bundles" = "forgepilot/bundles"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

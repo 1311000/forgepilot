@@ -24,7 +24,13 @@ from typing import Any
 from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
 from forgepilot.seams.refs import SessionId
 
-__all__ = ["SessionNotFound", "SessionBusy", "SessionRegistry", "PendingApproval"]
+__all__ = [
+    "PendingApproval",
+    "SessionBusy",
+    "SessionNotFound",
+    "SessionRegistry",
+    "SessionStopping",
+]
 
 
 def _report_failure(live: LiveSession):
@@ -67,6 +73,15 @@ class SessionBusy(RuntimeError):
     Refused rather than queued: one session has one runner, and two overlapping
     turns would interleave in the log — the ordering authority the whole design
     rests on.
+    """
+
+
+class SessionStopping(RuntimeError):
+    """The process is shutting down, so it accepts no new work.
+
+    A distinct error from :class:`SessionBusy` because it is not a property of
+    the session: retrying the same request against a live sibling replica would
+    succeed, and a client that saw 409 would reasonably conclude otherwise.
     """
 
 
@@ -117,6 +132,12 @@ class SessionRegistry:
     approval_timeout: float = 300.0
     sessions: dict[SessionId, LiveSession] = field(default_factory=dict)
     approvals: dict[str, PendingApproval] = field(default_factory=dict)
+    #: Set once, at shutdown. Read by the SSE tail so a stream ends *now* rather
+    #: than when the next event happens to arrive.
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Optional counter sink. Present so the numbers come from the object that
+    #: owns the truth rather than from a call site that could be forgotten.
+    metrics: Any = None
 
     # -- sessions ----------------------------------------------------------
     def add(self, runtime: Any, *, principal: str) -> LiveSession:
@@ -144,14 +165,38 @@ class SessionRegistry:
         """
         if live.running:
             raise SessionBusy(str(live.session_id))
+        if self.stopping.is_set():
+            raise SessionStopping("the server is shutting down")
         task = asyncio.create_task(factory())
         live.task = task
+        if self.metrics is not None:
+            self.metrics.counter(
+                "forgepilot_turns_started_total", "Turns started, chat and task."
+            )
         # Retrieve the exception. The loop already closed the turn in the log —
         # this is about the *process*: an unretrieved task exception is reported
         # as a warning at collection time, or not at all, and a background turn
         # that died is exactly the thing nobody would otherwise notice.
         task.add_done_callback(_report_failure(live))
         return task
+
+    def stop(self) -> None:
+        """Begin shutdown: refuse new turns, and stop waiting on humans.
+
+        Two things have to happen before :meth:`close` cancels anything, because
+        a cancellation that arrives while a turn is *blocked on an approval*
+        leaves the turn's own `finally` handling to explain a "the server went
+        away" that never reached the log. Releasing the questions as
+        ``UNAVAILABLE`` first lets the turn take its ordinary refusal path, which
+        the log already knows how to record.
+
+        Synchronous on purpose: it is called from the ASGI lifespan, where an
+        ``await`` before cancelling would give in-flight turns another chance to
+        start yet another approval.
+        """
+        self.stopping.set()
+        for request_id in list(self.approvals):
+            self.answer(request_id, ApprovalOutcome.UNAVAILABLE)
 
     async def close(self) -> None:
         """Cancel in-flight turns and close every session."""

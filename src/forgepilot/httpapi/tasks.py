@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.errors import ForgePilotError
-from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry
+from forgepilot.httpapi.registry import (
+    SessionNotFound,
+    SessionRegistry,
+    SessionStopping,
+)
 from forgepilot.seams.refs import SessionId, TicketId
 from forgepilot.seams.session import EventKind
 
@@ -113,12 +117,14 @@ class TaskService:
         project: Any,
         workspace_root: Path | None,
         project_configured: bool,
+        metrics: Any = None,
     ) -> None:
         self._root = root
         self._registry = registry
         self._project = project
         self._workspace_root = workspace_root
         self._project_configured = project_configured
+        self._metrics = metrics
         # Which ticket a live session is for, before its first event exists. The
         # durable answer is the `ticket` field of the opening `task/state`; this
         # only covers the seconds between `POST /tasks` and that event.
@@ -162,7 +168,18 @@ class TaskService:
 
         live = self._registry.add(runtime, principal=str(cred.principal.principal_id))
         self._started[live.session_id] = wanted
-        self._registry.start_turn(live, lambda: self._run(live, ticket, cred))
+        try:
+            self._registry.start_turn(live, lambda: self._run(live, ticket, cred))
+        except SessionStopping as exc:
+            # The session was assembled a moment too late, and it will never run.
+            # Dropping it keeps `GET /sessions` honest about there being work.
+            self._started.pop(live.session_id, None)
+            self._registry.sessions.pop(live.session_id, None)
+            raise TaskRefused(503, str(exc)) from exc
+        if self._metrics is not None:
+            self._metrics.counter(
+                "forgepilot_tasks_started_total", "Tasks accepted, one per ticket."
+            )
         return str(live.session_id)
 
     async def _run(self, live: Any, ticket: Any, cred: Any) -> None:

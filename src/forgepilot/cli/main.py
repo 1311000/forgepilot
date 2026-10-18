@@ -469,6 +469,56 @@ def _sandbox_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def _state_directory() -> Path:
+    """Where durable, machine-local state lives: ``$FORGEPILOT_HOME``.
+
+    The same directory the watermark store defaults to and the env-file loader
+    reads, so there is one answer to "where does this installation keep its
+    files" rather than one per feature.
+    """
+    import os
+
+    home = os.environ.get("FORGEPILOT_HOME")
+    return Path(home) if home else Path.home() / ".forgepilot"
+
+
+def _end_streams_on_signals(server: Any, app: Any) -> None:
+    """Make a signal end SSE streams *before* uvicorn waits for connections.
+
+    uvicorn's shutdown order is: stop accepting, wait for in-flight connections,
+    then run the ASGI lifespan shutdown. An event stream never finishes on its
+    own, so that middle step is the graceful-shutdown timeout long at best and
+    unbounded by default — a page with the workbench open would turn ``Ctrl-C``
+    into a hang. The registry's stop flag is therefore set from the signal
+    handler itself, which runs before the wait; the lifespan then does the
+    cancelling.
+
+    uvicorn's own handlers are disabled rather than wrapped: installing both
+    means the second one to run sees ``should_exit`` already set and the stream
+    flag may never be raised.
+    """
+    import asyncio
+    import signal as signals
+
+    registry = getattr(app.state, "registry", None)
+    loop = asyncio.get_running_loop()
+
+    def handle(sig: int, frame: Any) -> None:
+        if registry is not None:
+            registry.stop()
+        server.handle_exit(sig, frame)
+
+    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+    for sig in (signals.SIGINT, signals.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, handle, sig, None)
+        except (NotImplementedError, RuntimeError):
+            # Windows: the loop has no signal support, and a real handler on the
+            # main thread is the only option. It runs between bytecodes, in the
+            # thread that owns the loop, so `Event.set` is safe here.
+            signals.signal(sig, handle)
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Boot the profile and serve the HTTP/SSE API.
 
@@ -531,6 +581,8 @@ def _serve(args: argparse.Namespace) -> int:
     async def run() -> int:
         import uvicorn
 
+        from forgepilot.runtime.serve_lock import AlreadyServing, hold
+
         root = create_root()
         try:
             await resolved.materialize_async(root)
@@ -541,11 +593,40 @@ def _serve(args: argparse.Namespace) -> int:
         # Built here, on a context held as a value: see `httpapi/app.py` for why
         # this is not a method on the plugin.
         app = build_app(root, workspace_root=workspace, approval_timeout=timeout)
-        print(f"serving on http://{host}:{port}/   workspace {workspace}", file=sys.stderr)
-        print("Ctrl-C to stop", file=sys.stderr)
-        await uvicorn.Server(
-            uvicorn.Config(app, host=host, port=port, log_level="info")
-        ).serve()
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level="info",
+                # A backstop, not the mechanism: the streams end because the
+                # signal handler sets the registry's stop flag, and this bounds
+                # how long a *reply* that is still in flight may take. Without any
+                # bound, one stuck client makes `SIGTERM` mean "hang".
+                timeout_graceful_shutdown=float(
+                    row.config.get("shutdown_timeout", 15.0)
+                ),
+            )
+        )
+        _end_streams_on_signals(server, app)
+        try:
+            with hold(_state_directory()):
+                print(
+                    f"serving on http://{host}:{port}/   workspace {workspace}",
+                    file=sys.stderr,
+                )
+                print("Ctrl-C to stop", file=sys.stderr)
+                await server.serve()
+        except AlreadyServing as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(
+                f"error: cannot take the serve lock ({exc}). Set FORGEPILOT_HOME to a "
+                f"writable directory.",
+                file=sys.stderr,
+            )
+            return 2
         return 0
 
     try:

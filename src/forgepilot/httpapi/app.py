@@ -176,21 +176,75 @@ def build_app(
     approval_timeout: float = 300.0,
 ) -> Any:
     """Assemble the ASGI app around a booted container."""
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
+    from contextlib import asynccontextmanager
 
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse, PlainTextResponse
+
+    from forgepilot.httpapi.metrics import CONTENT_TYPE, Metrics
     from forgepilot.httpapi.registry import SessionRegistry
     from forgepilot.httpapi.routes import ApiError, build_router
 
     project, policy = resolve_project(workspace_root)
-    registry = SessionRegistry(root=root, approval_timeout=approval_timeout)
+    metrics = Metrics()
+    registry = SessionRegistry(root=root, approval_timeout=approval_timeout, metrics=metrics)
     # The approval service holds one answerer for the process. Installing it here
     # — once, at assembly — is what makes an approval raised by *any* session
     # reachable by the request that knows its id.
     registry.install()
 
-    app = FastAPI(title="ForgePilot", version="0.0.1")
+    # Gauges read the registry at scrape time, so a number cannot be stale: the
+    # sessions dict *is* the live set, and a counter kept beside it would be the
+    # second copy that drifts.
+    metrics.gauge(
+        "forgepilot_sessions_live",
+        "Sessions this process holds in memory.",
+        lambda: len(registry.sessions),
+    )
+    metrics.gauge(
+        "forgepilot_turns_running",
+        "Turns currently running.",
+        lambda: sum(1 for live in registry.sessions.values() if live.running),
+    )
+    metrics.gauge(
+        "forgepilot_approvals_pending",
+        "Approval questions waiting for a human.",
+        lambda: len(registry.approvals),
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: Any):
+        # Nothing to do on startup: the container is already booted, and
+        # lazily doing it here would make the first request the one that
+        # discovers a broken profile.
+        yield
+        # Order matters. `stop()` refuses new turns and releases approval
+        # questions so a turn blocked on a human takes its ordinary refusal
+        # path; `close()` then cancels whatever is still running and closes the
+        # sessions. Reversed, a cancellation lands inside `ask()` and the log
+        # loses the reason.
+        registry.stop()
+        await registry.close()
+
+    app = FastAPI(title="ForgePilot", version="0.0.1", lifespan=lifespan)
     app.state.registry = registry
+    app.state.metrics = metrics
+
+    @app.middleware("http")
+    async def _count(request: Request, call_next: Any):
+        try:
+            response = await call_next(request)
+        except Exception:
+            # A failed request is still a request. Counting it here is the only
+            # place that sees it: the exception handler runs *inside* FastAPI's
+            # own middleware, so a 500 raised below never reaches this function
+            # as a response.
+            route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+            metrics.observe_request(request.method, route, 500)
+            raise
+        route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+        metrics.observe_request(request.method, route, response.status_code)
+        return response
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
@@ -204,12 +258,26 @@ def build_app(
             policy=policy,
             project=project,
             project_configured=has_project(workspace_root),
+            metrics=metrics,
         )
     )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def prometheus() -> Any:
+        """Aggregates only, and deliberately unauthenticated.
+
+        Every number here is a count of things, with no tenant, principal,
+        session or ticket in a label — so there is nothing to leak that the
+        process's own logs do not already say, and a scrape endpoint that needs a
+        credential is one a monitoring system cannot be given safely. The moment
+        a label names a tenant that stops being true, and this handler has to
+        grow an authorisation check in the same change.
+        """
+        return PlainTextResponse(metrics.render(), media_type=CONTENT_TYPE)
 
     # The workbench. Served from the package rather than a directory in the
     # repository, so an installed ForgePilot has a UI — and deliberately **not**

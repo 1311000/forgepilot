@@ -1,0 +1,33 @@
+# What does not belong in the build context.
+#
+# The .venv is the big one: it is a local interpreter, it is gitignored, and
+# copying it would produce an image whose dependency set is *this machine's*
+# rather than the one pyproject declares — the difference between a build that
+# reproduces and one that only worked once.
+.git
+.venv
+.tmp
+.env
+.env.*
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+dist
+build
+*.egg-info
+# Tests, evals and their fixtures are excluded from the image on purpose: they
+# need a real ripgrep, real checkouts and a writable scratch tree, and shipping
+# them would put a test's deliberately broken fixture inside a production image.
+tests
+evals
+tools
+docs
+examples
+# The deployment files themselves: compose and the Caddyfile are read from the
+# host by the orchestrator, not from inside the image.
+deploy
+Dockerfile
+.dockerignore

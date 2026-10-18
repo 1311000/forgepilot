@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.errors import ForgePilotError
-from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry
+from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry, SessionStopping
 from forgepilot.httpapi.sse import LostStream, tail_session
 from forgepilot.seams.approval import ApprovalOutcome
 from forgepilot.seams.refs import AgentId, Mode, SessionId
@@ -62,6 +62,7 @@ def build_router(
     policy: Any = None,
     project: Any = None,
     project_configured: bool = False,
+    metrics: Any = None,
 ):
     """Build the FastAPI router.
 
@@ -88,6 +89,7 @@ def build_router(
         project=project,
         workspace_root=workspace_root,
         project_configured=project_configured,
+        metrics=metrics,
     )
 
     # -- sessions ----------------------------------------------------------
@@ -193,7 +195,12 @@ def build_router(
         # stream that will never say anything. Failing while the caller is still
         # listening turns a silent hang into a 500.
         turn = _prepare_chat(root, live, body.text, project)
-        registry.start_turn(live, lambda: _run_chat_turn(live, turn))
+        try:
+            registry.start_turn(live, lambda: _run_chat_turn(live, turn))
+        except SessionStopping as exc:
+            # 503 rather than 409: nothing about this session is busy, and a
+            # client that retried against another replica could succeed.
+            raise ApiError(503, str(exc)) from exc
         return {"accepted": True, "sessionId": str(live.session_id)}
 
     @router.get("/sessions/{session_id}/events")
@@ -214,13 +221,24 @@ def build_router(
         cursor = _cursor(last_event_id, after)
 
         async def stream():
+            if metrics is not None:
+                metrics.counter(
+                    "forgepilot_streams_opened_total", "Event streams opened."
+                )
             try:
-                async for frame in tail_session(live.session, after=cursor):
+                async for frame in tail_session(
+                    live.session, after=cursor, stopping=registry.stopping
+                ):
                     yield frame
             except LostStream as exc:
                 # Say so rather than closing silently: the client's cursor is
                 # still valid, so reconnecting replays exactly what it missed.
                 yield {"event": "stream/lost", "data": str(exc)}
+            finally:
+                if metrics is not None:
+                    metrics.counter(
+                        "forgepilot_streams_closed_total", "Event streams closed."
+                    )
 
         return EventSourceResponse(stream())
 

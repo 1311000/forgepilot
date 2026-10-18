@@ -1,0 +1,72 @@
+# One API process and one TLS terminator.
+#
+# ⚠️ **`replicas` is not a knob here, and the API service has no `deploy.replicas`
+# key on purpose.** The session registry is in-process state, so a second replica
+# would hold half of the sessions and be unable to stream the other half. The
+# serve lock in the image refuses the second process over one state volume; the
+# answer when this needs more than one box is a shared registry and a bus, which
+# is a design change rather than a flag.
+#
+# `docker compose up` needs exactly two variables from the environment (or a
+# neighbouring `.env`):
+#
+#   FORGEPILOT_DEV_TOKENS   the JSON array of principals (see docs/notes/api-and-workbench.md)
+#   FORGEPILOT_SIGNING_KEY  the HMAC key for ExecutionConstraints
+#
+# Everything the model needs is optional and empty by default, so a compose up
+# with no model credentials still serves chat over the replay provider — it just
+# cannot answer anything.
+
+name: forgepilot
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: forgepilot:local
+    restart: unless-stopped
+    environment:
+      FORGEPILOT_HOME: /data
+      FORGEPILOT_TMP: /data/workspaces
+      FORGEPILOT_DEV_TOKENS: ${FORGEPILOT_DEV_TOKENS:?FORGEPILOT_DEV_TOKENS must be set}
+      FORGEPILOT_SIGNING_KEY: ${FORGEPILOT_SIGNING_KEY:?FORGEPILOT_SIGNING_KEY must be set}
+      FORGEPILOT_LLM_API_KEY: ${FORGEPILOT_LLM_API_KEY:-}
+      FORGEPILOT_LLM_BASE_URL: ${FORGEPILOT_LLM_BASE_URL:-}
+      FORGEPILOT_LLM_MODEL: ${FORGEPILOT_LLM_MODEL:-}
+      FORGEPILOT_GITHUB_TOKEN: ${FORGEPILOT_GITHUB_TOKEN:-}
+    volumes:
+      # Durable state: the serve lock, session watermarks, whatever the profile
+      # is told to keep. Named, so a `compose down` keeps it and a `compose down
+      # -v` is the only thing that deletes it.
+      - state:/data
+      # The project the server serves. Read-write because task mode creates
+      # worktrees beside the checkout; point it at a project directory.
+      - ${FORGEPILOT_WORKSPACE:-../examples/stat-fix}:/workspace
+    expose:
+      - "8000"
+    # The image's own HEALTHCHECK is inherited; this repeats it at the compose
+    # level so `docker compose ps` shows the state without an extra inspect.
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # `localhost` gets Caddy's internal CA; a real hostname gets ACME and needs
+      # `ACME_EMAIL` set. See the Caddyfile for what changes between the two.
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  state:
+  caddy_data:
+  caddy_config:

@@ -78,8 +78,8 @@ def run(label: str, argv: list[str]) -> bool:
     return True
 
 
-def working_tree() -> set[str] | None:
-    """What `git status` says changed, or `None` when git cannot answer.
+def untracked_files() -> set[str] | None:
+    """Files `git status` reports as untracked, or `None` when git cannot answer.
 
     The rule this serves is already written down — *a test run must not write into
     the repository* — and until now it was defended only by pins on `tmp_path`
@@ -88,6 +88,13 @@ def working_tree() -> set[str] | None:
     how two zero-byte `tmp*` files came to sit at the root of this checkout: nothing
     in the gate was looking. Comparing the tree before the steps with the tree after
     them is the version of the rule that does not depend on anybody remembering.
+
+    Only *untracked* entries are compared, deliberately. A modified tracked file is
+    visible in `git status` to whoever looks, and a gate cannot tell an editor from
+    a test — comparing modifications would fail a run because somebody saved a note
+    while it was going, which is exactly how this check first reported a leak of its
+    own author's edit. An untracked file is the shape the leak actually takes: a
+    worktree or a cache appearing where nothing was before.
     """
     try:
         completed = subprocess.run(
@@ -101,7 +108,12 @@ def working_tree() -> set[str] | None:
         # still has its other steps; refusing to run because the *check* could not
         # run would make a green run depend on a tool nobody asked for.
         return None
-    return {line for line in completed.stdout.splitlines() if line.strip()}
+    untracked: set[str] = set()
+    for line in completed.stdout.splitlines():
+        status, _, path = line[:2], line[2:3], line[3:]
+        if status == "??" and path.strip():
+            untracked.add(path)
+    return untracked
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,12 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         ("pytest with coverage", [sys.executable, "-m", "pytest", "tests/", "-q", "--cov"])
     )
 
-    before = working_tree()
+    before = untracked_files()
     for label, command in steps:
         if not run(label, command):
             return 1
 
-    after = working_tree()
+    after = untracked_files()
     if before is not None and after is not None:
         leaked = sorted(after - before)
         if leaked:

@@ -1,0 +1,39 @@
+# TLS termination in front of the API, and nothing else.
+#
+# Two things this file is doing that are easy to get wrong:
+#
+# 1. **Streaming is forwarded unbuffered.** The workbench holds an SSE connection
+#    open for the length of a task; a proxy that buffers responses would make the
+#    page look frozen until the task ended, and then deliver every event at once.
+#    `flush_interval -1` means "write through immediately".
+#
+# 2. **`localhost` is not a hostname ACME can issue for.** Caddy's internal CA is
+#    the honest answer for a local run, and a browser will warn about it once.
+#    Set `SITE_ADDRESS` to a real DNS name (and `ACME_EMAIL`) for anything else.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+
+	# The API. `X-Forwarded-*` is what the app would use to reason about the
+	# client; it deliberately does not trust those headers today, so they are
+	# forwarded for logging rather than for authorisation.
+	reverse_proxy api:8000 {
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# No `encode` on purpose. Compression in front of `text/event-stream` is the
+	# classic way to turn a live progress page into a frozen one: the compressor
+	# waits for a block to fill, and the block is `Content-Encoding`-aware only if
+	# the matcher excludes the stream, which is one more thing to get right for a
+	# few kilobytes of JSON.
+
+	log {
+		output stdout
+		format console
+	}
+}

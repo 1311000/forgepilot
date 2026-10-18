@@ -64,6 +64,7 @@ async def tail_session(
     *,
     after: int = 0,
     queue_limit: int = QUEUE_LIMIT,
+    stopping: asyncio.Event | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield frames for every event after ``after``, then keep yielding.
 
@@ -73,6 +74,12 @@ async def tail_session(
     arrived in the gap, and snapshot-then-subscribe alone would lose it. Sequence
     numbers make the two halves exactly separable, which is the dividend of
     having them be contiguous.
+
+    ``stopping`` ends the stream on shutdown instead of leaving it parked on an
+    empty queue until uvicorn's grace period cancels it. Ending is also the
+    honest signal: the client reconnects, and the reconnect either reaches a
+    restarted process (which replays from storage) or fails visibly. A stream
+    that simply stops producing looks identical to one where nothing happened.
     """
     backlog = tuple(e for e in session.events if e.seq > after)
     delivered = max((e.seq for e in backlog), default=after)
@@ -97,7 +104,9 @@ async def tail_session(
             yield frame(event)
 
         while True:
-            event = await queue.get()
+            event = await _next(queue, stopping)
+            if event is None:
+                return
             if overflowed:
                 raise LostStream(
                     f"client fell more than {queue_limit} events behind; reconnect "
@@ -110,3 +119,34 @@ async def tail_session(
             yield frame(event)
     finally:
         unsubscribe()
+
+
+async def _next(queue: asyncio.Queue, stopping: asyncio.Event | None) -> Any | None:
+    """The next event, or ``None`` once shutdown has been asked for.
+
+    Two futures rather than a polling loop, because a timeout would make the
+    shutdown latency a number someone has to guess, and a sleep is the one thing
+    this module has carefully avoided. Whichever finishes first wins; the other
+    is cancelled and awaited so a cancelled ``queue.get`` cannot swallow the
+    event it had already taken.
+    """
+    if stopping is None:
+        return await queue.get()
+
+    getter = asyncio.ensure_future(queue.get())
+    stopper = asyncio.ensure_future(stopping.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {getter, stopper}, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        for task in (getter, stopper):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:  # noqa: BLE001 - cancellation is expected here
+                    pass
+    if stopper in done:
+        return None
+    return getter.result()
