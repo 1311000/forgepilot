@@ -210,6 +210,19 @@ async def test_it_searches_the_working_tree_not_the_configured_checkout(
     assert "src/login.py" in live.content, "the working tree was not searched"
 
 
+async def test_every_answer_says_which_revision_was_searched(rig, checkout) -> None:
+    """A hit the model cannot address is a dead end.
+
+    `code_search` used to render `path:line: text` and drop both the repository and
+    the ref, so the one field `read_code` needs to read what was found never reached
+    the caller — and `seams/retriever.py` is explicit that every hit carries its ref.
+    """
+    outcome = await search(rig, pattern="login")
+
+    assert not outcome.is_error, outcome.content
+    assert f"[served from: {REPO.slug}@" in outcome.content
+
+
 async def test_a_working_tree_that_is_not_there_is_refused(rig, checkout) -> None:
     """Refused, not silently ignored. `read_file` is bounded to the workspace,
     and search has to be too — it is a read primitive by another name.

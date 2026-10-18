@@ -1,0 +1,28 @@
+# Retrieval from an index instead of from a checkout: the enterprise shape, made runnable.
+#
+#   python tools/build_code_index.py --repo git.corp/team/svc-a --root ../svc-a \
+#       --out .tmp/svc-a.index.json
+#
+#   forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/code_index/patch.yaml --chat
+#
+# The row overrides `base`'s ripgrep provider by id — the same `Retriever` seam, a
+# different reach — so `code_search` and `read_code` are unchanged. That is the point of
+# the seam: the corpus moves from "what is checked out" to "what was indexed", and the
+# tools the model uses do not.
+#
+# ⚠️ `index_path` is mandatory and has no default on purpose. A missing index that
+# defaulted to somewhere empty would answer "no match" for every search, which is exactly
+# the confidently-wrong answer `docs/notes/retrieval.md` exists to prevent. The provider
+# raises at load time and names the file.
+#
+# ⚠️ This provider does **not** cover the working tree (`covers_working_tree: false`). A
+# deployment that wants both overlays this bundle on top of the local one by pointing
+# `read_code`/`code_search` at the other provider, or waits for the composite provider
+# the retrieval note describes as the next step. Do not claim the overlay from this row.
+- id: retriever
+  plugin: forgepilot.providers.retrieve.index:CodeIndexRetrieverPlugin
+  config:
+    index_path: .tmp/code.index.json
+    max_hits: 200
+  tier: trusted

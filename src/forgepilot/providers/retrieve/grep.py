@@ -347,7 +347,16 @@ class GrepRetrieverPlugin(PluginService):
                 f"{location.path!r} resolves outside {root}; refusing to read it"
             )
 
-        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        try:
+            lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            # Named the way the caller addressed it, not as an OS error: a model that
+            # asked for `repo:path` gets an answer about `repo:path`, and the message is
+            # the same on every platform (a raw `[Errno 2]` carries a Windows path with
+            # backslashes, which matches nothing the model was shown).
+            raise FileNotFoundError(
+                f"no {location.repo.slug}:{location.path} in the checkout at {root}"
+            ) from None
         start = max(1, span.start)
         end = min(len(lines), span.end) if span.end else len(lines)
         return FileSlice(

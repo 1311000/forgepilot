@@ -141,3 +141,58 @@ that an absent capability should cost you that capability, not the ones you have
 Three separate test rigs failed that way before the split, each with the confusing
 symptom `no such tool: 'read_file'` in a suite that has nothing to do with search.
 
+## M19 — `read_code`, and a corpus that is not a checkout
+
+`Retriever.open` was made correct at M14 (it reads the copy the search saw) and had **no
+caller in `src/`**. That residual is now closed by a consumer rather than by another
+correction: `read_code` (`build_search_definitions`, `Operation.READ_CODE`, effects READ)
+is an agent's way to read a file by **repository path and revision**, with the content
+possibly never checked out.
+
+What the tool adds, and why each part is not decoration:
+
+- **The header names the revision that was served.** `read_code` asks for `WORKING_TREE`
+  by default (an agent editing a checkout has no revision to name), and a retriever may
+  answer from `main`. A slice that does not say which revision it came from is the wrong
+  version of a file, delivered confidently — the failure mode the seam's `ref_to_serve`
+  rule was written for.
+- **`root` is the session's working tree**, exactly as `code_search` passes it. Reading
+  the configured checkout instead answers "what did I just edit?" with pre-edit content.
+- **The repository is chosen from the permitted set**, and an unknown slug gets the same
+  sentence as a forbidden one. "Does this deployment have that repository?" is a probe
+  `read_code` does not answer, for the same reason the API answers 404 for someone else's
+  session.
+- **The default span is 80 lines.** A model that wanted "this file" and received 2 000 has
+  spent its context on a listing; one that wanted a function and received 10 cannot see
+  its guard clause.
+- **`_render_hits` now carries the same two facts** — the repository when more than one is
+  in play, and a `[served from: repo@ref]` line. It was dropping both, so a hit the model
+  found through an index was a dead end: an unaddressable path, with the one field it
+  needed to call `read_code` missing from the answer.
+
+⚠️ **The index provider's `open` had to follow the same labelling rule as its `search`.**
+An index holds committed revisions and cannot serve `<worktree>`, while `read_code` asks
+for the working tree by default; an exact-match `open` would answer "the index has no
+such file" about a file it is holding — the one answer a caller cannot distinguish from
+absence. It now resolves through `ref_to_serve` and returns the ref it served.
+
+**Composition, not code**: `providers/retrieve/index.py` existed and no bundle referenced
+it, so it was test-only. `src/forgepilot/bundles/code_index/patch.yaml` overrides the
+`retriever` row by id — same seam, different reach, `code_search`/`read_code` unchanged —
+and `tools/build_code_index.py` turns a real checkout into its corpus (the provider's own
+fixture is nine lines, and a fixture is not a deployment). Two things the builder does
+that a naive one would not: it records `git rev-parse HEAD` plus `+dirty` rather than a
+branch name, and it refuses a `--root` that is merely *inside* a repository — `git -C
+<subdir> rev-parse` walks up, so a subdirectory would be labelled with the whole
+repository's revision while holding a corner of it.
+
+⚠️ **What is still missing, and must not be claimed from the bundle.** (1) There is no
+composite provider, so a deployment cannot have both an index *and* the working-tree
+overlay at once; `covers_working_tree: false` is the honest capability, and the index
+bundle therefore replaces local retrieval rather than adding to it. (2) The eval task
+whose answer is **only** in the index is still unwritten — the shape that would finally
+price retrieval, since `find-the-rule`'s own note records that `findstr /s` matches
+`code_search` on a local checkout. It still needs a task-level patch row (`EvalTask` has
+`project`, not `patches`), and a field added before its first consumer is the defect this
+repository's table is about.
+

@@ -18,7 +18,6 @@ Two habits are enforced here rather than assumed:
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from forgepilot.runtime.commandline import shell_argv
 from forgepilot.runtime.credentials import resolve_placeholders, scrub_values
 from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
+from forgepilot.seams.refs import CodeRef, LineSpan
 from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.security import Operation, normalise_relative
@@ -71,60 +71,98 @@ def _resolve(root: Path | None, raw: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def build_search_definitions(retriever: Any) -> tuple[ToolDefinition, ...]:
-    """The search tool, bound to a retriever.
+    """The search and read tools, bound to a retriever.
 
     Its own function — and its own plugin — so that a host with no retriever
     loses *search* rather than losing every tool.
     """
-    definitions = [
-            ToolDefinition(
-                name="code_search",
-                description=(
-                    "Search the code for a regular expression (ripgrep syntax). Use it to find "
-                    "where something is defined or used before reading files. Returns file "
-                    "paths by default; ask for `content` to see matching lines."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "regular expression, ripgrep syntax",
-                        },
-                        "output_mode": {
-                            "type": "string",
-                            "enum": list(OUTPUT_MODES),
-                            "description": (
-                                "files_with_matches (default) lists paths only; content shows "
-                                "matching lines; count totals per file"
-                            ),
-                        },
-                        "glob": {
-                            "type": "string",
-                            "description": "restrict to files matching this glob, e.g. 'src/**'",
-                        },
-                        "repo": {
-                            "type": "string",
-                            "description": "restrict to one repository, as 'host/namespace/name'",
-                        },
-                        "max_results": {"type": "integer", "description": "cap; default 100"},
-                    },
-                    "required": ["pattern"],
-                    "additionalProperties": False,
-                },
-                effects=frozenset({ToolEffect.READ}),
-                required_operation=Operation.READ_CODE,
-                execute=lambda call, ctx: _code_search(call, ctx, retriever),
-                # No filesystem targets: a search addresses a repository, not a path,
-                # and reporting the glob as a path would let a path guard reason about
-                # something that is not one.
-                describe_targets=lambda arguments: ResourceTargets(),
+    return (
+        ToolDefinition(
+            name="code_search",
+            description=(
+                "Search the code for a regular expression (ripgrep syntax). Use it to find "
+                "where something is defined or used before reading files. Returns file "
+                "paths by default; ask for `content` to see matching lines."
             ),
-    ]
-    # The retriever is closed over, like the sandbox above.
-    return tuple(
-        replace(definition, execute=lambda call, ctx: _code_search(call, ctx, retriever))
-        for definition in definitions
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "regular expression, ripgrep syntax",
+                    },
+                    "output_mode": {
+                        "type": "string",
+                        "enum": list(OUTPUT_MODES),
+                        "description": (
+                            "files_with_matches (default) lists paths only; content shows "
+                            "matching lines; count totals per file"
+                        ),
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "restrict to files matching this glob, e.g. 'src/**'",
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "restrict to one repository, as 'host/namespace/name'",
+                    },
+                    "max_results": {"type": "integer", "description": "cap; default 100"},
+                },
+                "required": ["pattern"],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.READ}),
+            required_operation=Operation.READ_CODE,
+            execute=lambda call, ctx: _code_search(call, ctx, retriever),
+            # No filesystem targets: a search addresses a repository, not a path,
+            # and reporting the glob as a path would let a path guard reason about
+            # something that is not one.
+            describe_targets=lambda arguments: ResourceTargets(),
+        ),
+        ToolDefinition(
+            name="read_code",
+            description=(
+                "Read a slice of code through the retriever, by repository path and revision — "
+                "not a workspace path. Use it to read a file that `code_search` found outside "
+                "this checkout. The header names the revision that was really served: when it "
+                "differs from the one asked for, the content came from another revision."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "repository-relative path, as `code_search` reported it",
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": (
+                            "host/namespace/name; omit it when exactly one repository is "
+                            "readable, and it is then used"
+                        ),
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": (
+                            "revision to read, e.g. the one `code_search` reported; default is "
+                            "the working tree"
+                        ),
+                    },
+                    "start": {"type": "integer", "description": "first line, 1-based; default 1"},
+                    "end": {"type": "integer", "description": "last line, inclusive"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.READ}),
+            required_operation=Operation.READ_CODE,
+            execute=lambda call, ctx: _read_code(call, ctx, retriever),
+            # A *repository* is the address, so the repo guard gets something to
+            # check. The path is repository-relative: handing it to the path guard
+            # would be answering a workspace question with a repository answer.
+            describe_targets=_targets_repos(retriever, "repo"),
+        ),
     )
 
 #: How results are rendered. The default is the *cheapest* one on purpose: a
@@ -141,6 +179,29 @@ def _targets_paths(*keys: str):
     def describe(arguments: dict[str, Any]) -> ResourceTargets:
         return ResourceTargets(
             paths=tuple(str(arguments[k]) for k in keys if arguments.get(k) is not None)
+        )
+
+    return describe
+
+
+def _targets_repos(retriever: Any, key: str):
+    """A repository named in the arguments, resolved against what the provider covers.
+
+    A slug the provider does not cover becomes an empty tuple rather than a made-up
+    ``RepoRef``: the repo guard then has nothing to check, and the tool body refuses
+    with the same sentence it uses for a repo the principal may not read. The
+    distinction between "does not exist" and "not yours" is deliberately not
+    available here — the same reason the HTTP layer answers 404 for someone else's
+    session.
+    """
+
+    def describe(arguments: dict[str, Any]) -> ResourceTargets:
+        slug = arguments.get(key)
+        if not slug:
+            return ResourceTargets()
+        wanted = str(slug)
+        return ResourceTargets(
+            repos=tuple(repo for repo in retriever.repositories() if repo.slug == wanted)
         )
 
     return describe
@@ -278,23 +339,181 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
 
 
 def _render_hits(hits: tuple[Any, ...], mode: str) -> str:
-    if mode == "content":
-        return "\n".join(f"{h.location.path}:{h.line}: {h.text}" for h in hits)
+    """Render hits, and say which revision and repository they came from.
 
-    if mode == "count":
+    Both are the seam's rule rather than a nicety: "every hit and every slice carries
+    the ref it came from", and a location that does not name its revision cannot be
+    trusted. The consumer was dropping both — a hit from an index was rendered as a
+    bare path, and the one thing the model needs in order to pass that hit to
+    `read_code` (`ref`) never reached it. With more than one repository in the set a
+    bare path is ambiguous as well, so it is qualified; with one, the paths stay short
+    because that is the common case.
+    """
+    multi = len({hit.location.repo for hit in hits}) > 1
+
+    def name(hit: Any) -> str:
+        return f"{hit.location.repo.slug}:{hit.location.path}" if multi else hit.location.path
+
+    if mode == "content":
+        body = "\n".join(f"{name(h)}:{h.line}: {h.text}" for h in hits)
+    elif mode == "count":
         counts: dict[str, int] = {}
         for hit in hits:
-            counts[hit.location.path] = counts.get(hit.location.path, 0) + 1
+            counts[name(hit)] = counts.get(name(hit), 0) + 1
         lines = [f"{path}: {n}" for path, n in sorted(counts.items())]
-        return "\n".join(lines) + f"\n\n{len(hits)} matches in {len(counts)} files"
+        body = "\n".join(lines) + f"\n\n{len(hits)} matches in {len(counts)} files"
+    else:
+        # files_with_matches — the default: names, no match text.
+        seen: dict[str, None] = {}
+        for hit in hits:
+            seen.setdefault(name(hit), None)
+        paths = list(seen)
+        body = f"found {len(paths)} file(s) matching:\n" + "\n".join(paths)
 
-    # files_with_matches — the default: names, no match text.
-    seen: dict[str, None] = {}
-    for hit in hits:
-        seen.setdefault(hit.location.path, None)
-    paths = list(seen)
-    listing = "\n".join(paths)
-    return f"found {len(paths)} file(s) matching:\n{listing}"
+    served = sorted(
+        {f"{hit.location.repo.slug}@{hit.location.ref}" for hit in hits}
+    )
+    # `<worktree>` says "whatever is checked out" and is worth naming too: it tells
+    # the model there is no revision to pass on, which is different from a commit.
+    return body + "\n\n[served from: " + ", ".join(served) + "]"
+
+
+# ---------------------------------------------------------------------------
+# read_code
+# ---------------------------------------------------------------------------
+#: Lines read when the caller names no span. A model that wanted "this file" and
+#: received 2000 lines has spent its context on a listing; one that wanted a
+#: function and received 10 cannot see its guard clause.
+DEFAULT_READ_LINES = 80
+
+
+async def _read_code(call: ToolCall, ctx: ToolContext, retriever: Any) -> ToolOutcome:
+    """Read a slice through the `Retriever` seam — the first consumer of `open`.
+
+    ⚠️ **This is not `read_file`.** `read_file` resolves a *workspace* path and is
+    bounded by the sandbox; `read_code` addresses a *repository* and a revision, and
+    its content may come from an index that was never checked out. The two are
+    different questions and the target deployment needs both: the checkout holds the
+    branch diff, the index holds the 300 GB.
+
+    Three things are deliberate:
+
+    - **The header names the revision that was served**, not the one requested. A
+      retriever may answer from trunk while the caller is on a branch; a slice that
+      does not say which revision it read is the wrong version of a file, delivered
+      confidently. When the two differ the model is told in the same response.
+    - **The repository is chosen from the permitted set**, and an unknown one gets
+      the same sentence as a forbidden one — a probe for which repositories exist is
+      not something this tool should answer.
+    - **`root` is the session's working tree**, like `code_search`: reading the
+      configured checkout instead answers "what did I just edit?" with pre-edit
+      content.
+    """
+    import json
+
+    if not ctx.capabilities.fs_read:
+        raise CapabilityNotGranted("this call was not granted filesystem read")
+
+    try:
+        arguments = json.loads(call.arguments_json or "{}")
+    except json.JSONDecodeError as exc:
+        return ToolOutcome(
+            content=f"arguments are not valid JSON: {exc}", is_error=True, meta={"phase": "args"}
+        )
+
+    path = str(arguments.get("path") or "").strip()
+    if not path:
+        return ToolOutcome(
+            content="`path` is required: give a repository-relative path, as "
+            "`code_search` reported it.",
+            is_error=True,
+            meta={"phase": "args"},
+        )
+
+    permitted = tuple(
+        repo for repo in retriever.repositories() if ctx.constraints.allows_repo(repo)
+    )
+    if not permitted:
+        return ToolOutcome(
+            content="no repository this principal may read is available.",
+            is_error=True,
+            meta={"phase": "args"},
+        )
+
+    wanted_repo = str(arguments.get("repo") or "").strip()
+    if wanted_repo:
+        matching = tuple(repo for repo in permitted if repo.slug == wanted_repo)
+        if not matching:
+            return ToolOutcome(
+                content=f"{wanted_repo!r} is not a repository this principal may read.",
+                is_error=True,
+                meta={"phase": "args"},
+            )
+        repo = matching[0]
+    elif len(permitted) == 1:
+        repo = permitted[0]
+    else:
+        return ToolOutcome(
+            content=(
+                "`repo` is required: this principal may read "
+                + ", ".join(repo.slug for repo in permitted)
+                + "."
+            ),
+            is_error=True,
+            meta={"phase": "args"},
+        )
+
+    ref = str(arguments.get("ref") or WORKING_TREE)
+    try:
+        start = int(arguments.get("start") or 1)
+        end = int(arguments.get("end") or (start + DEFAULT_READ_LINES - 1))
+    except (TypeError, ValueError):
+        return ToolOutcome(
+            content="`start` and `end` must be integers", is_error=True, meta={"phase": "args"}
+        )
+    if start < 1 or end < start:
+        return ToolOutcome(
+            content=f"the span {start}-{end} is not readable; `start` is 1-based and "
+            "must not exceed `end`.",
+            is_error=True,
+            meta={"phase": "args"},
+        )
+
+    location = CodeRef(
+        repo=repo,
+        path=path,
+        ref=ref,
+        root=str(ctx.workspace_root) if ctx.workspace_root else None,
+    )
+    try:
+        slice_ = await retriever.open(location, LineSpan(start, end), ctx.constraints)
+    except PermissionError as exc:
+        return ToolOutcome(content=f"refused: {exc}", is_error=True, meta={"phase": "scope"})
+    except FileNotFoundError as exc:
+        return ToolOutcome(content=str(exc), is_error=True, meta={"phase": "missing"})
+
+    served = slice_.location.ref
+    header = f"{repo.slug}:{slice_.location.path} @ {served} (lines {slice_.span.start}-{slice_.span.end}"
+    header += ", truncated]" if slice_.truncated else "]"
+    note = ""
+    if served != ref:
+        note = (
+            f"\n[asked for {ref!r}; the retriever served {served!r}. "
+            f"The content below is from the revision named in the header.]\n"
+        )
+
+    return ToolOutcome(
+        content=f"{header}\n{note}{slice_.text}",
+        meta={
+            "repo": repo.slug,
+            "path": slice_.location.path,
+            "ref": served,
+            "askedFor": ref,
+            "start": slice_.span.start,
+            "end": slice_.span.end,
+            "truncated": slice_.truncated,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

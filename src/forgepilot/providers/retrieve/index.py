@@ -290,22 +290,42 @@ class CodeIndexRetrieverPlugin(PluginService):
                 f"repo {location.repo.slug!r} is not permitted by the caller's constraints"
             )
 
+        held = {
+            indexed.ref
+            for indexed in self._files
+            if indexed.repo == location.repo and indexed.path == location.path
+        }
+        if not held:
+            raise FileNotFoundError(
+                f"the index has no {location.repo.slug}:{location.path} at any revision"
+            )
+
+        # ⚠️ **The same labelling rule as `search`, for the same reason.** An index
+        # holds committed revisions and cannot serve `<worktree>`, while `read_code`
+        # asks for the working tree by default (an agent editing a checkout has no
+        # revision to name). An exact-match rule here would answer "not there" about a
+        # file this provider is holding — the one answer a caller cannot distinguish
+        # from absence, and the reason `ref_to_serve` exists at all. What it must not
+        # do is stay silent: the returned `FileSlice` names the revision it served, and
+        # `read_code` puts that in the header.
+        ref = ref_to_serve(held, location.ref)
+
         for indexed in self._files:
             if (
                 indexed.repo == location.repo
                 and indexed.path == location.path
-                and indexed.ref == location.ref
+                and indexed.ref == ref
             ):
                 lines = indexed.text.splitlines()
                 start = max(span.start - 1, 0)
                 end = min(span.end, len(lines))
                 return FileSlice(
-                    location=location,
+                    location=CodeRef(repo=location.repo, path=location.path, ref=ref),
                     span=span,
                     text="\n".join(lines[start:end]),
                     truncated=end < span.end,
                 )
 
         raise FileNotFoundError(
-            f"the index has no {location.repo.slug}:{location.path}@{location.ref}"
+            f"the index has no {location.repo.slug}:{location.path}@{ref}"
         )
