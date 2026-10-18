@@ -388,3 +388,16 @@ answers "is this well-formed", and the question GitHub asks is "are these names 
 Only `gh workflow run` asks the second one, so **a new job is not verified until it has been
 dispatched at least once** — the push gate cannot speak for a job whose `if:` excludes pushes.
 
+The first dispatch that actually ran the job found a **second** thing the push gate could not,
+and this one is the system behaving correctly: all 78 expected-pass cells failed with
+
+```
+SigningKeyMissing: FORGEPILOT_SIGNING_KEY is not set. Constraints cannot be signed or
+verified, and running with unverifiable authority is worse than not running.
+```
+
+The development box has the key in `.env.local`; a runner has no `.env.local` and no secret.
+The job now generates a throwaway key (`secrets.token_hex(32)`) into `$GITHUB_ENV` — right
+for a fixture whose sessions are trusted by nothing afterwards, and emphatically not the
+deployment answer, where the same refusal is what stops a keyless server from starting.
+
