@@ -1097,8 +1097,10 @@ def _split_section(
     noise, and it would also be a claim about a split that did not happen.
 
     `opened` is the deliveries this run has finished so far — publishing is
-    serial, so a sibling that comes later is honestly described as not attempted
-    yet rather than as a pull request that does not exist.
+    serial, so a sibling that comes later has not been reached *yet*. The wording
+    is time-scoped on purpose: the body is rewritten once every delivery has an
+    outcome (`_rewrite_sibling_sections`), and if that rewrite is what fails, the
+    sentence it leaves behind still has to be true rather than merely stale.
     """
     if len(plan.repos) < 2:
         return []
@@ -1120,8 +1122,9 @@ def _split_section(
         delivery = by_slug.get(candidate.slug)
         if delivery is None:
             lines.append(
-                f"- `{candidate.slug}` — not attempted by this run, which delivers one "
-                "repository at a time and stops at the first failure"
+                f"- `{candidate.slug}` — not reached yet when this pull request was "
+                "opened: the run publishes one repository at a time and stops at the "
+                "first failure"
             )
         elif delivery.pull_request is not None:
             lines.append(f"- `{candidate.slug}` — #{delivery.pull_request.number}")

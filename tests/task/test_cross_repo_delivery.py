@@ -215,7 +215,7 @@ def test_a_plural_body_says_where_the_other_repositories_stand() -> None:
     assert lines[1] == "## This ticket's other repositories"
     assert any("**this pull request**" in line and REPO_A.slug in line for line in lines)
     assert any("not published" in line and REPO_B.slug in line for line in lines)
-    assert any(line.startswith(f"- `{REPO_C.slug}`") and "not attempted" in line for line in lines), (
+    assert any(line.startswith(f"- `{REPO_C.slug}`") and "not reached yet" in line for line in lines), (
         "a repository the run never reached is described as exactly that, not "
         "omitted: the reader has to know the ticket was bigger than this pull request"
     )
@@ -393,7 +393,7 @@ async def test_the_first_pull_requests_body_is_rewritten_once_both_verdicts_exis
     assert outcome.state is TaskState.DELIVERED, outcome.reason
 
     opened = {draft.repo.slug: draft.body_md for draft in rig.vcs.pull_requests}
-    assert "not attempted" in opened[REPO_A.slug], (
+    assert "not reached yet" in opened[REPO_A.slug], (
         "the opening body is written before B has a verdict - this is the sentence "
         "the rewrite exists to replace"
     )
@@ -403,7 +403,7 @@ async def test_the_first_pull_requests_body_is_rewritten_once_both_verdicts_exis
         "both bodies are rewritten, not only the stale one: the run knows the same "
         "facts for both, and rewriting one would make the two disagree"
     )
-    assert "not attempted" not in rewritten[REPO_A.slug]
+    assert "not reached yet" not in rewritten[REPO_A.slug]
     assert f"- `{REPO_B.slug}` — #2" in rewritten[REPO_A.slug], (
         "A's rewritten body has to point at B's pull request by number"
     )
