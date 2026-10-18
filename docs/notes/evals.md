@@ -651,3 +651,86 @@ Neither `bug-fix` nor `find-the-rule` moved between arms, which is the shape to 
 deterministic task: the arms are mechanism ablations, and a task that needs none of the
 ablation targets passes with all of them removed. Whether an arm *earns its place* is a
 question the full matrix and its cost table answer together, not a question 24 cells settle.
+
+## M23 — the live matrix, and what it can price (2026-10-18)
+
+The probe above found a defect and a limit doing its job. This is the full run it was a
+probe for: **10 tasks × 8 arms × 2 reps = 160 live cells**, 68 minutes of wall clock,
+2468 tool calls, `evals/results/20261018T124013-live.jsonl`, **129/160 passed**.
+
+| arm | passed | calls | calls/cell | turns | s/cell |
+|---|---|---|---|---|---|
+| `baseline` | 15/20 | 314 | 15.7 | 20 | 28.2 |
+| `full` | 18/20 | 285 | 14.2 | 21 | 25.3 |
+| `no-distill` | 18/20 | 309 | 15.4 | 20 | 21.9 |
+| `no-memory` | 18/20 | 281 | 14.1 | 20 | 23.9 |
+| `no-pinning` | 15/20 | 311 | 15.6 | 20 | 24.6 |
+| `no-repair` | 16/20 | 313 | 15.7 | 20 | 26.1 |
+| `no-search` | 14/20 | 352 | 17.6 | 24 | 31.1 |
+| `tight-window` | 15/20 | 303 | 15.2 | 21 | 23.8 |
+
+Per task × arm (two reps; `2/2` means both):
+
+| task | base | full | no-dist | no-mem | no-pin | no-repair | no-search | tight |
+|---|---|---|---|---|---|---|---|---|
+| `bug-fix` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
+| `feature` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
+| `find-the-bug` | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 2/2 | 2/2 | 2/2 |
+| `find-the-rule` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | **1/2** | 2/2 |
+| `incomplete` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
+| `no-failing-test` | 2/2 | 1/2 | 2/2 | 2/2 | **0/2** | **0/2** | 1/2 | 1/2 |
+| `not-in-the-checkout` | **0/2** | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | **0/2** | 2/2 |
+| `out-of-scope` | 1/2 | 2/2 | 2/2 | 0/2 | 2/2 | 1/2 | 2/2 | 0/2 |
+| `two-attempts` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
+| `two-repos` | 0/2 | 1/2 | 0/2 | 2/2 | 0/2 | 1/2 | 0/2 | 0/2 |
+
+### What the numbers price, and what they do not
+
+**Search earns its place, and it is the only mechanism these tasks price cleanly.** The task
+that cannot be solved without it, `not-in-the-checkout`, is `0/2` under `baseline` and `0/2`
+under `no-search` against `2/2` for every arm that has a retriever. It is also the *cheapest*
+arm to run: `no-search` costs **+3.4 calls/cell (+24%) and +5.8 s/cell (+23%)** over `full`,
+because without search the model flails with `dir`/`findstr` and gives up later.
+
+**Pinning and repair point the right way and sit inside the noise.** `no-failing-test` is the
+task built for them: `full` 1/2, `no-pinning` 0/2, `no-repair` 0/2, and its failure text is the
+mechanism's own ("`percentiles.py` was not changed"). One cell in two reps is not a price.
+
+**Distill, memory and tight-window cannot be priced by this task set.** Their arms never differ
+from `full` by more than one cell, and `no-memory` passed `two-repos` **2/2** where `full` passed
+1/2 — that is noise pointing the wrong way, not evidence that memory hurts. The run did exercise
+them (225 compactions, 457 memory writes, 145 memory lines served), and the outcome never moved:
+**a mechanism can be reachable, busy, and still unpriced by the tasks on hand.**
+
+**`full` over `baseline` is +3 cells** (18 vs 15), entirely `not-in-the-checkout` (2) plus one
+`out-of-scope` — which is the same sentence as above: what is priced here is search.
+
+**Two reps cannot separate one-cell differences.** 160 cells with 2 reps per `(task, arm)` gives
+±1–2 cells of run-to-run variance; a difference of one cell is not a finding. That is why the
+ablation reading above is stated as "which task names the mechanism", never as a percentage.
+
+### The failure taxonomy (32 of 160)
+
+| reason | cells | reading |
+|---|---|---|
+| `3 paths changed, limit 2` | 20 (12 of them `two-repos`) | the model leaves its commit-message scratch file (`_commit_msg.txt`, `BUG2_MSG.txt`, `_bug2_msg.txt`, `BUG2_COMMIT_MSG.txt`, once `README.md`) in the tree |
+| "never mentioned `settings.py`" | 7 (`out-of-scope`) | the task asks the agent to *say* it will not touch a file; the fix was right and the sentence was missing |
+| checks did not pass / no change | 4 (`not-in-the-checkout` under `baseline`/`no-search`) | no retriever, so no answer |
+| held-out probe failed | 1 (`not-in-the-checkout`, `no-search` rep2) | the visible checks passed and `the_contract_from_the_index` did not — the probe earned its place in the same run |
+
+The first row is the important product number: **the largest single cause of a failed delivery is
+not a mechanism, it is the agent leaving scratch files in the diff.** `max_changed` catches it, so
+the eval is right and the delivered tree was never published that way — but a deployment that runs
+this loop against a real host *will* publish `_commit_msg.txt` unless something stops it, because
+`commit` stages the whole tree on purpose.
+
+### Integrity
+
+Three cells recorded `escaped_workspace`: every one is a `not-in-the-checkout` cell in an arm
+without search, where the model tried `dir`/`type` against the repository root to find the answer
+key (`evals/tasks/not-in-the-checkout/solution/limits.py`). All three failed, no passing cell
+tried it, and the harness recorded each attempt with the command that made it. It is still a
+finding for the next era: **the task fixtures live inside the same repository the shell can
+reach**, so `solution/` is one `type` away; either the checkout root moves outside the repository
+or the tool's path scope should refuse the tree the eval lives in.
+
