@@ -1,0 +1,30 @@
+# Tickets from TAPD instead of from files: the row the seam was shaped for.
+#
+#   # once, with a credential — the run records what the API answered
+#   FORGEPILOT_TAPD_WORKSPACE=1234567 FORGEPILOT_TAPD_TOKEN=... \
+#     forgepilot --config-dir configs --patch src/forgepilot/bundles/tickets_tapd/patch.yaml \
+#     --patch .tmp/record.yaml --task BUG-1 ...
+#
+#   # afterwards, with nothing but the file
+#   FORGEPILOT_TAPD_WORKSPACE=1234567 FORGEPILOT_TAPD_CASSETTE=.tmp/tapd.json \
+#     forgepilot --config-dir configs --patch src/forgepilot/bundles/tickets_tapd/patch.yaml \
+#     --task BUG-1 ...
+#
+# The row overrides `base`'s mock by id — the same `TicketSource` seam, a different
+# tracker — so `--task`, `plan_task` and everything that reads a ticket are unchanged.
+#
+# ⚠️ `workspace_id` is mandatory and has no default, for the same reason `index_path`
+# has none in the code_index bundle: a default project would resolve a ticket id in a
+# project nobody named, and the answer would be a real ticket from the wrong customer.
+#
+# ⚠️ `cassette` defaults to the empty string, which means **live**. Set it (with no
+# token, or with `mode: replay`) to run from a recording; the recording is written by
+# the same provider with `record: <path>` during a live run, so the reader and the
+# writer cannot drift.
+- id: tickets
+  plugin: forgepilot.providers.tickets.tapd:TapdTicketSourcePlugin
+  config:
+    workspace_id: ${FORGEPILOT_TAPD_WORKSPACE}
+    cassette: ${FORGEPILOT_TAPD_CASSETTE:-}
+    token_env: FORGEPILOT_TAPD_TOKEN
+  tier: trusted

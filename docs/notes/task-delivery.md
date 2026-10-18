@@ -193,6 +193,45 @@ Three smaller things, each found by running it:
 
 **The "the agent can edit the tests" gap is closed** — see "The oracle is held fixed" below. It was the largest hole left: `run_checks` passed whether the code was fixed or the assertion was relaxed, and nothing in the harness could tell the two apart.
 
+## TAPD as a ticket source (`providers/tickets/tapd.py`, `bundles/tickets_tapd/`)
+
+The seam was modelled on TAPD's field shapes from M2 and the design doc named
+`tickets/tapd.py` as the stub to fill; M22 filled it. Two modes, one parser:
+
+- **`replay`** answers from a *cassette* — the exact JSON payloads the API returned, keyed by
+  the request that produced them (`GET /bugs?id=…&workspace_id=…`). It needs no token and no
+  network, which is what makes a ticket-backed test reproducible.
+- **`live`** asks `api.tapd.cn`, and **`record:` writes the cassette as it goes**. There is no
+  separate recorder script on purpose: the writer and the reader are one code path, so a
+  recording cannot drift from the reader that replays it. A test records through a
+  `MockTransport`, then replays the file with nothing but the file, and asserts both tickets
+  are equal.
+
+Four decisions that are about failing where someone can see it:
+
+- **A cassette miss names the requests the file holds.** "No such ticket" and "the recording
+  has no such request" are the same answer at the call site, and only one of them is true.
+- **TAPD's `status` is a success flag, not the bug status of the same name.** `_checked()` reads
+  the envelope's flag; the bug's own `status` is one level down. Conflating them turns a refused
+  token into an empty result.
+- **Priorities are mapped, never defaulted.** TAPD's are numbers (`1`…`4`); an unmapped value
+  raises naming the ticket and the value. A default would make every bug `medium` at once.
+- **The token is read from the environment by name** (`FORGEPILOT_TAPD_TOKEN`), like the GitHub
+  token and for the same reason: a value in a patch file lands in `git status` and in
+  `--dump-config`. Error text never repeats the query string, which carries it.
+
+⚠️ **No live TAPD call was made from this machine — there is no TAPD credential here.** The
+payload shapes come from TAPD's documented responses and are exercised through the cassette
+round trip, not observed against the real service. That is a real limit of the evidence: a
+field named differently upstream would show up as a `TapdRequestFailed` naming the ticket, not
+as a silently empty ticket, but it would show up for the first deployment rather than here.
+Recording once with a token is the intended way to convert this into observed evidence — and
+the `record:` path is exactly that act, not a tool written for it.
+
+`bundles/tickets_tapd/patch.yaml` overrides the `tickets` row by id; `workspace_id` has **no
+default** for the same reason `index_path` has none, because a default project would resolve a
+ticket id in a project nobody named.
+
 ## The oracle is held fixed (`runtime/pinning.py`, `project.yaml: test_paths`)
 
 An agent that cannot make a check pass has a cheaper option: make the check stop testing the thing. `run_checks` could not tell "fixed the code" from "relaxed the assertion" — both are a green run over whatever is in the tree, and the tree is the agent's.
