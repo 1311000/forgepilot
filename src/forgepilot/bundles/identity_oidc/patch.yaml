@@ -1,0 +1,39 @@
+# Identity from an OIDC issuer instead of a static token table.
+#
+#   FORGEPILOT_OIDC_SECRET=... forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/identity_oidc/patch.yaml --serve ...
+#
+# The row overrides `base`'s static token table by id — the same `principal` seam,
+# a different authority — so nothing downstream (deps.py, the sandbox, the guards)
+# knows which one answered.
+#
+# ⚠️ **HS256 only, and that is a stated limit rather than an oversight.** This
+# build has no crypto library, so it verifies the one algorithm it can verify with
+# `hmac` from the standard library. RS256 (the usual Keycloak default) is refused
+# **by name** in the error, so a deployment that needs it knows the reason instead
+# of reading "invalid token" and guessing. Turning on a client secret with HS256 is
+# a real Keycloak configuration, not a test-only shape.
+#
+# ⚠️ `issuer` and `audience` are mandatory and have no defaults. Any value would
+# accept tokens this deployment never meant to trust; an audience of `""` matches
+# nothing and an issuer of `""` matches every token whose issuer is also empty,
+# which is the one value an attacker controls.
+#
+# ⚠️ A group is a membership, not a permission: only the groups listed under
+# `groups:` grant anything, and a principal in no listed group gets no operations
+# at all. `--dump-config` prints the mapping, so "who can open a pull request" is
+# one file rather than a review of the IdP console.
+- id: principal
+  plugin: forgepilot.providers.identity.oidc:OidcPrincipalPlugin
+  config:
+    issuer: ${FORGEPILOT_OIDC_ISSUER}
+    audience: ${FORGEPILOT_OIDC_AUDIENCE}
+    secret_env: FORGEPILOT_OIDC_SECRET
+    groups:
+      backend:
+        operations: [read_code, run_tests, open_pr]
+        repo_prefixes: ["git.corp/team/*"]
+        writable_paths: ["src"]
+        commands: [git, pytest]
+        network: deny
+  tier: trusted

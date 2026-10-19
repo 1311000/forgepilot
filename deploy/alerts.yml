@@ -1,0 +1,79 @@
+# Prometheus rules for the single-replica deployment in `compose.yaml`.
+#
+# Every `forgepilot_*` series named here is emitted by `httpapi/metrics.py`; the
+# test `tests/httpapi/test_metrics.py::test_the_alert_rules_name_series_that_exist`
+# scrapes `/metrics` and fails if this file names one that is not there. A rule
+# pointing at a series nobody emits is an alert that never fires, which is worse
+# than no alert: it is the appearance of monitoring.
+#
+# ⚠️ **What these rules cannot see.** One process owns the state directory, so
+# there is no second replica to take over and `up == 0` means the service is down,
+# not that a replica is unlucky. Vertical truth — "the agent is getting worse",
+# "the checks are failing more" — is not here: it lives in the session logs, and a
+# metric invented for it would be a number without a reader.
+groups:
+  - name: forgepilot-availability
+    rules:
+      - alert: ForgePilotDown
+        expr: up{job="forgepilot"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "ForgePilot is not answering scrapes"
+          description: >-
+            The process is gone or wedged. Because only one process may own the
+            state directory, this is the whole service, not one replica of it:
+            check the container, then the serve lock in `$FORGEPILOT_HOME`.
+
+      - alert: ForgePilotDraining
+        expr: max(forgepilot_ready) < 1
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "ForgePilot has been draining for five minutes"
+          description: >-
+            `/readyz` has been 503 for longer than the graceful-shutdown timeout,
+            which means a process is alive but refusing new work and not leaving.
+            Restart it; a draining process that outlives `shutdown_timeout` is a
+            shutdown that did not finish, and its SSE streams are still open.
+
+      - alert: ForgePilotNoScrape
+        expr: absent(forgepilot_ready)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "ForgePilot's metrics endpoint stopped answering"
+          description: >-
+            The process answers `/healthz` perhaps, but nothing is scraping
+            `/metrics`. Check the proxy route and the container's port.
+
+  - name: forgepilot-work
+    rules:
+      - alert: ForgePilotApprovalWaiting
+        expr: forgepilot_approvals_pending > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "An approval has been waiting for a human for fifteen minutes"
+          description: >-
+            A turn is blocked on an approval nobody has answered. The pending
+            request is visible on `GET /sessions/{id}`; answering it, or letting it
+            time out, are both fine — the alert exists because "waiting" looks the
+            same as "working" from outside.
+
+      - alert: ForgePilotTurnStall
+        expr: forgepilot_turns_running > 0
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A turn has been running for half an hour"
+          description: >-
+            Turns are bounded by `agent-loop.max_steps` and by the per-command
+            sandbox timeout, so a turn this old is a row that will not finish (the
+            2026-10-19 eval hang was a command waiting on stdin). Let the approval
+            timeout pass; if it does not clear, the stream log names the command.

@@ -169,6 +169,28 @@ def has_project(workspace_root: Path | None) -> bool:
     return workspace_root is not None and find_project(Path(workspace_root)) is not None
 
 
+def readiness(stopping: bool, store: Any) -> tuple[int, dict[str, str]]:
+    """The readiness decision, as a function so both branches can be exercised.
+
+    A route that answered this inline would have one branch no test could reach:
+    a booted container always has a session store, and the kernel's services
+    cannot be shadowed per-test (``cannot set property … in multiple fibers``).
+    Keeping the decision pure is what lets the "no store" refusal be tested
+    rather than merely written down.
+    """
+    if stopping:
+        return 503, {
+            "status": "draining",
+            "reason": "the process is shutting down and accepts no new work",
+        }
+    if store is None:
+        return 503, {
+            "status": "not ready",
+            "reason": "no session store is loaded, so a session cannot be opened",
+        }
+    return 200, {"status": "ready"}
+
+
 def build_app(
     root: Any,
     *,
@@ -210,6 +232,16 @@ def build_app(
         "forgepilot_approvals_pending",
         "Approval questions waiting for a human.",
         lambda: len(registry.approvals),
+    )
+    # The scrapeable form of `/readyz`, for a load balancer that reads metrics
+    # instead of probing, and the series a "no ready replica" alert needs: 1 while
+    # new work is accepted, 0 once `registry.stop()` has run. It reads the same
+    # flag the endpoint does, so the two cannot disagree about whether this
+    # process is draining.
+    metrics.gauge(
+        "forgepilot_ready",
+        "1 while this process accepts new work, 0 while it drains.",
+        lambda: 0.0 if registry.stopping.is_set() else 1.0,
     )
 
     @asynccontextmanager
@@ -265,6 +297,25 @@ def build_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> Any:
+        """Whether this process should receive *new* work.
+
+        Not the same question as ``/healthz``. A draining server answers health
+        checks — it is alive, its log is intact, its last turns are finishing —
+        and must answer readiness with a refusal, because a load balancer that
+        keeps sending it requests during shutdown is how an SSE stream is opened
+        on a process that is about to end. That is also why the stop flag, not a
+        timer, decides: the same ``registry.stop()`` that ends the streams raises
+        it, so the two cannot disagree.
+        """
+        status, body = readiness(
+            registry.stopping.is_set(), getattr(root, "sessionPersistence", None)
+        )
+        if status == 200:
+            return body
+        return JSONResponse(status_code=status, content=body)
 
     @app.get("/metrics", include_in_schema=False)
     async def prometheus() -> Any:

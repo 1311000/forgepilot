@@ -131,7 +131,48 @@ Prerequisites that are not variables:
 
 ## What is deliberately not here
 
-Kubernetes manifests, a Postgres-backed session registry, OIDC/SSO (the static
-token table is still the only identity provider), and the enterprise retrieval
-index. Each is a seam that a deployment plugs into, not a gap in the seams — the
-list is in `CLAUDE.md` under the tracks still unstarted.
+Kubernetes manifests, a Postgres-backed session registry, RS256/JWKS (M26's OIDC
+provider verifies HS256 and refuses the others by name), and the enterprise
+retrieval index. Each is a seam that a deployment plugs into, not a gap in the
+seams — the list is in `CLAUDE.md` under the tracks still unstarted. The static
+token table is no longer the only identity provider, but it is still the default
+one and still what a dev box uses.
+
+## M26 — the single-replica SLO, and what it can promise
+
+The deployment above is one process by design (`serve.lock`), so the SLO it can
+make is not "stay up" but **"when it goes down, nothing it accepted is lost and
+nothing it published is wrong"**. Four pieces, each with the reader it was built
+for:
+
+- **`/readyz` versus `/healthz`.** `healthz` answers "is this process alive"; a
+  draining process is alive and must still get no new work, because a load
+  balancer that keeps sending it traffic opens SSE streams on a process that is
+  about to end. `readyz` returns `503 {"status": "draining"}` once
+  `registry.stop()` has run, and both read that one flag, so they cannot disagree.
+  `FORGEPILOT_READY=0`? No: readiness is derived, never configured.
+- **`--backup` / `--restore`** (`runtime/backup.py`). The archive carries
+  `manifest.json` with a SHA-256 and a size per file; restoring verifies both and
+  parses every `.jsonl` before anything is moved into place, in a staging
+  directory beside the target. A backup **refuses while a server holds the lock**,
+  because a copy taken during an append can catch half a line and `recover_tail`
+  would then repair the damage on the next boot — a backup whose failure mode is
+  "restores fine and is subtly wrong" is worse than a refused one. Two defects the
+  first smoke test found: `Path("x.tar.gz").suffix` is `".gz"` (so every archive
+  path a person types was treated as a directory), and the manifest was being
+  moved into the restored directory as if it were state.
+- **`forgepilot_ready` gauge + `deploy/alerts.yml`.** The gauge is 1 until the
+  same `registry.stop()` flag flips, so an alert reading metrics agrees with a
+  probe. `tests/httpapi/test_metrics.py::test_the_alert_rules_name_series_that_exist`
+  scrapes `/metrics` and fails if a rule names a series this build does not emit —
+  a rule pointing at nothing never fires and looks like monitoring.
+- **OIDC (`providers/identity/oidc.py`, `bundles/identity_oidc/`).** Same
+  `principal` seam, so `deps.py` cannot tell which provider answered. **HS256
+  only**, because this build has no crypto library and refuses RS256 *by name*
+  rather than failing with "invalid token"; group membership is not authorisation
+  (unmapped groups grant nothing, and the mapping is in `--dump-config`).
+
+**What it still does not promise.** No multi-replica (a second process is refused,
+not made safe); no automated backup schedule (the flag is what a cron job calls);
+no RS256/JWKS; no alert on "the agent is getting worse" — that lives in the
+session logs, and a metric invented for it would be a number without a reader.

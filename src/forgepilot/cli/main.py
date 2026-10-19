@@ -13,10 +13,13 @@ Commands available now::
     forgepilot --distill <session-id> --repo host/ns/name
                                              turn one stored session into memories
     forgepilot --serve                       serve the HTTP/SSE API the UI talks to
+    forgepilot --backup PATH                 copy $FORGEPILOT_HOME into a .tar.gz
+    forgepilot --restore PATH                replace it from one, verifying first
 
-``--dump-config`` never imports anything; ``--boot``, ``--chat``, ``--task`` and
-``--serve`` do. That split is deliberate — a profile stays inspectable even when a
-plugin is missing, broken, or not installed on this machine.
+``--dump-config`` never imports anything; ``--boot``, ``--chat``, ``--task``,
+``--serve``, ``--backup`` and ``--restore`` do. That split is deliberate — a
+profile stays inspectable even when a plugin is missing, broken, or not installed
+on this machine.
 """
 
 from __future__ import annotations
@@ -201,6 +204,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--host", default=None, help="bind address; overrides the bundle")
     serve.add_argument("--port", type=int, default=None, help="bind port; overrides the bundle")
+
+    state = parser.add_argument_group("state")
+    state.add_argument(
+        "--backup",
+        default=None,
+        metavar="PATH",
+        help=(
+            "copy $FORGEPILOT_HOME into a .tar.gz and exit. Refuses while a server "
+            "owns the directory: a copy taken during an append can catch half a line"
+        ),
+    )
+    state.add_argument(
+        "--restore",
+        default=None,
+        metavar="PATH",
+        help=(
+            "replace $FORGEPILOT_HOME with a backup, verifying every file against "
+            "the manifest first, and exit"
+        ),
+    )
+    state.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="with --restore: replace a directory that already holds files",
+    )
     return parser
 
 
@@ -1146,6 +1174,40 @@ def _forget_or_purge(args: argparse.Namespace) -> int:
         return 1
 
 
+def _backup(args: argparse.Namespace) -> int:
+    """Copy the state directory into an archive, and say where it went.
+
+    No profile is resolved: the state directory is the whole subject, and booting
+    plugins to copy files would add failure modes without adding information.
+    """
+    from forgepilot.runtime.backup import BackupRefused, backup
+
+    state = _state_directory()
+    try:
+        archive = backup(state, Path(args.backup))
+    except BackupRefused as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"backed up {state} to {archive}")
+    return 0
+
+
+def _restore(args: argparse.Namespace) -> int:
+    """Replace the state directory from an archive, verifying it first."""
+    from forgepilot.runtime.backup import BackupRefused, restore
+
+    state = _state_directory()
+    try:
+        manifest = restore(Path(args.restore), state, overwrite=args.overwrite)
+    except BackupRefused as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    wrote = manifest.get("files", [])
+    print(f"restored {len(wrote)} file(s) from {args.restore} into {state}")
+    print(f"the backup was taken {manifest.get('created_at', 'at an unrecorded time')}")
+    return 0
+
+
 def _interactive_answerer(memory_id: str, *, require_typed: bool):  # noqa: ANN202
     """An approval answerer that asks this terminal, and refuses when it cannot."""
 
@@ -1413,6 +1475,8 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
             ("--distill", bool(args.distill)),
             ("--forget", bool(args.forget)),
             ("--purge", bool(args.purge)),
+            ("--backup", bool(args.backup)),
+            ("--restore", bool(args.restore)),
             ("--serve", args.serve),
         )
         if on
@@ -1436,6 +1500,10 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
         return _distill(args)
     if args.forget or args.purge:
         return _forget_or_purge(args)
+    if args.backup:
+        return _backup(args)
+    if args.restore:
+        return _restore(args)
     if args.serve:
         return _serve(args)
 

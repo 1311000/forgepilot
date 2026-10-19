@@ -81,6 +81,23 @@ async def test_the_session_gauge_is_read_from_the_registry_at_scrape_time(api) -
     assert "forgepilot_sessions_live 0" in body
 
 
+async def test_the_ready_gauge_reads_the_same_flag_the_endpoint_does(api) -> None:
+    """An alert that reads metrics must not disagree with a probe.
+
+    `forgepilot_ready` exists so a "no ready replica" alert has a series to read;
+    it is 1 until `registry.stop()` runs, which is exactly when `/readyz` starts
+    returning 503. If the two were separate flags, this test would be the place
+    that difference showed up.
+    """
+    assert "forgepilot_ready 1" in (await api.client.get("/metrics")).text
+    assert (await api.client.get("/readyz")).status_code == 200
+
+    api.registry.stop()
+
+    assert "forgepilot_ready 0" in (await api.client.get("/metrics")).text
+    assert (await api.client.get("/readyz")).status_code == 503
+
+
 async def test_a_started_turn_is_counted_once(api) -> None:
     created = await api.client.post("/sessions", headers=api.auth())
     session_id = created.json()["sessionId"]
@@ -129,3 +146,42 @@ def test_label_values_are_escaped() -> None:
     # Exactly one series: the escaped newline did not start a second line that
     # happens to look like a metric.
     assert sum(1 for line in body.splitlines() if line.startswith("forgepilot_http")) == 1
+
+
+async def test_the_alert_rules_name_series_that_exist(api) -> None:
+    """Every `forgepilot_*` series in `deploy/alerts.yml` is really emitted.
+
+    A rule that names a series nobody exports never fires, and it looks exactly
+    like monitoring until the day it is needed. The rules are checked against a
+    live scrape rather than against a hand-written list, so adding a metric to the
+    rules without adding it to `build_app` fails here.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    rules_path = Path(__file__).resolve().parents[2] / "deploy" / "alerts.yml"
+    document = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+
+    # `forgepilot_turns_started_total` only exists after a turn has started, so the
+    # scrape below is taken after one number of every kind has been produced.
+    created = await api.client.post("/sessions", headers=api.auth())
+    assert created.status_code == 201
+    body = (await api.client.get("/metrics")).text
+    emitted = {
+        line.split("{")[0].split(" ")[0]
+        for line in body.splitlines()
+        if line.startswith("forgepilot_")
+    }
+
+    named: set[str] = set()
+    for group in document["groups"]:
+        for rule in group["rules"]:
+            expression = rule["expr"]
+            for token in expression.replace("(", " ").replace(")", " ").split():
+                if token.startswith("forgepilot_"):
+                    named.add(token)
+
+    assert named, "the rules name no series at all — did the file move?"
+    missing = sorted(named - emitted)
+    assert missing == [], f"deploy/alerts.yml names series this build does not emit: {missing}"
