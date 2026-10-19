@@ -10,7 +10,8 @@ defect shape this repository keeps recording:
   is declared in the project rather than installed ad hoc by a workflow line.
 - the weekly job in `.github/workflows/ci.yml` installs that extra and runs `pip-audit`,
   gated to `schedule`/`workflow_dispatch` — a vulnerability database changes without a
-  commit, so it belongs on a clock and not on the push gate.
+  commit, so it belongs on a clock and not on the push gate — with `--skip-editable`,
+  because this repository is the editable install and is not on PyPI.
 
 A local `pip-audit` run needs the network; this test does not, which is why it checks the
 three declarations instead of the result.
@@ -78,4 +79,29 @@ def test_the_weekly_job_runs_it() -> None:
             f"job {name!r} runs pip-audit without a schedule condition. A vulnerability "
             f"database changes without a commit, so the audit belongs on the weekly job; on "
             f"the push gate it is a flaky red that teaches people to retry."
+        )
+
+
+def test_the_audit_skips_the_package_this_repository_is() -> None:
+    """`--strict` without `--skip-editable` is red every week, for the layout.
+
+    Measured on dispatch run 46, the first time the job ever executed:
+    `ERROR:pip_audit._cli:forgepilot: Dependency not found on PyPI and could not be audited:
+    forgepilot (0.0.1)`, exit 1. The editable install *is* this repository, so there is no
+    advisory database entry to find for it, and a check that can never pass is a check
+    nobody reads — the same lesson as the `..` detector.
+    """
+    workflow = yaml.safe_load((FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    lines = [
+        str(step.get("run", ""))
+        for job in (workflow.get("jobs") or {}).values()
+        for step in job.get("steps") or ()
+        if "pip_audit" in str(step.get("run", "")) or "pip-audit" in str(step.get("run", ""))
+    ]
+    assert lines, "no CI job runs `pip-audit`"
+    for line in lines:
+        assert "--skip-editable" in line, (
+            f"`{line}` audits the editable install, which is this repository: pip-audit then "
+            f"reports 'Dependency not found on PyPI' and `--strict` fails. The weekly job "
+            f"must audit the dependencies, not the package they are installed with."
         )

@@ -425,6 +425,26 @@ the extra, the Dependabot ecosystems (pip **and** github-actions, weekly), and t
 schedule condition — because a config nobody checks is the shape this repository keeps
 recording.
 
+⚠️ **`--skip-editable` is not a convenience, and the first dispatch proved it.** The job had
+never executed: on a push it is skipped by design, and the P3 commit went through the push
+gate green. Dispatch run **46** ran it for the first time and it failed in 1.8 s with
+
+```
+ERROR:pip_audit._cli:forgepilot: Dependency not found on PyPI and could not be audited: forgepilot (0.0.1)
+##[error]Process completed with exit code 1.
+```
+
+The editable install *is* this repository, so `--strict` turns "not on PyPI, so no advisory
+database entry exists" into a failure that would have been red every week, forever. A check
+that can never pass is a check nobody reads — the same lesson as the `..` detector this file
+already records. The flag is now in the workflow line, `tests/contract/test_the_dependency_audit_is_configured.py`
+asserts it (a fifth assertion: the local package is not the thing being audited), and the
+re-dispatched run is what says the job is green rather than merely configured.
+
+The general lesson is the one this file exists for: **a job that only runs on a clock has
+never been run by the commit that adds it.** The `evals` job got its dispatch at M21·③; the
+`audit` job got one only after P3's push — and it was red.
+
 `tools/bench.py` runs in the `evals` job with a 20 s p95 bound; the exact numbers are printed
 for whoever reads the log. See `docs/notes/evals.md` for the cost ceilings and the measured
 distribution.
