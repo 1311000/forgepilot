@@ -13,7 +13,7 @@ dependencies = [
     # The Cordis microkernel port. Pinned deliberately: this is a 0.x alpha from a
     # single maintainer and it is the foundation of the whole runtime. See
     # tests/kernel/test_kernel_contract.py — that suite is the conformance gate.
-    "cordis-port==0.1.5",
+    "cordis-port==0.1.7",
     # Profile / bundle / patch layers are YAML.
     "PyYAML>=6.0",
     # HTTP, and it is *core* despite living behind an extra until now.
