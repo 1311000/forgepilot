@@ -69,6 +69,14 @@ ast = [
     "tree-sitter-python>=0.25",
 ]
 
+# The dependency audit. Not in `dev`, because auditing needs the network and a
+# vulnerability database that moves without a commit: it runs on the weekly CI
+# job (`.github/workflows/ci.yml`), where a stale advisory is a red run someone
+# reads, and never on the push gate, where it would be an unrelated flake.
+audit = [
+    "pip-audit>=2.7",
+]
+
 [project.scripts]
 forgepilot = "forgepilot.cli.main:main"
 

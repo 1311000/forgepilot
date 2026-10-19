@@ -122,6 +122,19 @@ The fix is that the scope **provides** the tracker under `USAGE_SERVICE` and `cr
 Both budget tests **seeded the tracker by hand** — `tracker.tool_calls = 10_000` — and asserted the guard refused. That proves the guard *reads* the field. It cannot prove anything *writes* it, and nothing did. And every rig in the suite builds the tracker and the guards together, which is the one arrangement where the two-tracker defect cannot appear.
 
 `tests/loop/test_the_budget_is_counted.py` builds the scope the way production does (`assemble_session`, then `root.agents.build("forgepilot", spec, runtime.scope.ctx)`) and never seeds anything. The identity test asserts `is`, not `==` — two empty trackers compare equal and behave worlds apart.
+
+### The same number, measured per task (P3)
+
+The guard enforces a budget *within* a turn; `evals/ceilings.py` records what each eval task
+is allowed to spend *across* a run, and `evals/run.py` writes both the verdict and the bound
+into the row. It is the same unit on purpose — a call count — so a ceiling in the eval and a
+ceiling in a deployment mean the same thing, and a scripted run reaches the same number on
+any machine. Ceilings are `1.5 x p95` of the 782 live rows measured through 2026-10-19,
+with `incomplete` at zero; when a ceiling and a good run disagree, the ceiling moves in a
+commit that says why. `tools/bench.py` is the other half: p50/p95 of a scripted task
+end to end, with a loose weekly bound that catches the harness becoming pathological rather
+than a busy runner. See `docs/notes/evals.md`.
+
 - **Cancellation is cooperative**, stopping at a step boundary. Killing mid-tool would leave a call with no result and force the recovery sweep to invent one.
 - **Context overflow fails loudly** (`ContextWindowExceeded`) rather than truncating — and it is now the *last* resort rather than the first. `run_step` compacts before it builds the request, so the loud failure only happens when compaction was tried and did not free enough. See `docs/notes/context-and-session.md`.
 - **Tool-call deltas are keyed by `tool_index`, not arrival order.** An endpoint may interleave fragments for several calls; concatenating in arrival order would splice one call's arguments into another's and still parse as JSON often enough to be missed.

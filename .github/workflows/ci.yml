@@ -375,3 +375,36 @@ jobs:
 
       - name: the offline matrix, against the verdicts this repository recorded
         run: python evals/matrix.py
+
+      # ⚠️ **Loose on purpose.** A scripted task takes about two seconds here; the bound is
+      # twenty because this number exists to catch the harness becoming pathological (a
+      # retry loop, a wait that should have been a timeout), not to police a busy runner.
+      # A tight bound on shared hardware fails for load, gets retried until green, and by
+      # then it is measuring nothing. `tools/bench.py` prints the exact distribution, which
+      # is what a person diagnosing a regression actually reads.
+      - name: the harness's own latency, against a bound it cannot mistake for a benchmark
+        run: python tools/bench.py --iterations 5 --max-p95-ms 20000
+  # ⚠️ **The one job whose red means "the world changed", not "the commit broke".**
+  # A vulnerability advisory appears without a push, so this cannot ride the gate: on a
+  # push it would fail for something the author did not do, which is precisely how a
+  # security check becomes a retry reflex. It runs beside the weekly matrix instead, and
+  # `--strict` is deliberate — pip-audit's non-strict mode exits 0 on an advisory with no
+  # fixed version, which is the case a human most needs told about.
+  #
+  # It audits the environment `.[dev,web]` installs, because that is what CI and a
+  # deployment run; scanning `pyproject.toml` alone would miss a transitive pin.
+  audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev,web,audit]"
+
+      - name: every installed dependency, with the advisory database as it stands today
+        run: python -m pip_audit --strict

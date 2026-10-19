@@ -861,3 +861,40 @@ for its own diagnostics: either score tidiness as its own column instead of fold
 needs to be run arm-by-arm with the `full` switches bisected, because a 0/3 inversion is a
 finding — either a real regression in the shipped default or a task that measures narration. The
 96-cell table is the instrument saying it cannot yet tell those apart.
+
+## What a task may cost, and how long the harness takes (P3)
+
+Two numbers had no owner: what a task is allowed to spend, and how slow the harness itself
+is allowed to become. Both are now measured rather than assumed.
+
+**`evals/ceilings.py`** is a table of tool-call bounds, one per task, derived from the 782
+live rows recorded between 2026-10-11 and 2026-10-19 — each is `1.5 x p95`, rounded up to a
+multiple of five, with `incomplete` at **zero** because that task's correct answer is a
+question and one tool call is already the failure it measures. `evals/run.py` judges the
+count after `H.score` and writes both the verdict and the bound into the row
+(`cost_ceiling`), so a results file read months later says what it was measured against
+instead of leaving it to the current table. Two design points:
+
+- **Calls, not seconds or dollars.** A wall-clock ceiling measures the machine; a dollar
+  ceiling needs a price table that goes stale on a model swap. A call count is deterministic
+  under `--scripted` and is the same number `Budget.max_tool_calls` enforces per turn.
+- **A regression alarm, not a proof of thrift.** A cheaper run that fails the task is worse,
+  and `passed` still says so. When a ceiling and a good run disagree, the ceiling moves in a
+  commit that says why; the one thing it must not become is a number quietly raised until
+  the red stops.
+
+Measured maxima behind the table (all 782 rows): `bug-fix` 16, `feature` 18,
+`find-the-bug` 60, `find-the-rule` 46, `no-failing-test` 21, `not-in-the-checkout` 41,
+`out-of-scope` 44, `stale-corpus` 20, `two-attempts` 16, `two-repos` 42, `incomplete` 0.
+The ceilings catch the two shapes worth catching: a runaway investigation (`find-the-bug`
+had a 60-call cell) and a whole-repository scan (`out-of-scope`'s expensive cells are the
+ones that escaped, 274 s of wall clock across three reps).
+
+**`tools/bench.py`** times a `--scripted` task end to end and prints p50/p95 of both the
+process and the in-process turn. It measures the harness — boot, config, session, plan,
+pipeline, checks, commit — and deliberately not a live model, whose latency is the
+provider's. On this box (2026-10-19): boot+turn p50 **1.71 s**, turn p50 **1.33 s**. The
+weekly CI job runs it with a **20 s** p95 bound: loose on purpose, because the number exists
+to catch the harness becoming pathological (a retry loop, a wait that should have been a
+timeout), and a tight wall-clock gate on a shared runner fails for load and gets retried
+until green.

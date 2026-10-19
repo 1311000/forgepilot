@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import arms as arm_module  # noqa: E402
+import ceilings  # noqa: E402
 import harness as H  # noqa: E402
 
 RESULTS = H.HERE / "results"
@@ -470,6 +471,15 @@ async def run_one(
         row.setdefault(key, 0)
     row["wall_s"] = round(time.monotonic() - started, 2)
     row["failures"] = H.score(row, task)
+    # **What the row is allowed to cost, judged here and recorded here.** The ceiling is
+    # not part of `H.score`, because `score` answers "did this task succeed" and a run can
+    # succeed expensively — the two facts belong in the same row, not in one verdict. The
+    # bound travels with the row (`cost_ceiling`) so a results file read months later can
+    # say what it was measured against instead of leaving it to the current table.
+    row["cost_ceiling"] = ceilings.ceiling(task.name)
+    over = ceilings.exceeded(task.name, row.get("tool_calls", 0))
+    if over is not None:
+        row["failures"] = [*row["failures"], over]
     row["passed"] = not row["failures"]
     return row
 

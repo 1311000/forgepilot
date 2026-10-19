@@ -401,3 +401,30 @@ The job now generates a throwaway key (`secrets.token_hex(32)`) into `$GITHUB_EN
 for a fixture whose sessions are trusted by nothing afterwards, and emphatically not the
 deployment answer, where the same refusal is what stops a keyless server from starting.
 
+
+## P3: two weekly jobs, and why they are not on the push gate
+
+The workflow now has five jobs, and exactly **two** of them are gated to
+`schedule`/`workflow_dispatch`: `evals` (the offline matrix against its recorded verdicts)
+and `audit` (`pip-audit --strict` over the `.[dev,web,audit]` environment). The reason is the
+same for both and it is not "they are slow":
+
+- the **matrix** measures the harness's shapes, so a scripted run is deterministic — but it
+  is a measurement, and a measurement that fails a push for a change in a *task* looks
+  identical to a regression in the *code*.
+- the **audit** fails when an advisory is published, which happens without a commit. On the
+  push gate that is a red run whose author did nothing wrong, and the habit it teaches is
+  retrying until the database is quiet. Weekly is where a moving external fact belongs.
+
+`pip-audit --strict` is deliberate: non-strict exits 0 on an advisory with **no fixed
+version**, which is exactly the case a human most needs told about. The extra lives in
+`pyproject.toml` (`audit = ["pip-audit>=2.7"]`) rather than only in a workflow line, so the
+project says what auditing means and a developer runs the same tool the job does;
+`tests/contract/test_the_dependency_audit_is_configured.py` reads all three declarations —
+the extra, the Dependabot ecosystems (pip **and** github-actions, weekly), and the job's
+schedule condition — because a config nobody checks is the shape this repository keeps
+recording.
+
+`tools/bench.py` runs in the `evals` job with a 20 s p95 bound; the exact numbers are printed
+for whoever reads the log. See `docs/notes/evals.md` for the cost ceilings and the measured
+distribution.

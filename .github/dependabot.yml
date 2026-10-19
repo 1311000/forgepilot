@@ -1,0 +1,28 @@
+version: 2
+# Both ecosystems, weekly, grouped.
+#
+# `pip` because the runtime is this machine's dependency tree — `cordis-port==0.1.5` is a
+# 0.x alpha from a single maintainer and is the pin most worth watching. `github-actions`
+# because the workflow runs with a repository token: an action is a dependency that executes
+# with more authority than anything `pip` installs.
+#
+# Weekly rather than daily on purpose. A daily bump PR against an alpha kernel produces
+# churn nobody reviews, and an unreviewed bump is worse than an old pin — the point is a PR
+# someone reads, not a green badge.
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      workflow-actions:
+        patterns: ["*"]
