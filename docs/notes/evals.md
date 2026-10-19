@@ -734,6 +734,27 @@ finding for the next era: **the task fixtures live inside the same repository th
 reach**, so `solution/` is one `type` away; either the checkout root moves outside the repository
 or the tool's path scope should refuse the tree the eval lives in.
 
+**Closed one level, not two (2026-10-19).** The cause of those three cells was not the harness's
+default — `scratch_root()` has pointed outside the checkout for several milestones — but the
+setting this repository's notes recommend for `--boot`: `FORGEPILOT_HOME=.tmp/fp-home` is *inside*
+the checkout, and the scratch root follows it, so each agent's checkout sat at
+`<repo>/.tmp/fp-home/eval-scratch/run-…/repo`, with `evals/tasks/<name>/solution/` four `..` away.
+So the sweep now **refuses to start** with an in-checkout scratch, naming the answer path and the
+two ways out (`FORGEPILOT_EVAL_SCRATCH`/`FORGEPILOT_HOME` outside, or `FORGEPILOT_EVAL_CONTAIN=1`),
+and the toggle that scores it anyway (`FORGEPILOT_EVAL_INSIDE_REPO=1`) stamps **every row** with
+`scratch_inside_repo: true`. `evals/matrix.py` refuses such a row as a cell, which is where the
+enforcement has to bite: a local sweep may still happen, a table quoted as a measurement may not
+contain one.
+
+⚠️ **On this box the outside scratch is not merely discouraged, it is denied**: a spawned
+interpreter writing to `D:\wroksapce\pythonCode\forge-eval-scratch` returns
+`PermissionError: [WinError 5]`, so every local sweep here sets `FORGEPILOT_EVAL_INSIDE_REPO=1` and
+its rows say `scratch_inside_repo: true`. The weekly job does not: `runner.temp` is outside the
+checkout, so the enforcement is real where a number gets quoted. What is **not** closed is the
+deliberate case — an absolute path that guesses `evals/tasks/` — and only `contain=True` closes
+that.
+
+
 ## M24 — a task for a corpus that disagrees with the tree
 
 `evals/tasks/stale-corpus/` is the eleventh task and the first one whose *retriever row is the

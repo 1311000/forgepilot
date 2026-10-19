@@ -45,6 +45,21 @@ def rows_for(matrix: Any, *, passed: dict[tuple[str, str], bool] | None = None) 
     return out
 
 
+def test_a_row_scored_with_the_answers_within_reach_is_not_a_cell(matrix) -> None:
+    """The M23 sweep produced three of these: green rows whose agent had read
+    `evals/tasks/not-in-the-checkout/solution/` through the shell. The row stays in the
+    file (it happened) and it stops being a measurement — otherwise the weekly job would
+    report a table full of passes that mean nothing."""
+    rows = rows_for(matrix)
+    for row in rows:
+        row["scratch_inside_repo"] = True
+
+    problems = matrix.check(rows)
+
+    assert any("within reach" in line for line in problems)
+    assert all("no row at all" not in line for line in problems)
+
+
 def test_the_measured_table_passes_its_own_check(matrix: Any) -> None:
     assert matrix.check(rows_for(matrix)) == []
 

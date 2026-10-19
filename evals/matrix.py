@@ -78,6 +78,16 @@ def check(rows: Iterable[dict[str, Any]]) -> list[str]:
 
     for row in rows:
         key = (str(row.get("task")), str(row.get("arm")))
+        if row.get("scratch_inside_repo"):
+            # The row's `passed` is not evidence of anything when the shell could walk to
+            # `evals/tasks/<name>/solution/`. It stays in the file (a sweep that happened is
+            # a fact) and it stops being a cell of the table.
+            problems.append(
+                f"{key[0]}/{key[1]}: scored with the task's own answer within reach of the "
+                "shell (the scratch root was inside the checkout), so it is not a measurement"
+            )
+            seen[key] = row
+            continue
         if key in seen:
             problems.append(f"{key[0]}/{key[1]}: the same cell appears twice")
             continue
@@ -115,6 +125,7 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
 
 def run_matrix() -> Path:
     """Run every arm over every task, once each, and return the results file."""
+    H.refuse_scratch_inside_the_repository()
     command = [sys.executable, str(H.HERE / "run.py"), "--scripted", "--reps", "1"]
     for name in EXPECTED_FAILURES:
         command += ["--arm", name]

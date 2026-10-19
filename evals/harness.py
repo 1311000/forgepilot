@@ -200,6 +200,62 @@ def scratch_root() -> Path:
     return Path(override) if override else default_home() / "eval-scratch"
 
 
+#: The switch that says "I know the answers are reachable, score this anyway".
+#:
+#: Written as an explicit opt-in rather than a default because the failure it prevents is
+#: silent: an agent that reads `evals/tasks/<name>/solution/` still returns a green row, and
+#: nothing in the row says the model read the answer instead of deriving it. The M23 sweep
+#: had exactly this happen — three `escaped_workspace` cells, all of them runs whose scratch
+#: root sat inside this checkout because `FORGEPILOT_HOME` pointed at `.tmp/fp-home`.
+ALLOW_INSIDE_REPO = "FORGEPILOT_EVAL_INSIDE_REPO"
+
+
+def scratch_is_inside_the_repository(root: Path | None = None) -> bool:
+    """Whether a run's scratch would be built under this checkout."""
+    candidate = (root or scratch_root()).resolve()
+    try:
+        candidate.relative_to(FORGE.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def scratch_inside_the_repository_is_allowed() -> bool:
+    """Whether this sweep is deliberately scoring rows whose answers are reachable."""
+    return os.environ.get(ALLOW_INSIDE_REPO, "") not in ("", "0", "false", "False")
+
+
+def refuse_scratch_inside_the_repository() -> None:
+    """Stop a sweep whose working directory can walk to the task's own answer.
+
+    ⚠️ **This is the guard the M23 finding asked for, and it is a refusal rather than a
+    warning.** `scratch_root()`'s docstring has said "outside the repository" for long
+    enough that the sentence looked enforced; what was enforced was only the *default*
+    path, and `FORGEPILOT_HOME=.tmp/fp-home` — the setting this repository's own notes
+    recommend for making `--boot` green — quietly put every eval workspace back inside the
+    checkout. Three cells of the 160-cell sweep then read `evals/tasks/not-in-the-checkout/`
+    through the shell, and every one of them is indistinguishable from a real pass in the
+    results file.
+
+    The two ways out are the two real ones: point the scratch somewhere else
+    (`FORGEPILOT_EVAL_SCRATCH`, or a `FORGEPILOT_HOME` outside the checkout), or run
+    contained (`FORGEPILOT_EVAL_CONTAIN=1`). Setting `FORGEPILOT_EVAL_INSIDE_REPO=1` is the
+    third, and it exists to be awkward on purpose: the rows it produces are `aside`, and a
+    sweep that is going to be quoted has to say so itself.
+    """
+    if scratch_inside_the_repository_is_allowed():
+        return
+    if not scratch_is_inside_the_repository():
+        return
+    raise RuntimeError(
+        "the eval scratch root is inside this checkout, so the task's own answer "
+        f"(`evals/tasks/<name>/solution/`) is a few `..` away from the agent: {scratch_root()}. "
+        "Point FORGEPILOT_EVAL_SCRATCH or FORGEPILOT_HOME at a directory outside the "
+        f"repository, or set {ALLOW_INSIDE_REPO}=1 to score it anyway and publish the rows as "
+        "`aside`."
+    )
+
+
 def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
     """One attempt's directory — **named so the agent cannot read the arm off it.**
 

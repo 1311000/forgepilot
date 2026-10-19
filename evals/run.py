@@ -178,6 +178,13 @@ async def run_one(
         # context, and a directory called `...-no-repair-1` is a hint the model can
         # read — and did.
         "scratch": str(scratch),
+        # **Whether this row was scored with the answer within reach.** A sweep whose
+        # scratch sits inside the checkout puts `evals/tasks/<name>/solution/` a few `..`
+        # away from the agent, and M23 measured three cells that walked there — green in
+        # every column. `refuse_scratch_inside_the_repository()` stops that happening by
+        # accident; this field is what stops a deliberate run from being quoted as if it
+        # had not happened.
+        "scratch_inside_repo": H.scratch_is_inside_the_repository(H.scratch_root()),
     }
 
     try:
@@ -617,6 +624,14 @@ def main(argv: list[str] | None = None) -> int:
     from forgepilot.env import load_local_env
 
     load_local_env(H.FORGE)
+    H.refuse_scratch_inside_the_repository()
+    if H.scratch_is_inside_the_repository():
+        print(
+            "WARNING: the scratch root is inside this checkout, so every row will say "
+            "`scratch_inside_repo: true` and `evals/matrix.py` will refuse it. "
+            f"{H.ALLOW_INSIDE_REPO} was set deliberately; nothing here is quotable.",
+            file=sys.stderr,
+        )
     return asyncio.run(main_async(args))
 
 
