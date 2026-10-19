@@ -153,6 +153,14 @@ def with_variant(task: EvalTask, name: str | None) -> EvalTask:
         changes["script"] = tuple(overrides["script"] or ())
     if "expect" in overrides:
         changes["expect"] = {**task.expect, **dict(overrides["expect"] or {})}
+    if "patches" in overrides:
+        # **A variant that swaps a plugin row, not the script.** `stale-corpus` needs
+        # exactly this: the task's own patch installs the composite retriever, and the
+        # question "was the composite necessary" is asked by running the same script
+        # against `index-only`. Replacing rather than appending is deliberate — a variant
+        # names the rows it wants, and "the task's rows plus mine" would leave two rows
+        # claiming `retriever` with the later one winning by accident of order.
+        changes["patches"] = tuple(overrides["patches"] or ())
     return dataclasses.replace(task, **changes)
 
 

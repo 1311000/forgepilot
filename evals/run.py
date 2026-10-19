@@ -561,7 +561,44 @@ async def main_async(args: argparse.Namespace) -> int:
             task = H.with_variant(tasks_by_name[name], variant)
             arm = arm_module.arm(arm_name)
             for rep in range(1, args.reps + 1):
-                row = await run_one(task, arm, rep, scripted=args.scripted, contain=CONTAIN)
+                try:
+                    row = await asyncio.wait_for(
+                        run_one(task, arm, rep, scripted=args.scripted, contain=CONTAIN),
+                        timeout=float(args.row_timeout),
+                    )
+                except TimeoutError:
+                    # ⚠️ **A hung command must not hang the sweep.** Measured 2026-10-19: one live
+                    # cell ran `python -`, which waits on a stdin nobody closes, and the sweep sat
+                    # there for twenty minutes with one row written and no verdict. `run_one`'s
+                    # "never raises" contract covers exceptions, not *not finishing*.
+                    #
+                    # The child is abandoned rather than killed: this harness has no portable way
+                    # to take a whole process tree down, and pretending to is worse than leaving an
+                    # operator something to see in the process list. What the row can say is that
+                    # it did not finish, which is a result and not a missing sample.
+                    row = {
+                        "task": task.name,
+                        "arm": arm.name,
+                        "rep": rep,
+                        "mode": "scripted" if args.scripted else "live",
+                        "contained": CONTAIN,
+                        "memory_on": bool(arm.memory),
+                        "distill_on": bool(arm.distill),
+                        "passed": False,
+                        "state": "timed-out",
+                        "tool_calls": 0,
+                        "wall_s": float(args.row_timeout),
+                        "failures": [
+                            f"the row did not finish within {float(args.row_timeout):g}s and was "
+                            f"abandoned; a command waiting on a stdin nobody closes must not stall "
+                            f"the sweep"
+                        ],
+                    }
+                    print(
+                        f"⚠️  {task.name}/{arm.name} rep {rep} timed out after "
+                        f"{float(args.row_timeout):g}s; recorded as a failed row, sweep continues",
+                        file=sys.stderr,
+                    )
                 row["run"] = run_id
                 # ⚠️ **What this row's arm actually changed**, recorded per row so a
                 # results file carries its own evidence. An arm that switched nothing
@@ -607,6 +644,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variant", default=None, help="a named override from the task spec")
     parser.add_argument("--live", action="store_true", help="the real model")
     parser.add_argument("--scripted", action="store_true", help="the replay model; a smoke test")
+    parser.add_argument(
+        "--row-timeout",
+        type=float,
+        default=300.0,
+        metavar="SECONDS",
+        help=(
+            "abandon one row after this long and record it as `timed-out`. ⚠️ A sweep "
+            "must not be able to hang: measured 2026-10-19, a cell that ran `python -` "
+            "sat waiting on stdin for twenty minutes with no verdict, and the default "
+            "command timeout (900s) was the only thing between the sweep and an hour."
+        ),
+    )
     parser.add_argument(
         "--retry-failed",
         nargs="?",

@@ -773,3 +773,91 @@ Offline, **all eight arms pass** (88 cells, 86 expected passes, `evals/matrix.py
 the scripted model writes the solution file, so removing `code_search` changes nothing about
 the row. The arm that separates a composite from an index-only provider has to be **live**, and
 the M23 table must not be read as having measured it.
+
+## Pricing the composite: two attempts, and an instrument that was missing
+
+`stale-corpus` was also meant to answer the next question — *is the composite worth its second
+half?* — by running the same task with only the index row (`--variant index-only`). Two live
+attempts, and **it still does not price anything**. The failure mode is worth recording because
+it is the same mistake twice, one level down.
+
+**Attempt 1 (2026-10-19).** Composite **3/3 pass** (13/15/11 calls, 27.7–28.9 s) and index-only
+**3/3 pass** (18/17/18 calls, 20.9–32.9 s). The composite costs *fewer* calls, which looked like
+a finding until the session logs were read: the model never needed the stale corpus for the
+number. The ticket names `limits.py`, the file is on disk, and `read_file` reads it; the fix is
+`min(requested, MAX_PER_PAGE)`. Retrieval was never the discovery channel, so its quality could
+not matter.
+
+**Attempt 2.** The fixture gained a file the corpus does not have — `paging/_shared_guard.py`,
+`clamp(requested, limit)` — the ticket asks the model to *reuse the checkout's shared clamp
+because the index predates it*, and the probe now fails a solution that writes its own `min(...)`.
+That is as close as a fixture can get to "the corpus alone is not enough": offline, `full` passes,
+`index-only` passes (the script writes the solution), and `trusts-the-corpus` fails on the probe.
+Live, the composite arm re-ran on the harder fixture at **3/3** (20/15/10 calls, 26.4–31.1 s) and
+the index-only arm **passed 3/3 as well** (19/16/15 calls, 28.5–32.1 s). The model ran
+`dir`/`findstr` through the `run` tool across the checkout and found the helper.
+
+**What that means.** The composite cannot be priced by any task while the agent has a shell:
+search is one way to find a file, and a shell is another, so a cheaper search shows up as fewer
+tool calls rather than as a different verdict. Pricing it needs a tool set **without** `run` —
+the GVFS shape, where scanning the tree is exactly what you cannot do — which is a new *arm*,
+not a new task. Recorded as unpriced rather than filled with the call-count difference, which
+is a cost observation wearing a capability's clothes.
+
+⚠️ **The same sweep found the instrument could hang.** One live cell ran a command whose child
+was `python -`, waiting on a stdin nobody closes; `run_one`'s "never raises" contract covers
+exceptions, not *not returning*, so the sweep sat in that cell for twenty minutes with one row
+written and no verdict, until a human killed it. `evals/run.py` now has `--row-timeout`
+(default 300 s): the row is recorded as `state: "timed-out"` with the reason, the console says
+so, and the sweep continues. The child is **abandoned, not killed** — this harness has no
+portable way to take a process tree down, and claiming to is worse than leaving an operator
+something to see. Guarded by `tests/evals/test_a_hung_row_is_recorded.py`.
+
+The attempt cost about twelve live cells. What it bought is a task that is strictly harder than
+it was, a probe that can see a solution which ignores the tree, and a sweep that cannot hang.
+
+## Three reps on the four tasks the 2-rep matrix could not separate (2026-10-19)
+
+The M23 matrix had four tasks whose 2-rep rows disagreed with themselves, so the next step was
+the cheapest way to find out whether that was noise: those four tasks, all eight arms, **three
+reps** — 96 cells, about 55 minutes. File: `evals/results/20261019T103312-live.jsonl`. Rows say
+`scratch_inside_repo: true` (the outside scratch is denied on this box), so they are a local
+reading, not a quotable one.
+
+| task | baseline | full | no-distill | no-memory | no-pinning | no-repair | no-search | tight-window |
+|---|---|---|---|---|---|---|---|---|
+| `no-failing-test` | **3/3** | 2/3 | 1/3 | 0/3 | 1/3 | 0/3 | 0/3 | 2/3 |
+| `not-in-the-checkout` | **0/3** | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1/3 | 3/3 |
+| `out-of-scope` | 3/3 | **0/3** | 2/3 | 3/3 | 3/3 | 2/3 | 3/3 | 3/3 |
+| `two-repos` | 2/3 | 1/3 | 2/3 | 1/3 | 1/3 | 1/3 | 2/3 | 1/3 |
+| **arm total** | 8/12 | 6/12 | 8/12 | 7/12 | 8/12 | 6/12 | 6/12 | 9/12 |
+
+**Search is the only mechanism this table prices, and only on one task.** `not-in-the-checkout`
+is 0/3 on `baseline` and 3/3 on five of the arms; `no-search` is 1/3, and both of its failures
+are rows that also say *"shell command(s) reached outside the checkout"* — i.e. the agent went
+looking where the answer was not. That is the same finding as M23, now with a denominator.
+
+**Everything else is dominated by one thing that is not a mechanism: the agent leaves its own
+scratch files in the worktree.** 27 of the 38 failures are `3 paths changed, limit 2` (or `4`).
+The extra paths are `_commit_msg.txt`, `_repro.py`, `verify_fix.py`, `_check.py`,
+`_scratch_repro.py`, `commit_msg_bug2.txt` … — a verification script written, run, and left
+behind. In `two-repos` the legitimate change is **one file per repository**, so `max_changed: 2`
+has zero headroom and any debris fails the cell. The pass column is therefore reading "did the
+agent tidy up" as much as "did it fix", and it does so at random: `no-failing-test` is 3/3 on
+`baseline` (no debris) and 0/3 on `no-memory` (three-for-three debris).
+
+**Two inversions are stable across three reps and are not explained yet:**
+
+- `out-of-scope`: `baseline` 3/3, `full` **0/3**. All three `full` failures are the same sentence
+  — *"the agent never mentioned 'settings.py', so a reader cannot tell the instruction was not
+  followed"*. Something the `full` arm switches on makes the agent silently skip the out-of-scope
+  instruction instead of naming it (memory, distillation or tier-2 compaction — this table cannot
+  say which).
+- `no-failing-test`: `baseline` 3/3 against 0–2/3 everywhere else, again mostly debris.
+
+**What to change before the next matrix.** `expect.max_changed` needs to stop charging the agent
+for its own diagnostics: either score tidiness as its own column instead of folding it into
+`passed`, or give multi-repository tasks headroom equal to `len(repos) + k`. And `out-of-scope`
+needs to be run arm-by-arm with the `full` switches bisected, because a 0/3 inversion is a
+finding — either a real regression in the shipped default or a task that measures narration. The
+96-cell table is the instrument saying it cannot yet tell those apart.

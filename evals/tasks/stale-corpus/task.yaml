@@ -1,13 +1,15 @@
 # **A corpus that disagrees with the tree, and the tree is right.**
 #
-# `not-in-the-checkout` proves a corpus is necessary. This one proves it is not sufficient: the
-# index it points at holds a *draft of `limits.py` itself* — the same path, an older revision —
-# and the checkout is on a branch where the number changed. A retriever that serves the corpus
-# copy answers with 500; the file in front of the agent says 250.
+# `not-in-the-checkout` proves a corpus is necessary. This one proves it is not sufficient, in
+# the one way that is not a wording: the checkout holds a file the corpus does not have
+# (`paging/_shared_guard.py`, added after the index was built), and the ticket says to reuse its
+# clamp instead of writing a second `min(...)`. An agent that can only search the corpus never
+# finds it — `code_search` returns nothing for `clamp` — so it writes its own, which every
+# visible check accepts and the held-out probe rejects.
 #
-# That is the defect `CompositeRetrieverPlugin` exists for, and it is the one an index-only
-# provider cannot see: `covers_working_tree: false` is the field that admits it. The visible
-# test's band excludes 500, so the failure is loud rather than subtle.
+# The stale number is the second half of the same story: the index still holds a draft of
+# `limits.py` itself (500) while the branch declares 250, so an agent that takes the limit from
+# the corpus fails the visible band loudly.
 #
 # ⚠️ **The composite patch is the point of this task.** The retriever row is overridden to the
 # composition, with the corpus beside the task file and the checkout named in `roots` — the same
@@ -39,9 +41,11 @@ ticket:
     3. 用 code_search 查 reporting 服务发布的分页契约
        （git.local/demo/contracts:paging/contract.py，那个仓库不在这个 checkout 里）
        确认守卫应该叫什么、怎么钳制
+    4. 这个检出里已经有一个共享的钳制助手（索引停在它出现之前，所以只有在这个检出的代码里
+       才搜得到）；复用它，不要自己再写一个 min
 
-    预期结果：暴露契约要求的守卫；钳制到 limits.py 自己声明的页大小 —— 上限值由这个文件
-    决定，契约只规定守卫的名字和钳制方式
+    预期结果：暴露契约要求的守卫；钳制到 limits.py 自己声明的页大小，并走这个检出已有的
+    钳制助手 —— 上限值由这个文件决定，契约只规定守卫的名字和钳制方式
     实际结果：没有这个守卫，page() 信任调用方
 
     受影响仓库：git.local/demo/stats
@@ -93,3 +97,28 @@ variants:
       # This is what the row actually fails on.
       probes: pass
       max_changed_paths: null
+
+  # --- the control arm, and the reason the composite exists --------------------
+  #
+  # Same ticket, same script, **one row different**: the retriever is the index alone. The corpus
+  # still has `limits.py@main` (the 500 draft) and the contract, and it does **not** have
+  # `paging/_shared_guard.py`, so an agent on this row searches for the clamp the ticket tells it
+  # to reuse, finds nothing, and writes its own `min(...)`. Every visible check accepts that; the
+  # held-out probe's reuse check does not.
+  #
+  # ⚠️ **`--scripted` passes this variant**, and that is not a defect in the variant: the scripted
+  # path writes `solution/limits.py`, which imports the helper directly. The row is a *live*
+  # measurement, because what it measures is whether a model can find a file:
+  #
+  #   evals/run.py --live --task stale-corpus --arm full --variant index-only --reps 3
+  #
+  # `patches` is replaced rather than extended (see `with_variant`): the task's own row installs
+  # the composite, and naming the rows again is how this variant says "not that one".
+  index-only:
+    patches:
+      - id: retriever
+        plugin: forgepilot.providers.retrieve.index:CodeIndexRetrieverPlugin
+        config:
+          index_path: ${FORGEPILOT_EVAL_TASK_DIR}/index.json
+        tier: trusted
+
