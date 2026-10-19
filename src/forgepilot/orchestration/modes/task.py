@@ -279,6 +279,11 @@ class RepoDelivery:
     state: TaskState
     reason: str = ""
     branch: str = ""
+    #: The working tree this delivery ran in. Named so a merged checkout can be
+    #: assembled from the trees that were actually verified, and so a reader of the
+    #: outcome can go and look at the bytes — the commit and the diff describe them,
+    #: but "where" is a different question.
+    root: str = ""
     #: The `CommitRef` the workspace made, when it made one.
     commit: Any = None
     diff: str = ""
@@ -348,6 +353,10 @@ class TaskOutcome:
     attempts: int = 0
     turns: int = 0
     deliveries: tuple[RepoDelivery, ...] = ()
+    #: The cross-repository check, when the project declares one. Its result cannot
+    #: live on any single delivery: it ran in a tree built from all of them, and it
+    #: is the only record that the *combination* worked.
+    merged_check: Any = None
     transitions: tuple[tuple[TaskState, str], ...] = field(default_factory=tuple)
 
     @property
@@ -507,7 +516,40 @@ async def run_task(
         project=project,
     )
 
+    merged = await _run_merged_checks(
+        project=project,
+        deliveries=deliveries,
+        workspace=workspace,
+        sandbox=sandbox,
+        session=session,
+        session_id=session_id,
+        constraints=constraints,
+    )
+
     state, reason = _task_verdict(deliveries)
+    if merged is not None and merged.could_not_run:
+        # The check was configured and could not run. Not a failure of the code
+        # under test, but not a pass either: saying "delivered" while the one check
+        # that would have looked at the combination never ran is the shape of claim
+        # this project keeps removing. The reason says so; the state keeps the
+        # verdict the per-repository work earned.
+        reason = f"{reason}; the merged checks did not run: {merged.reason}"
+    elif merged is not None and not merged.passed:
+        # **The combination failed.** The per-repository deliveries may already be
+        # published by the time this runs — publication is serial and happens
+        # inside the loop — so the reason has to say both things: the code has pull
+        # requests, and together they do not work.
+        published_note = (
+            "the repositories were published before this check ran, so their pull "
+            "requests exist"
+            if any(d.delivered for d in deliveries)
+            else "nothing was published"
+        )
+        state = TaskState.FAILED
+        reason = (
+            f"the merged checks failed, so the repositories do not work together: "
+            f"{merged.reason or merged.command}; {published_note}"
+        )
     machine.to(state, reason)
     # **The task's own verdict, in the log.** Every `task/state` event so far
     # describes one repository; the verdict the runner returned described all of
@@ -532,6 +574,7 @@ async def run_task(
         attempts=sum(delivery.attempts for delivery in deliveries),
         turns=sum(delivery.turns for delivery in deliveries),
         deliveries=tuple(deliveries),
+        merged_check=merged,
         transitions=tuple(machine.history),
     )
 
@@ -759,6 +802,7 @@ async def _deliver_repository(
             changed_paths=changed,
             pinned_tests=pinned,
             branch=branch,
+            root=str(handle.root),
             transitions=tuple(machine.history),
         )
 
@@ -796,6 +840,7 @@ async def _deliver_repository(
             changed_paths=tuple(changed),
             pinned_tests=pinned,
             branch=branch,
+            root=str(handle.root),
             transitions=tuple(machine.history),
         )
     draft = PullRequestDraft(
@@ -938,6 +983,7 @@ async def _deliver_repository(
             changed_paths=tuple(changed),
             pinned_tests=pinned,
             branch=branch,
+            root=str(handle.root),
             commit=commit,
             draft=draft,
             transitions=tuple(machine.history),
@@ -994,6 +1040,119 @@ def _commit_sha(commit: Any) -> str | None:
     """
     return None if commit is None else str(commit.sha)
 
+
+async def _run_merged_checks(
+    *,
+    project: ProjectConfig,
+    deliveries: Sequence[RepoDelivery],
+    workspace: Any,
+    sandbox: Any,
+    session: Any,
+    session_id: Any,
+    constraints: ExecutionConstraints,
+) -> Any:
+    """Run the project's cross-repository checks over one tree built from every delivery.
+
+    **Why a separate run, and why here.** A repository's own `test:` runs inside
+    that repository's tree. When the ticket's change spans two repositories and
+    the breakage is only in the combination — ``reporting`` imports a name
+    ``stats`` now defines differently — each tree passes on its own and nobody has
+    run the pair. This is the only check in the system that can see that, and it is
+    the reason the merged tree is assembled from the **verified** worktrees rather
+    than from the branches: what it examines is the bytes the per-repository checks
+    examined.
+
+    It runs after every delivery, because the tree it needs only exists then. That
+    ordering has a cost, stated rather than hidden: publication happens inside the
+    loop, so a failure here comes after the pull requests exist. The verdict says
+    so, and the caller's reason names it.
+
+    Returns ``None`` when the project declares no merged checks. Otherwise a
+    `CheckResult`; a result with ``could_not_run`` means the check was configured
+    and did not happen, which the caller reports rather than swallowing.
+    """
+    from forgepilot.runtime.repair import CheckResult, run_checks
+    from forgepilot.seams.session import EventKind
+
+    commands = project.merged_checks
+    if not commands:
+        return None
+
+    async def _skip(reason: str) -> CheckResult:
+        result = CheckResult(
+            passed=True,
+            commands=tuple(commands),
+            command=" && ".join(commands),
+            could_not_run=True,
+            reason=reason,
+            meta={"merged": True},
+        )
+        await session.append(
+            EventKind.TASK_CHECK,
+            {
+                "repo": None,
+                "passed": True,
+                "command": result.command,
+                "commands": list(result.commands),
+                "exitCode": 0,
+                "output": "",
+                "couldNotRun": True,
+                "reason": reason,
+                "meta": dict(result.meta),
+            },
+        )
+        return result
+
+    failed = [d.repo.slug for d in deliveries if d.state is TaskState.FAILED]
+    if failed:
+        return await _skip(
+            "an earlier repository's delivery failed ("
+            + ", ".join(failed)
+            + "), so the combination was never checked"
+        )
+
+    attempted = [d for d in deliveries if d.attempted]
+    if len(attempted) < 2:
+        return await _skip(
+            f"the merged checks need at least two repositories; this ticket delivered {len(attempted)}"
+        )
+
+    missing = [d.repo.slug for d in attempted if not d.root]
+    if missing:
+        return await _skip(
+            "these deliveries did not record the tree they ran in: "
+            + ", ".join(missing)
+            + ", so no merged checkout can be assembled from what was verified"
+        )
+
+    build = getattr(workspace, "merged_checkout", None)
+    if build is None:
+        return await _skip(
+            "this deployment's workspace cannot build a merged checkout: the provider has no "
+            "merged_checkout(). Use "
+            "forgepilot.providers.workspace.merged:MergedCheckoutWorkspacePlugin to run "
+            "merged_checks."
+        )
+
+    root = await build(
+        [(delivery.repo, Path(delivery.root)) for delivery in attempted],
+        session_id=session_id,
+        name="checks",
+    )
+    try:
+        return await run_checks(
+            commands=commands,
+            sandbox=sandbox,
+            session=session,
+            constraints=constraints,
+            workspace_root=root,
+            session_id=session_id,
+            label="merged",
+        )
+    finally:
+        dispose = getattr(workspace, "dispose_merged", None)
+        if dispose is not None:
+            dispose(root)
 
 
 def _task_verdict(deliveries: Sequence[RepoDelivery]) -> tuple[TaskState, str]:

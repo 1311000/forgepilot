@@ -139,6 +139,15 @@ class ProjectConfig:
     category_engines: Mapping[str, str] = field(default_factory=dict)
     default_tool_set: str = "default"
     default_engine: str = "forgepilot"
+    #: Checks that can only be run with **every** repository of the ticket in one
+    #: directory — the cross-repository ones. A single repository's `test:` runs
+    #: inside that repository's tree, where its neighbour does not exist; a change
+    #: in two repositories that only breaks in combination is therefore invisible
+    #: to it, and the run reports two passes for a combination nobody executed.
+    #:
+    #: Empty by default, and it is not a permission: these are lines the harness
+    #: runs, like `test:`, not programs a model may start.
+    merged_checks: tuple[str, ...] = ()
     #: Paths that are the check's own oracle. A change here does not decide the
     #: check — see `runtime/pinning.py`. An explicit empty list means "pin
     #: nothing", which is a project saying its tests are somewhere this
@@ -280,6 +289,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         category_engines=_string_map("category_engines"),
         default_tool_set=str(raw.get("default_tool_set", "default")),
         default_engine=str(raw.get("default_engine", "forgepilot")),
+        merged_checks=_commands("merged_checks"),
         # Absent means "use the convention"; `[]` means "pin nothing", which is a
         # different statement and one a project is entitled to make.
         test_paths=(

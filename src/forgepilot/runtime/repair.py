@@ -80,6 +80,7 @@ async def run_checks(
     timeout_s: float = 900.0,
     pinned: Sequence[str] = (),
     repo: str | None = None,
+    label: str | None = None,
 ) -> CheckResult:
     """Run the project's check commands, in order, stopping at the first failure.
 
@@ -94,6 +95,11 @@ async def run_checks(
     deliveries, and a passing check that does not say which tree it ran in cannot
     be told apart from the other repository's. It is ``None`` for a caller that
     has only one tree to talk about, which is every caller outside task mode.
+
+    ``label`` distinguishes a run that is not "this repository's checks" — today
+    only ``"merged"``, the cross-repository check that runs in a tree built from
+    every delivery. It rides in the recorded event's meta so a reader can tell the
+    two apart without parsing the command line.
     """
     if not commands:
         return CheckResult(
@@ -101,7 +107,7 @@ async def run_checks(
             output="no checks are configured for this project",
             could_not_run=True,
             reason="no checks configured",
-            meta={"skipped": True},
+            meta={"skipped": True, **({"label": label} if label else {})},
         )
 
     command = " && ".join(commands)
@@ -119,6 +125,7 @@ async def run_checks(
             ),
             could_not_run=True,
             reason="run_tests is not permitted",
+            meta={"label": label} if label else {},
         )
         await _record(session, result, turn, step, repo)
         return result
@@ -214,6 +221,12 @@ async def run_checks(
         )
     else:
         result = broken
+
+    if label is not None:
+        # The dataclass is frozen but the meta mapping is not, and this is where
+        # the label is known. Mutating it here keeps every construction above from
+        # having to thread one optional string through.
+        result.meta["label"] = label
 
     await _record(session, result, turn, step, repo)
     return result

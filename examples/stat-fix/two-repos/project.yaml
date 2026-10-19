@@ -37,12 +37,33 @@ default_branch: main
 
 # ⚠️ **One command for both repositories, and it is run in each repository's own
 # tree** (M13/D3). That works here because each checkout is a self-contained
-# Python project with its own `tests/`; a suite that needed *both* repositories
-# side by side in one directory would need a merged checkout, which M13
-# deliberately does not build. That gap is written down in
-# `docs/notes/task-delivery.md` rather than papered over by a flag.
+# Python project with its own `tests/`. A suite that needed *both* repositories
+# side by side in one directory is what `merged_checks` below is for (M25): the
+# per-delivery checks still see one tree, and exactly one command sees the pair.
 test:
   - ${FORGEPILOT_PYTHON} -m pytest -q
+
+# ⚠️ **The one check neither repository can run alone** (M25). `test:` above is
+# run in each delivery's own tree, and `reporting` cannot `import stats` because
+# there is no tree holding both. This line runs *after* the deliveries, in a
+# merged directory built from both working trees
+# (`MergedCheckoutWorkspacePlugin`), and it holds the invariant the two copies
+# exist to share: both windowed averages must return the full set of windows for
+# the same series. Before the fix they both drop the last window — they *agree*
+# with each other and are both wrong, which is exactly why comparing them to each
+# other is not enough and the expected value is written out.
+#
+# ⚠️ **It is a command the harness runs, not something the model may launch.**
+# `commands:` below is the model's allow-list; this is not.
+merged_checks:
+  - >-
+    ${FORGEPILOT_PYTHON} -c "import sys; sys.path[:0] = ['stats', 'reporting'];
+    import stats, reporting;
+    want = [1.5, 2.5, 3.5, 4.5];
+    a = stats.moving_average([1, 2, 3, 4, 5], 2);
+    b = reporting.weekly_average([1, 2, 3, 4, 5], 2);
+    assert a == want, a;
+    assert b == want, b"
 
 allowed_operations:
   - read_code

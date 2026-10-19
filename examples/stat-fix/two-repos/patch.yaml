@@ -38,7 +38,11 @@
   tier: trusted
 
 - id: workspace
-  plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+  # ⚠️ **`merged`, not `git_worktree`** (M25): the subclass adds
+  # `merged_checkout()`, which this deployment needs because `project.yaml` asks
+  # for a `merged_checks` line. It closes nothing else — the per-repository
+  # prepare/diff/commit path is the same object, inherited.
+  plugin: forgepilot.providers.workspace.merged:MergedCheckoutWorkspacePlugin
   config:
     # One entry per repository. The handle is keyed `(session, repo)`, so the two
     # deliveries get two worktrees and two branches under one session — see M13

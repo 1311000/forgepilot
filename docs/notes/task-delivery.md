@@ -108,11 +108,41 @@ what the run knew *at that moment* and rewritten once every delivery has an outc
 `task/published` events; see below) — the opening body of a plural ticket's first pull
 request is the one place the run has to say "not yet" and then stop saying it.
 
-**What is still not covered, and it is a real gap rather than a detail:** an integration
-suite that needs **both** repositories in one directory. There is no merged checkout, and
-there is no per-repository `test`/`test_paths` — every repository runs the project's one
-command in its own tree. A deployment that needs the merged shape adds it; the seam does
-not foreclose it, and the plan's D3 records that we chose not to build it now.
+**The merged checkout — added at M25, and only for one kind of command.** The gap this
+section used to end on ("an integration suite that needs both repositories in one
+directory") is closed for the check that needs it and deliberately not for anything
+else:
+
+- `ProjectConfig.merged_checks` is a tuple of commands run **after** every delivery, in a
+  directory built from the deliveries' working trees. It is a command the *harness* runs
+  (like `test:`), not something the model may launch (`commands:` is that allow-list).
+- `MergedCheckoutWorkspacePlugin` (in `providers/workspace/merged.py`) **inherits**
+  `GitWorktreeWorkspacePlugin` and adds `merged_checkout(trees, session_id=…, name=…)`:
+  one directory, one subdirectory per repository named by the last slug component, copies
+  of the **working trees** (so uncommitted fixes are what gets checked), no `.git`, and a
+  `ValueError` naming both slugs when two repositories end in the same name. It inherits
+  rather than wraps because Cordis provides a service at construction: two instances would
+  fight over the `workspace` name.
+- `run_task` skips it — with a reason, never silently — when there are fewer than two
+  attempts, when a delivery failed, when a delivery has no recorded `root`, or when the
+  configured workspace cannot build one (the reason names the provider to use). A failing
+  merged check turns the task `FAILED` with `"the merged checks failed, so the
+  repositories do not work together: …"`, and says whether anything was already published.
+  A **skipped** one leaves the per-repository verdict alone and appends `"; the merged
+  checks did not run: …"` to the reason, because a check that could not run is not a check
+  that passed.
+- Measured (2026-10-19): `two-repos` in `evals/` now runs it — 8 arms, all green, 2 calls
+  each — and breaking the command turns the task `FAILED` in 2.4 s. The real command is in
+  `examples/stat-fix/two-repos/project.yaml`: before the fix both copies drop the last
+  window and therefore *agree*, so it compares against a written-out expected value rather
+  than the two against each other. The falsifier
+  (`tests/task/test_merged_checks.py::test_the_check_catches_a_combination_that_each_tree_passes`)
+  runs it for real in a merged directory: passing, then `(3, 2)` fails it.
+
+**Still not covered:** a *per-repository* `test`/`test_paths` (every repository still runs
+the project's one command in its own tree), and a merged tree the agent itself may read —
+`merged_checks` is verification, not a workspace. Both are deliberate: the second would
+hand the agent a tree that no delivery owns, and a diff from it could not be attributed.
 
 **Two pull requests against a real host — measured 2026-10-18, not asserted.** A single run
 of `BUG-2` through `examples/stat-fix/two-repos/github/` (the layout this section used to

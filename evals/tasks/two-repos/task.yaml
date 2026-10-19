@@ -15,10 +15,12 @@
 #
 # ⚠️ **Why the second repository carries its own copy of the defect** rather than
 # importing `stats.moving_average`. Each delivery's checks run in *its own* tree
-# (M13/D3), and there is no merged checkout, so a `reporting` that imported `stats`
-# would fail every check with an `ImportError` — a failure that has nothing to do
-# with the bug and would make this row unreadable. The defect being *copied* is also
-# how it got into both repositories, which is why one ticket covers both.
+# (M13/D3), and a `reporting` that imported `stats` would fail every per-repository
+# check with an `ImportError` — a failure that has nothing to do with the bug and
+# would make this row unreadable. The defect being *copied* is also how it got into
+# both repositories, which is why one ticket covers both. M25 added the one place
+# the two trees *do* meet (`merged_checks` below), and a cross-repository import is
+# legitimate there.
 name: two-repos
 fixture: ../../../examples/stat-fix/fixture
 
@@ -35,6 +37,19 @@ project:
   repos:
     - git.local/demo/stats
     - git.local/demo/reporting
+  # ⚠️ **The only check that needs both repositories at once** (M25). The merged
+  # checkout is built from the two working trees, so `reporting` can finally see
+  # `stats`; the expected value is written out rather than compared between the
+  # two, because the defect is *copied* and an unfixed pair agrees with itself.
+  merged_checks:
+    - >-
+      ${FORGEPILOT_PYTHON} -c "import sys; sys.path[:0] = ['stats', 'reporting'];
+      import stats, reporting;
+      want = [1.5, 2.5, 3.5, 4.5];
+      a = stats.moving_average([1, 2, 3, 4, 5], 2);
+      b = reporting.weekly_average([1, 2, 3, 4, 5], 2);
+      assert a == want, a;
+      assert b == want, b"
 
 # The three rows that hold a repository → path mapping, restated for both slugs.
 # ⚠️ A task row **replaces** an overridden row's whole config (`config/patch.py`:
@@ -44,7 +59,11 @@ project:
 # directory, outside the eval's scratch.
 patches:
   - id: workspace
-    plugin: forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin
+    # ⚠️ **`merged`, not `git_worktree`** (M25): the task asks for a
+    # `merged_checks` line above, and only this subclass can build the directory
+    # it runs in. Without it the check is *skipped* rather than silently passing —
+    # `_run_merged_checks` reports `could_not_run` and names this provider.
+    plugin: forgepilot.providers.workspace.merged:MergedCheckoutWorkspacePlugin
     config:
       repos:
         git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
