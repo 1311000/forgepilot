@@ -155,7 +155,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "with --distill: really call the model and record the run, but write "
-            "no memory and do not advance the watermark"
+            "no memory and do not advance the watermark; with --prune: report what "
+            "would be deleted without deleting it"
         ),
     )
     memory.add_argument(
@@ -194,6 +195,22 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="TEXT",
         help="with --forget or --purge: why, recorded in the log and in the tombstone",
+    )
+    memory.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "delete memory history older than --older-than-days and exit. Only "
+            "terminal records (superseded, revoked, expired) are eligible; an active "
+            "belief is never aged out"
+        ),
+    )
+    memory.add_argument(
+        "--older-than-days",
+        type=int,
+        default=90,
+        metavar="N",
+        help="with --prune: the cutoff in days (default 90)",
     )
 
     serve = parser.add_argument_group("serve")
@@ -1049,6 +1066,118 @@ def _distill(args: argparse.Namespace) -> int:
         return 1
 
 
+def _prune(args: argparse.Namespace) -> int:
+    """Delete memory *history* older than the cutoff — the aging-out path.
+
+    Distinct from ``--forget`` and ``--purge`` in what it is allowed to touch: only
+    terminal records (superseded, revoked, expired). Those are the rows the store
+    keeps for the audit trail and that no recall can ever return, so deleting them
+    changes no answer a model could give. An ``ACTIVE`` record is never aged out by
+    this command — that is a decision about a belief, and it goes through
+    ``--forget`` with the authorisation that path carries.
+
+    ``--dry-run`` prints the same report without deleting, because the first run of
+    a destructive command should be able to show you the number before it is the
+    number.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.kernel import create_root
+    from forgepilot.runtime.session import Session
+    from forgepilot.seams.refs import SessionId
+    from forgepilot.seams.session import EventKind, SurfaceOp
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    token = args.token or os.environ.get("FORGEPILOT_TOKEN")
+    if not token:
+        print(
+            "error: no credential. A prune deletes rows, so it needs a principal: "
+            "pass --token or set FORGEPILOT_TOKEN.",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def run() -> int:
+        root = create_root()
+        try:
+            await resolved.materialize_async(root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not boot: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        memory = getattr(root, "memory", None)
+        if memory is None:
+            print(
+                "error: this profile has no memory store, so there is nothing to prune.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            record = root.principal.resolve(token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+
+        session_id = SessionId(f"memory-maintenance-{record.principal.tenant_id}")
+        try:
+            session = await Session.open(root.sessionPersistence, session_id)
+        except FileNotFoundError:
+            session = await Session.create(
+                root.sessionPersistence,
+                session_id,
+                tenant=str(record.principal.tenant_id),
+                principal=str(record.principal.principal_id),
+                cwd=str(Path.cwd()),
+            )
+
+        try:
+            report = await memory.prune(
+                older_than_days=args.older_than_days,
+                dry_run=args.dry_run,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        await session.append(
+            EventKind.MEMORY_PRUNED,
+            {
+                "olderThanDays": args.older_than_days,
+                "cutoff": report.cutoff.isoformat(),
+                "removed": [str(memory_id) for memory_id in report.removed],
+                "kept": report.kept,
+                "dryRun": report.dry_run,
+                "principal": str(record.principal.principal_id),
+            },
+            surface=SurfaceOp.LOG_ONLY,
+        )
+        await session.flush()
+
+        verb = "would delete" if report.dry_run else "deleted"
+        print(
+            f"{verb} {report.count} record(s) older than "
+            f"{report.cutoff.isoformat()} ({args.older_than_days} day(s)); "
+            f"{report.kept} kept."
+        )
+        print(f"session: {session_id}")
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
 def _forget_or_purge(args: argparse.Namespace) -> int:
     """Stop recalling one memory, or delete it.
 
@@ -1475,6 +1604,7 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
             ("--distill", bool(args.distill)),
             ("--forget", bool(args.forget)),
             ("--purge", bool(args.purge)),
+            ("--prune", args.prune),
             ("--backup", bool(args.backup)),
             ("--restore", bool(args.restore)),
             ("--serve", args.serve),
@@ -1500,6 +1630,8 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
         return _distill(args)
     if args.forget or args.purge:
         return _forget_or_purge(args)
+    if args.prune:
+        return _prune(args)
     if args.backup:
         return _backup(args)
     if args.restore:

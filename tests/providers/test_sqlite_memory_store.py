@@ -21,17 +21,23 @@ interpreter, an in-process dict passes every other test in this file too.
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import subprocess
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from forgepilot.config import apply_layers, resolve_plugin
 from forgepilot.config.bundle import load_bundle_layer
 from forgepilot.kernel import create_root, dispose_fiber
+from forgepilot.providers.memory.sqlite import SCHEMA, SCHEMA_VERSION, MemorySchemaTooNew
 from forgepilot.seams import (
+    Confidence,
     EventRef,
     ExecutionConstraints,
     MemoryCandidate,
@@ -416,3 +422,79 @@ def test_the_bundle_points_the_memory_row_at_the_durable_store() -> None:
     assert dict(memory.config) == {"path": ""}
     assert memory.sources == ("bundle:base", "bundle:memory_sqlite")
     assert memory.tier == "trusted"
+
+# ---------------------------------------------------------------------------
+# M27: the file has a version, and an older row still decodes
+# ---------------------------------------------------------------------------
+
+
+def _raw(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(path)
+
+
+async def test_a_file_from_a_newer_release_is_refused(tmp_path: Path) -> None:
+    """Reading a newer file is refused rather than guessed at.
+
+    Writing it back would drop the columns this release does not know about, so the
+    damage would be invisible until the newer release read the file again. Naming the
+    version is what makes "restore the older binary" a decision somebody can take.
+    """
+    path = tmp_path / "future.sqlite3"
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+
+    with pytest.raises(MemorySchemaTooNew, match="version 2"):
+        async with store_at(path) as store:
+            # The connection is lazy — loading the row creates no file — so the
+            # refusal is observed on the first real read, which is where an operator
+            # would hit it.
+            assert store.records == ()  # type: ignore[attr-defined]
+
+
+async def test_a_file_written_before_there_was_a_version_is_adopted(tmp_path: Path) -> None:
+    """The pre-M27 file has the tables and no version; the first connection stamps it."""
+    path = tmp_path / "old.sqlite3"
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(SCHEMA)
+        conn.commit()
+
+    async with store_at(path) as store:
+        assert isinstance(store, MemoryStore)
+        # Touch it: the connection is lazy on purpose, so nothing is stamped before
+        # the first read.
+        assert store.records == ()  # type: ignore[attr-defined]
+
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+async def test_a_row_that_predates_a_field_still_decodes(tmp_path: Path) -> None:
+    """An older row is missing keys a newer release added; it must still be readable.
+
+    This is the half of the migration story that is not about the version number: if
+    every added field were required, the store would work right up until the release
+    that reads it, and then every existing row would be a ``KeyError``.
+    """
+    path = tmp_path / "old-row.sqlite3"
+    async with store_at(path) as store:
+        await store.write(candidate(), observed())
+        (record,) = store.records  # type: ignore[attr-defined]
+
+    with closing(sqlite3.connect(path)) as conn:
+        (raw,) = conn.execute("SELECT record_json FROM memories").fetchone()
+        blob = json.loads(raw)
+        # The two fields a later release added, removed the way an older row has them.
+        blob.pop("confidence", None)
+        blob["candidate"].pop("model_confidence_hint", None)
+        conn.execute(
+            "UPDATE memories SET record_json = ?", (json.dumps(blob, ensure_ascii=False),)
+        )
+        conn.commit()
+
+    async with store_at(path) as store:
+        (decoded,) = store.records  # type: ignore[attr-defined]
+
+    assert decoded.id == record.id
+    assert decoded.confidence is Confidence.LOW

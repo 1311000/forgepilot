@@ -74,6 +74,7 @@ __all__ = [
     "UnprovenMemoryWrite",
     "RecallVerdict",
     "require_tenant",
+    "require_audience",
     "require_recallable_provenance",
     "require_provisional_provenance",
     "new_recallable_record",
@@ -95,6 +96,9 @@ __all__ = [
     "ResolutionKind",
     "Resolution",
     "PurgeTombstone",
+    "PruneReport",
+    "PRUNABLE_STATUSES",
+    "prunable",
     "conflict_key",
     "siblings_of",
     "subjects_are_related",
@@ -174,6 +178,21 @@ def audience_repo(scope: MemoryScope | str, scope_ref: str) -> RepoRef:
             f"against anyone's permission, so it is refused rather than defaulted."
         )
     return RepoRef(host=parts[0], namespace=parts[1], name=parts[2])
+
+
+def require_audience(candidate: MemoryCandidate) -> None:
+    """Refuse a candidate whose scope names no audience, **at the write**.
+
+    :func:`audience_repo` already raises at recall, and that alone was not enough:
+    a ``TEAM``-scoped candidate was accepted, stored, and then unreachable by any
+    recall — a record nobody can read, created by a path that answered "yes". The
+    failure has to happen where the caller can still do something about it, which
+    is the write.
+
+    Quarantine is deliberately exempt (see :func:`new_quarantined_record`): nothing
+    recalls a quarantined record, so it has no audience to get wrong.
+    """
+    audience_repo(candidate.scope, candidate.scope_ref)
 
 
 class UnattributableTenant(ForgePilotError):
@@ -268,6 +287,29 @@ class MemoryStatus(StrEnum):
     REVOKED = "revoked"
     EXPIRED = "expired"
     CONFLICTED = "conflicted"
+
+
+#: Statuses ``prune`` may delete rows in. **Every one of them is terminal, and that
+#: is the whole safety argument**: a pruned row cannot be one recall would have
+#: served, because no status here is in :data:`RECALLABLE_STATUSES`. The store is a
+#: cache of current belief; the *audit* is the session log, which keeps
+#: ``memory/write`` and ``memory/resolved`` long after the row is gone.
+PRUNABLE_STATUSES: frozenset[MemoryStatus] = frozenset(
+    {MemoryStatus.SUPERSEDED, MemoryStatus.REVOKED, MemoryStatus.EXPIRED}
+)
+
+
+def prunable(record: MemoryRecord, *, cutoff: datetime) -> bool:
+    """Whether this row is history old enough to delete — the rule both stores share.
+
+    Age is taken from ``updated_at or created_at``: a record superseded yesterday is
+    yesterday's news even if it was admitted a year ago, and using ``created_at``
+    would delete a row that only just became history.
+    """
+    if record.status not in PRUNABLE_STATUSES:
+        return False
+    moment = record.updated_at or record.created_at
+    return moment is not None and moment <= cutoff
 
 
 #: The statuses recall may return. A quarantined record is not here by
@@ -1222,6 +1264,25 @@ def recall_verdict(
     return RecallVerdict.HIT
 
 
+@dataclass(frozen=True, slots=True)
+class PruneReport:
+    """What :meth:`MemoryStore.prune` did, in one object.
+
+    ``removed`` is ids, not records: the caller writes them to the log, and a
+    report that carried the text would make "pruned" indistinguishable from
+    "still believed" in the one place that is supposed to say otherwise.
+    """
+
+    cutoff: datetime
+    removed: tuple[MemoryId, ...] = ()
+    kept: int = 0
+    dry_run: bool = False
+
+    @property
+    def count(self) -> int:
+        return len(self.removed)
+
+
 @runtime_checkable
 class MemoryStore(Protocol):
     async def write(self, candidate: MemoryCandidate, provenance: Provenance) -> MemoryId:
@@ -1355,6 +1416,33 @@ class MemoryStore(Protocol):
         whose whole cost is the loss of the audit trail, so the record must name who
         accepted that cost. The caller is ``runtime/memory_lifecycle.py::purge``,
         behind ``Operation.PURGE_MEMORY`` and a typed confirmation.
+        """
+        ...
+
+    async def prune(
+        self,
+        *,
+        now: datetime | None = None,
+        older_than_days: int = 90,
+        dry_run: bool = False,
+    ) -> PruneReport:
+        """Delete rows that are history and older than ``older_than_days``.
+
+        The counterweight to "nothing prunes old rows", and deliberately the
+        narrowest version of it: only :data:`PRUNABLE_STATUSES` — superseded,
+        revoked, expired — so no row this deletes could have been recalled, and an
+        ``ACTIVE`` record is never aged out (a convention does not get more false by
+        being old; what *does* get stale carries an ``expires_at`` and reaches
+        ``EXPIRED`` through a recall that observes it).
+
+        Deletion, not another status: the three statuses it accepts are exactly the
+        terminal ones, and a fourth would be a lie about what the row is. The audit
+        survives in the session log, which is where "what was believed, and when"
+        lives; the store is the current state of belief, and keeping every version of
+        it forever is a leak with a growing index.
+
+        Returns what was removed so the caller can log it. A store has no log, for
+        the same reason :meth:`reconcile` returns its resolutions.
         """
         ...
 

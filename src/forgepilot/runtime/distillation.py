@@ -364,6 +364,9 @@ async def distill(
     notes: list[str] = []
     dropped = 0
     duplicated = 0
+    #: Candidates a store refused, and where they cited from. Their *evidence* is
+    #: what holds the watermark back: everything before the first one is settled.
+    deferred: list[int] = []
 
     for candidate in candidates:
         unknown = sorted({seq for seq in candidate.evidence_seqs if seq not in citable})
@@ -423,8 +426,21 @@ async def distill(
             # The store's own rules refused it. One refused claim must not abort a
             # batch: the rest of the extraction is still good, and the refusal is
             # recorded where an operator will see it.
+            #
+            # It also must not be *burned*. A citation drop above is settled — the
+            # same window would show the model the same events, so a retry would
+            # fail identically, which is why advancing past it is honest. A store
+            # refusal is not settled: it depends on the store, its tenant, and
+            # whether the scope rules have been answered yet, all of which can
+            # change between runs. So the run records where the claim came from and
+            # the watermark below stops short of it.
             dropped += 1
-            notes.append(f"dropped {candidate.subject!r}: the store refused it: {exc}")
+            deferred.append(min(candidate.evidence_seqs, default=watermark + 1))
+            notes.append(
+                f"dropped {candidate.subject!r}: the store refused it: {exc} — the "
+                f"watermark will stop before it, because a refusal is a property of "
+                f"the store and can stop being one"
+            )
             continue
 
         ids_by_hash[hashed] = memory_id
@@ -464,8 +480,21 @@ async def distill(
 
     watermark_after = watermark
     if not dry_run:
-        await watermarks.set(session_id, upto)
-        watermark_after = upto
+        # Everything up to `upto` is settled *except* the stretch a refused claim
+        # cited from. Advancing past that would drop the claim for good: the next run
+        # would start after it, and the store would never be asked again. So the
+        # watermark stops one event before the earliest refused citation. It is
+        # cumulative — never behind where it already was, or a run could re-distil
+        # what an earlier one already answered.
+        advance_to = upto
+        if deferred:
+            advance_to = max(watermark, min(deferred) - 1)
+            notes.append(
+                f"the watermark stops at {advance_to} instead of {upto}: "
+                f"{len(deferred)} claim(s) the store refused can be asked again"
+            )
+        await watermarks.set(session_id, advance_to)
+        watermark_after = advance_to
 
     final = replace(
         attempt,
@@ -475,6 +504,7 @@ async def distill(
         provisional=len(proposed),
         duplicated=duplicated,
         dropped=dropped,
+        deferred=len(deferred),
         memories=tuple(written + proposed),
         notes=tuple(notes),
         finished_at=datetime.now(UTC),

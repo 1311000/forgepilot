@@ -60,6 +60,7 @@ from forgepilot.seams import (
     ResolutionKind,
     SessionId,
     TenantId,
+    UnattributableScope,
     UnattributableTenant,
     assert_transition,
     confidence_for,
@@ -785,3 +786,85 @@ async def test_forgetting_or_purging_something_that_is_not_there_is_refused(cont
     with pytest.raises(KeyError):
         await memory.purge(MemoryId("mem-nope"), approved_by="alice")
 
+
+# ---------------------------------------------------------------------------
+# M27: admission-time audience, and the aging-out path
+# ---------------------------------------------------------------------------
+
+
+async def test_a_team_scoped_candidate_is_refused_at_the_write(memory_store) -> None:
+    """A scope with no audience model cannot be admitted at all.
+
+    ``audience_repo`` raised at *recall* only, so a ``TEAM``-scoped candidate used to
+    be written and then be unreadable forever — a record nobody can see, created by a
+    path that answered yes. The refusal belongs where the caller can still act on it.
+    """
+    with pytest.raises(UnattributableScope):
+        await memory_store.write(
+            candidate(scope=MemoryScope.TEAM, scope_ref="team-x"),
+            provenance(ProvenanceKind.HUMAN_VERIFIED, ev(1)),
+        )
+
+
+async def test_prune_deletes_history_and_never_a_belief(memory_store) -> None:
+    """Aging-out is for rows no recall could have served.
+
+    The active record is the store's current belief, so it is never old enough to
+    delete however old it is; the revoked one is terminal history. Deleting the
+    belief instead would be a silent data loss dressed as housekeeping.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    belief = await memory_store.write(
+        candidate(text="retry loop needs a cap", subject="keep me"),
+        provenance(ProvenanceKind.HUMAN_VERIFIED, ev(1)),
+    )
+    history = await memory_store.write(
+        candidate(text="the build used make", subject="retire me"),
+        provenance(ProvenanceKind.HUMAN_VERIFIED, ev(2)),
+    )
+    await memory_store.revoke(history)
+
+    report = await memory_store.prune(
+        now=datetime.now(UTC) + timedelta(days=200), older_than_days=90
+    )
+
+    assert history in report.removed
+    assert belief not in report.removed
+    assert report.count == 1
+
+
+async def test_prune_reports_without_deleting_when_asked_to(memory_store) -> None:
+    """``dry_run`` is how an operator sees the number before it is the number."""
+    from datetime import UTC, datetime, timedelta
+
+    history = await memory_store.write(
+        candidate(text="the build used make", subject="retire me"),
+        provenance(ProvenanceKind.HUMAN_VERIFIED, ev(2)),
+    )
+    await memory_store.revoke(history)
+    later = datetime.now(UTC) + timedelta(days=200)
+
+    preview = await memory_store.prune(now=later, older_than_days=90, dry_run=True)
+    assert history in preview.removed
+    assert preview.dry_run is True
+
+    real = await memory_store.prune(now=later, older_than_days=90)
+    assert real.removed == preview.removed, "the dry run named what the real one removed"
+
+    empty = await memory_store.prune(now=later, older_than_days=90)
+    assert empty.removed == (), "it is gone, so a second prune has nothing to name"
+
+
+async def test_prune_leaves_recent_history_alone(memory_store) -> None:
+    """Age is ``updated_at or created_at``: a row superseded yesterday is new news."""
+    from datetime import UTC, datetime
+
+    history = await memory_store.write(
+        candidate(text="the build used make", subject="retire me"),
+        provenance(ProvenanceKind.HUMAN_VERIFIED, ev(2)),
+    )
+    await memory_store.revoke(history)
+
+    report = await memory_store.prune(now=datetime.now(UTC), older_than_days=90)
+    assert report.removed == ()

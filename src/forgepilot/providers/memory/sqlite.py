@@ -32,13 +32,15 @@ import os
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from forgepilot.errors import ForgePilotError
 from forgepilot.kernel import PluginService
 from forgepilot.seams.memory import (
     COMPETING_STATUSES,
+    PRUNABLE_STATUSES,
     RECALLABLE_STATUSES,
     SERVICE_NAME,
     Confidence,
@@ -50,6 +52,7 @@ from forgepilot.seams.memory import (
     MemoryType,
     Provenance,
     ProvenanceKind,
+    PruneReport,
     PurgeTombstone,
     RecallQuery,
     RecallVerdict,
@@ -64,8 +67,10 @@ from forgepilot.seams.memory import (
     new_recallable_record,
     plan_resolution,
     promote_proposal,
+    prunable,
     recall_verdict,
     related_to,
+    require_audience,
     require_provisional_provenance,
     require_recallable_provenance,
     require_tenant,
@@ -75,7 +80,7 @@ from forgepilot.seams.memory import (
 from forgepilot.seams.refs import MemoryId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints
 
-__all__ = ["DEFAULT_FILE", "SCHEMA", "SqliteMemoryStorePlugin"]
+__all__ = ["DEFAULT_FILE", "SCHEMA", "SCHEMA_VERSION", "MemorySchemaTooNew", "SqliteMemoryStorePlugin"]
 
 #: Where the file goes when the profile does not say: the same home the session store
 #: and the distillation watermark use, so one deployment has one directory to back up.
@@ -108,6 +113,75 @@ CREATE TABLE IF NOT EXISTS purged (
 );
 """
 
+#: What this build writes and reads. Stored in SQLite's own ``user_version`` rather
+#: than in a metadata table: it is one integer, the file already carries it, and a
+#: table that could be missing is a second failure mode.
+SCHEMA_VERSION = 1
+
+#: ``version -> SQL`` taking a file from ``version`` to ``version + 1``. Empty at the
+#: first version, and that is the point: the machinery exists before it is needed, so
+#: the first schema change is a dict entry and a test rather than a redesign. A
+#: version 0 file is a *new* file (or one written before this build recorded a
+#: version), and ``SCHEMA`` is idempotent, so it is created in place and stamped.
+MIGRATIONS: dict[int, str] = {}
+
+
+class MemorySchemaTooNew(ForgePilotError):
+    """The file was written by a build that knows more than this one does.
+
+    Refused rather than read, and the direction matters: a newer file may hold a
+    field this build's codec would ignore, and the first write-back would then drop
+    it — silently, and only in the deployment that upgraded a binary before its
+    store. Downgrading a binary is not supported; this is where it says so.
+    """
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    """The version recorded in the file. ``0`` is "never stamped"."""
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def apply_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate the file to :data:`SCHEMA_VERSION`, or refuse it.
+
+    The whole policy is three lines and each one is a decision: *too new* refuses
+    (see :class:`MemorySchemaTooNew`), *no version* creates and stamps (idempotent
+    DDL, so a pre-version file is adopted without touching its rows), and *behind*
+    walks :data:`MIGRATIONS` one step at a time so a file two versions old is
+    migrated by the same code as one a single version old.
+    """
+    version = schema_version(conn)
+    if version > SCHEMA_VERSION:
+        raise MemorySchemaTooNew(
+            f"the memory store at this path records schema version {version}, which is "
+            f"newer than this build's {SCHEMA_VERSION}. A newer file may hold fields this "
+            f"codec would drop on the next write, and dropping them would look like "
+            f"exactly the bug it is. Use the build that wrote the file, or start a new "
+            f"store — do not downgrade the binary under a live file."
+        )
+    if version == SCHEMA_VERSION:
+        return
+    if version == 0:
+        # A brand-new file and a file from before this build recorded a version look
+        # identical, and the DDL is idempotent, so both are handled by creating in
+        # place. Existing rows are untouched: the columns and the JSON codec are the
+        # same ones that wrote them.
+        conn.executescript(SCHEMA)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.commit()
+        return
+    for step in range(version, SCHEMA_VERSION):
+        script = MIGRATIONS.get(step)
+        if script is None:
+            raise MemorySchemaTooNew(
+                f"the memory store is at schema version {version} but this build has no "
+                f"migration from version {step}; it knows {sorted(MIGRATIONS)}. Refusing "
+                f"rather than reading a file whose shape it cannot promise to preserve."
+            )
+        conn.executescript(script)
+    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    conn.commit()
+
 #: The statuses a record can be recalled *from*. Kept as a tuple, sorted, because the
 #: same values are spliced into two SQL statements and a set's iteration order is not
 #: something to put in a query.
@@ -117,6 +191,8 @@ _LIVE_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in RECALL
 _COMPETING_STATUSES: tuple[str, ...] = tuple(
     sorted(status.value for status in COMPETING_STATUSES)
 )
+#: The statuses ``prune`` may delete — terminal ones only (`seams/memory.py::PRUNABLE_STATUSES`).
+_PRUNABLE_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in PRUNABLE_STATUSES))
 
 _INSERT = """
 INSERT INTO memories
@@ -211,7 +287,19 @@ def encode_record(record: MemoryRecord) -> str:
 
 
 def decode_record(raw: str) -> MemoryRecord:
-    """The inverse of :func:`encode_record`."""
+    """The inverse of :func:`encode_record` — and tolerant of an older row.
+
+    Every optional key is read with ``.get`` and falls back to the dataclass
+    default. That is the other half of the migration story: :data:`SCHEMA_VERSION`
+    refuses a *newer* file, and this refuses to lose an *older* row when a field is
+    added. Without it, adding one field to :class:`MemoryRecord` would turn every
+    existing row into a ``KeyError`` on the next recall — a store that keeps working
+    right up until the release that reads it.
+
+    Required keys stay required: a row that does not identify itself (no ``id``, no
+    ``status``) is not an older row, it is a damaged one, and guessing its shape
+    would be the silent interpretation this file exists to avoid.
+    """
     blob = json.loads(raw)
     candidate = blob["candidate"]
     provenance = blob["provenance"]
@@ -221,39 +309,39 @@ def decode_record(raw: str) -> MemoryRecord:
             text=candidate["text"],
             scope=MemoryScope(candidate["scope"]),
             scope_ref=candidate["scope_ref"],
-            type=MemoryType(candidate["type"]),
-            subject=candidate["subject"],
-            tenant_id=_tenant(candidate["tenant_id"]),
-            model_confidence_hint=candidate["model_confidence_hint"],
+            type=MemoryType(candidate.get("type", MemoryType.FACT.value)),
+            subject=candidate.get("subject", ""),
+            tenant_id=_tenant(candidate.get("tenant_id")),
+            model_confidence_hint=candidate.get("model_confidence_hint"),
             # One deadline, stored once: admission copies it off the candidate, so
             # the record's is the one recall observes.
-            expires_at=_moment(blob["expires_at"]),
-            redaction_marks=tuple(candidate["redaction_marks"]),
-            metadata=candidate["metadata"],
+            expires_at=_moment(blob.get("expires_at")),
+            redaction_marks=tuple(candidate.get("redaction_marks", ())),
+            metadata=candidate.get("metadata", {}),
         ),
         provenance=Provenance(
             kind=ProvenanceKind(provenance["kind"]),
             session_id=(
-                SessionId(provenance["session_id"]) if provenance["session_id"] else None
+                SessionId(provenance["session_id"]) if provenance.get("session_id") else None
             ),
-            repo=_repo(provenance["repo"]),
+            repo=_repo(provenance.get("repo")),
             evidence_refs=tuple(
                 EventRef(SessionId(session_id), int(seq))
-                for session_id, seq in provenance["evidence_refs"]
+                for session_id, seq in provenance.get("evidence_refs", ())
             ),
         ),
-        confidence=Confidence(blob["confidence"]),
+        confidence=Confidence(blob.get("confidence", Confidence.LOW.value)),
         status=MemoryStatus(blob["status"]),
-        tenant_id=_tenant(blob["tenant_id"]),
-        subject=blob["subject"],
-        content_hash=blob["content_hash"],
-        created_at=_moment(blob["created_at"]),
-        updated_at=_moment(blob["updated_at"]),
-        expires_at=_moment(blob["expires_at"]),
-        supersedes=MemoryId(blob["supersedes"]) if blob["supersedes"] else None,
-        superseded_by=MemoryId(blob["superseded_by"]) if blob["superseded_by"] else None,
-        recall_count=int(blob["recall_count"]),
-        last_recalled_at=_moment(blob["last_recalled_at"]),
+        tenant_id=_tenant(blob.get("tenant_id")),
+        subject=blob.get("subject", ""),
+        content_hash=blob.get("content_hash", ""),
+        created_at=_moment(blob.get("created_at")),
+        updated_at=_moment(blob.get("updated_at")),
+        expires_at=_moment(blob.get("expires_at")),
+        supersedes=MemoryId(blob["supersedes"]) if blob.get("supersedes") else None,
+        superseded_by=MemoryId(blob["superseded_by"]) if blob.get("superseded_by") else None,
+        recall_count=int(blob.get("recall_count", 0)),
+        last_recalled_at=_moment(blob.get("last_recalled_at")),
     )
 
 
@@ -301,8 +389,10 @@ class SqliteMemoryStorePlugin(PluginService):
         # file at the same time and the default journal serialises readers against a
         # writer.
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(SCHEMA)
-        conn.commit()
+        # Create, migrate, or refuse — see `apply_schema`. This replaces the bare
+        # `executescript(SCHEMA)` the first version ran on every connection, which
+        # made "the file is version 7" a thing nobody could ever find out.
+        apply_schema(conn)
         return conn
 
     def _put(self, record: MemoryRecord, *, quarantined: bool = False) -> None:
@@ -403,6 +493,10 @@ class SqliteMemoryStorePlugin(PluginService):
     async def write(self, candidate: MemoryCandidate, provenance: Provenance) -> MemoryId:
         require_recallable_provenance(provenance)
         require_tenant(candidate)
+        # At admission, not at recall: a scope with no audience model used to be
+        # accepted here and then raised on every read, which is a record nobody can
+        # ever see, created by a path that said yes.
+        require_audience(candidate)
         now = datetime.now(UTC)
         digest = content_hash_of(candidate)
 
@@ -423,6 +517,7 @@ class SqliteMemoryStorePlugin(PluginService):
     ) -> MemoryId:
         require_provisional_provenance(provenance)
         require_tenant(candidate)
+        require_audience(candidate)
         now = datetime.now(UTC)
         digest = content_hash_of(candidate)
         existing = self._live_record(digest)
@@ -561,6 +656,50 @@ class SqliteMemoryStorePlugin(PluginService):
             )
             conn.commit()
         return tombstone
+
+    async def prune(
+        self,
+        *,
+        now: datetime | None = None,
+        older_than_days: int = 90,
+        dry_run: bool = False,
+    ) -> PruneReport:
+        """Delete history rows older than the cutoff — the only aging-out path.
+
+        The age is not a column, so the rows are decoded and :func:`prunable` decides;
+        that is the same shape ``_neighbours`` has already taken, and it keeps the
+        rule in the seam rather than in SQL. The candidate set is filtered by status
+        *in SQL* as well, because the three terminal values are a small fixed list and
+        shipping every live row across the boundary to throw it away would be the
+        expensive way to read one integer.
+
+        ``dry_run`` answers "what would this delete" without deleting: an operator's
+        first run should be able to see the number before it is the number.
+        """
+        moment = now or datetime.now(UTC)
+        cutoff = moment - timedelta(days=max(0, older_than_days))
+        marks = ", ".join("?" * len(_PRUNABLE_STATUSES))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT id, record_json FROM memories WHERE status IN ({marks})",
+                (*_PRUNABLE_STATUSES,),
+            ).fetchall()
+            doomed = [
+                (str(memory_id), raw)
+                for memory_id, raw in rows
+                if prunable(decode_record(raw), cutoff=cutoff)
+            ]
+            if doomed and not dry_run:
+                conn.executemany(
+                    "DELETE FROM memories WHERE id = ?", [(memory_id,) for memory_id, _ in doomed]
+                )
+                conn.commit()
+        return PruneReport(
+            cutoff=cutoff,
+            removed=tuple(MemoryId(memory_id) for memory_id, _ in doomed),
+            kept=len(rows) - len(doomed),
+            dry_run=dry_run,
+        )
 
     # -- introspection for tests ------------------------------------------
     @property

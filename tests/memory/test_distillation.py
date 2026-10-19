@@ -658,3 +658,53 @@ async def test_no_repository_means_no_distillation(tmp_path: Any) -> None:
         assert report.watermark_after == 0
     finally:
         await close(fibers)
+
+
+async def test_a_store_refusal_holds_the_watermark_before_the_claim(tmp_path: Any) -> None:
+    """A refusal is a property of the store, so the claim must stay reachable.
+
+    A bad citation is settled: the same window would show the model the same events,
+    so retrying would fail identically and advancing past it is honest. "This store
+    said no" is not settled — a migration, a tenant change or a scope rule that
+    learns an answer can make the same claim admissible tomorrow. Advancing past it
+    would drop the claim for good, which is the one failure mode a watermark can
+    cause.
+    """
+    from forgepilot.errors import ForgePilotError
+
+    class Refusing:
+        """A store that answers the seam's write with its own refusal."""
+
+        async def write(self, item: Any, provenance: Any) -> Any:
+            raise ForgePilotError("this store will not take it, yet")
+
+        async def reconcile(self, memory_id: Any) -> tuple[Any, ...]:
+            return ()
+
+    root, fibers = await build(tmp_path)
+    try:
+        session, seqs = await make_session(root)
+        root.llm.script(answer(candidate([seqs["user"]])))
+
+        report = await distill(
+            session,
+            llm=root.llm,
+            memory=Refusing(),
+            watermarks=root.distillationWatermarks,
+            scope_ref=SCOPE_REF,
+            repo=REPO,
+        )
+
+        assert report.deferred == 1
+        assert report.dropped == 1
+        # One before the cited event: everything up to it is settled, and the claim's
+        # own stretch is still visible to the next run.
+        assert report.watermark_after == seqs["user"] - 1
+        assert report.watermark_after < seqs["upto"]
+        assert await root.distillationWatermarks.get(str(SESSION)) == report.watermark_after
+
+        ended = events(session, EventKind.DISTILLATION_END)[-1]
+        assert ended.data["deferred"] == 1
+        assert any("watermark stops" in note for note in report.notes)
+    finally:
+        await close(fibers)

@@ -421,6 +421,13 @@ class DistillationReport:
     provisional: int = 0
     duplicated: int = 0
     dropped: int = 0
+    #: Candidates the **store** refused, and therefore the reason the watermark did
+    #: not move past them. Separate from ``dropped`` because only one of the two is a
+    #: property of the text: a citation of an event the window never showed is
+    #: settled (the same window would produce it again), while a store refusal is a
+    #: property of the store *and its configuration at that moment* — a migration, a
+    #: scope rule or a tenant change can make the same claim admissible tomorrow.
+    deferred: int = 0
     #: Empty when the run was fine. Otherwise a short code — `llm`, `schema`,
     #: `budget`, `no-scope`, `no-tenant`, `no-model` — chosen so a caller can
     #: branch without parsing prose. The last three are pre-flight refusals: the
@@ -450,6 +457,7 @@ class DistillationReport:
             "provisional": self.provisional,
             "duplicated": self.duplicated,
             "dropped": self.dropped,
+            "deferred": self.deferred,
             "memories": list(self.memories),
             "tokens": {
                 "input": self.input_tokens,

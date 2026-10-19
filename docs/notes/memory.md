@@ -59,6 +59,12 @@ Rules now enforced, and where:
   those, because an empty result would read as "no memories here" when the truth
   is "nobody has said who may read these". Both are fail-closed; they are not the
   same answer and must not look alike.
+  **M27 moved the same refusal to the write** (`require_audience`, called by both
+  stores' `write`/`admit_provisional`). Raising only at recall meant the store
+  accepted a record nothing could ever serve — a path answering "yes" to something
+  nobody can see — so the failure happened where the caller could no longer act on
+  it. Quarantined records stay exempt: nothing recalls one, so it has no audience to
+  get wrong.
 
 **Known gaps, deliberately left:**
 
@@ -200,9 +206,17 @@ plan's "periodic + session end" is an operator's `forgepilot --distill <session>
 --repo host/namespace/name`, plus `--since`, `--dry-run` and `--distill-token-cap`,
 and there is no `--all` sweep; a run that produces only proposals reports
 `written=0, provisional=10`, and the CLI prints both because a single number would
-hide which happened; and a *dropped* candidate still lets the watermark advance, since
-retrying a stretch whose citations were bad would fail identically forever — that is a
-stall, not safety.
+**Phase C gap, closed at M27 — the watermark no longer burns a store's refusal.** The
+two kinds of drop were one counter and one watermark move, and they are not the same
+kind of fact. A citation of an event the window never showed is *settled*: the same
+window would show the model the same events, so a retry fails identically and
+advancing past it is honest. "This store refused it" is a property of the store *and
+its configuration at that moment* — a migration, a tenant change, or a scope rule that
+learned an answer can make the same claim admissible tomorrow. So the refusal is
+counted separately (`DistillationReport.deferred`, and a `deferred` key on
+`distillation/end`), and the watermark stops one event before the earliest refused
+citation instead of at `upto`. It is still cumulative — never behind where it already
+was, or a run would re-distil what an earlier one had answered.
 
 **Phase D — the durable store, and the rule that a second provider may not re-decide.**
 `providers/memory/sqlite.py` is the implementation the design doc left room for: one
@@ -271,13 +285,23 @@ Two decisions inside the store that are easy to get wrong a second time:
   `ctx.memory` comes out as a shadow method, and `sqlite3.Connection` is callable);
   half is that a per-operation connection cannot hold a lock another process wants.
 
-**Phase D gaps, stated:** the schema has **no version or migration path** — the file is
-new, so this is a decision deferred, not solved, and the first change to `MemoryRecord`
-that the JSON codec cannot default is where it has to be faced; `revoke` is still the
-only forgetting mechanism with a caller (Phase F adds `purge`), and nothing prunes old
-rows; the file is a single SQLite database, so it belongs on a local filesystem, not on
-a network share (warned about in the bundle's comment). The default profile is
-unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only bundle**, applied with
+**Phase D gaps, closed at M27 (and the one that is not).** The file now carries
+`PRAGMA user_version` (`SCHEMA_VERSION = 1`) and an empty `MIGRATIONS` map: a file
+from a *newer* release is **refused** (`MemorySchemaTooNew`, naming the version)
+rather than read and written back with the columns this release does not know about
+— which would damage it invisibly. An older row is the other half: `decode_record`
+reads every optional field with `.get` and falls back to the dataclass default, so
+adding a field cannot turn the existing rows into `KeyError`s; required keys stay
+required, because a row with no `id` or no `status` is damaged rather than old.
+`prune` is the aging-out path (`--prune`, `--older-than-days`, `--dry-run`): it may
+delete only **terminal** rows (superseded, revoked, expired), which is the whole
+safety argument — no status it touches is one recall could have served, and an
+`ACTIVE` belief is never aged out by housekeeping. It emits `memory/pruned`, because
+the store keeps no log and "who deleted 400 rows" has to be answerable. What is still
+not solved: the file is a single SQLite database, so it belongs on a local
+filesystem, not on a network share (warned about in the bundle's comment). The
+default profile is unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only
+bundle**, applied with
 `--patch`, so `--boot` still resolves 20 rows and the in-memory store is still what a
 deployment gets unless it asks otherwise.
 

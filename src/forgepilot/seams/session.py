@@ -162,6 +162,13 @@ class EventKind:
     #: of it. The one destructive operation in the system, so the event carries the
     #: tombstone: content hash, subject, when, who approved it and why.
     MEMORY_PURGED = "memory/purged"
+    #: History rows older than a cutoff were deleted by maintenance.
+    #:
+    #: Log-only: the deleted rows are terminal (superseded, revoked or expired), so
+    #: nothing a model could be shown changes. The event is the audit trail — the
+    #: store cannot write one, and "who deleted 400 rows and when" has to be
+    #: answerable from the log alone.
+    MEMORY_PRUNED = "memory/pruned"
 
     # --- redaction --------------------------------------------------------
     # Emitted by the write path, never by a caller: they describe what the gate

@@ -496,17 +496,25 @@ async def test_memory_refuses_a_scope_whose_audience_is_undefined(container) -> 
 
     A caller with access to a repository they cannot reach gets ``()`` — that is
     a permission outcome. An undefined audience is a design gap, and is a raise.
+
+    **The raise belongs at the write** (M27). It used to happen only at recall, and
+    the write above succeeded — which means the store accepted a record it could
+    never serve: a path answering "yes" to something nobody can see. Both ends
+    refuse now; the write because that is where the caller can act on it, and recall
+    too because a row written by an older release may still be on disk.
     """
     memory = container.memory
-    await memory.write(
-        MemoryCandidate(
-            text="platform team owns the deploy pipeline",
-            scope=MemoryScope.TEAM,
-            scope_ref="team-platform",
-            tenant_id=ACME_TENANT,
-        ),
-        Provenance(kind=ProvenanceKind.HUMAN_VERIFIED, evidence_refs=(event(11),)),
-    )
+    with pytest.raises(UnattributableScope, match="audience"):
+        await memory.write(
+            MemoryCandidate(
+                text="platform team owns the deploy pipeline",
+                scope=MemoryScope.TEAM,
+                scope_ref="team-platform",
+                tenant_id=ACME_TENANT,
+            ),
+            Provenance(kind=ProvenanceKind.HUMAN_VERIFIED, evidence_refs=(event(11),)),
+        )
+    assert not memory.records, "a refused write leaves nothing behind"
 
     with pytest.raises(UnattributableScope, match="audience"):
         await memory.recall(

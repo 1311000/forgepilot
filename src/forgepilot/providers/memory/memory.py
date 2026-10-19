@@ -19,7 +19,7 @@ by the functions called below, and there is one of each.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from forgepilot.kernel import PluginService
@@ -32,6 +32,7 @@ from forgepilot.seams.memory import (
     MemoryRecord,
     MemoryStatus,
     Provenance,
+    PruneReport,
     PurgeTombstone,
     RecallQuery,
     RecallVerdict,
@@ -48,8 +49,10 @@ from forgepilot.seams.memory import (
     new_recallable_record,
     plan_resolution,
     promote_proposal,
+    prunable,
     recall_verdict,
     related_to,
+    require_audience,
     require_provisional_provenance,
     require_recallable_provenance,
     require_tenant,
@@ -87,6 +90,7 @@ class InMemoryMemoryStorePlugin(PluginService):
     async def write(self, candidate: MemoryCandidate, provenance: Provenance) -> MemoryId:
         require_recallable_provenance(provenance)
         require_tenant(candidate)
+        require_audience(candidate)
         now = datetime.now(UTC)
         digest = content_hash_of(candidate)
 
@@ -222,6 +226,33 @@ class InMemoryMemoryStorePlugin(PluginService):
         )
         self._tombstones.append(tombstone)
         return tombstone
+
+    async def prune(
+        self,
+        *,
+        now: datetime | None = None,
+        older_than_days: int = 90,
+        dry_run: bool = False,
+    ) -> PruneReport:
+        """Delete history records older than the cutoff — same rule as the SQLite store.
+
+        :func:`prunable` decides, so the two stores cannot age a record out on
+        different terms; this method only applies it to the dict.
+        """
+        moment = now or datetime.now(UTC)
+        cutoff = moment - timedelta(days=max(0, older_than_days))
+        considered = len(self._records)
+        doomed = [record for record in self._records.values() if prunable(record, cutoff=cutoff)]
+        if not dry_run:
+            for record in doomed:
+                self._records.pop(record.id, None)
+                self._drop_hash(record.content_hash)
+        return PruneReport(
+            cutoff=cutoff,
+            removed=tuple(record.id for record in doomed),
+            kept=considered - len(doomed),
+            dry_run=dry_run,
+        )
 
     # -- internals ---------------------------------------------------------
     def _store(self, record: MemoryRecord) -> None:
