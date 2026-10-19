@@ -236,3 +236,27 @@ checkout's MAX_PER_PAGE (250)`. Offline, all eight arms pass (the scripted model
 answer), so the arm that separates composite from index-only is a **live** measurement, and
 this note must not be read as one.
 
+## M28 — `read_code` was offered to nobody, and the arm that found it (2026-10-19)
+
+The tool M19 wrote was built, tested and documented, and **no `tool_sets` entry anywhere
+named it** — `examples/stat-fix/project.yaml:30` and `patch.yaml:89` mention it only in
+`allowed_operations`, which is a permission, not an offer. `orchestration/router.py` hands
+the model the names a tool set names, so in every real deployment the tool existed and
+could not be called. The fix is four lines in two project files; the guard is
+`tests/contract/test_every_tool_is_offered_by_a_project.py`, which parses every project and
+task file and fails both ways — a built tool nobody offers, and an offered name that is not
+built. Its first run was red on `'read_code' in offered`, which is the falsifier.
+
+The reason nobody noticed is instructive: every test of `read_code` calls it **directly**,
+through the registry, so the whole suite passed with the tool unreachable. The gap was
+between the registry and the router, and no test looked at that seam from the configuration
+side. It is the same shape as the table in `docs/notes/defect-shape.md`, one level out: not
+a field with no reader, but a capability with no configuration that offers it.
+
+**What this means for pricing the composite**: `no-shell` (`evals/arms.py`) is the arm that
+removes `run`, and it is what made the missing offer visible, because it had to name every
+tool it allows. It did **not** price the composite — under it, `stale-corpus` passes 3/3
+with the composite and 3/3 with `index-only`, because `read_file` on a directory lists it and
+thus remains a discovery path over a local checkout. Pricing the composite needs a checkout
+where reading is itself a retrieval call, which is a deployment property; see
+`docs/notes/evals.md`.

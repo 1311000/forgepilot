@@ -53,6 +53,24 @@ _SETS_WITHOUT_SEARCH = {
     "bugfix": ["read_file", "write_file", "run"],
 }
 
+#: The tool sets with the retriever and without `run`, spelled out for the same
+#: reason an override replaces the whole key.
+#:
+#: ⚠️ **This arm is an instrument, not an ablation of a mechanism.** It exists
+#: because `stale-corpus` could not price the composite: the task asks for a helper
+#: the index does not hold, and two live attempts measured the composite and the
+#: index alone at the *same* 3/3 — because the agent has `run`, so `dir` and
+#: `findstr` are a second discovery channel and the retriever was never the only way
+#: to find the file (`docs/notes/evals.md`, "Pricing the composite"). Remove the
+#: shell and keep the retriever and the question becomes answerable: a corpus-only
+#: agent cannot find `paging/_shared_guard.py`, and the held-out probe's reuse check
+#: says so. It is also the shape a GVFS checkout actually has — metadata local, no
+#: shell over the tree — which is why it is worth having beyond one task.
+_SETS_WITHOUT_SHELL = {
+    "default": ["read_file", "code_search", "read_code"],
+    "bugfix": ["read_file", "code_search", "read_code", "write_file", "edit_file"],
+}
+
 
 ARMS: dict[str, Arm] = {
     "full": Arm(
@@ -91,6 +109,13 @@ ARMS: dict[str, Arm] = {
         name="no-search",
         description="no code_search: the agent must already know which file to read",
         project={"tool_sets": _SETS_WITHOUT_SEARCH},
+    ),
+    "no-shell": Arm(
+        name="no-shell",
+        description=(
+            "no `run`: discovery goes through the retriever, the shape a GVFS checkout has"
+        ),
+        project={"tool_sets": _SETS_WITHOUT_SHELL},
     ),
     "no-pinning": Arm(
         name="no-pinning",

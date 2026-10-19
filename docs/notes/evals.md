@@ -903,3 +903,38 @@ weekly CI job runs it with a **20 s** p95 bound: loose on purpose, because the n
 to catch the harness becoming pathological (a retry loop, a wait that should have been a
 timeout), and a tight wall-clock gate on a shared runner fails for load and gets retried
 until green.
+
+## M28 — an arm with no shell, and the tool nobody offered (2026-10-19)
+
+`no-shell` is an **instrument**, not an ablation: it takes `run` out of both tool sets, so
+discovery has to happen through `read_file`, `code_search` and `read_code` — the shape a
+GVFS checkout has. Two earlier attempts to price the composite (`stale-corpus` as it stood,
+then with a helper the corpus lacks) failed for the same reason: the agent had a shell, and
+`dir`/`findstr` are a discovery channel that does not care what the retriever knows. The
+arm removes that channel.
+
+It still does not price the composite. Under `no-shell`, `stale-corpus` with the real
+composite: **3/3** (13/12/12 calls, 29.0/30.9/25.2 s). The same task with `--variant
+index-only` (the index alone, no tree overlay): **3/3** (18/11/12 calls, 37.5/26.6/26.1 s).
+Reading the session logs shows why: **`read_file` on a directory lists it** — one rep asked
+for `paging` and then read `paging/_shared_guard.py`, the one file the corpus does not
+hold — and a guessed path is readable too. Without a shell, the file tools are still a
+complete discovery path over a local checkout. What could separate the two providers is
+*cost*, and 11–19 calls across three reps is noise.
+
+So the honest statement is the one this file keeps making: `search` is priced, the composite
+is **reachable, exercised and unpriced**, and the experiment that would price it needs a
+checkout where reading a file is itself a retrieval call — which is a deployment property,
+not something this harness can manufacture. The arm stays: it is the closest thing to that
+deployment, and it is what showed the next paragraph.
+
+**The arm found a defect instead.** `read_code` was built at M19, tested, documented — and
+listed in **no** `tool_sets` entry anywhere, so the router never offered it and no real
+deployment could call it. `no-shell` was the first run that would have needed it, and its
+own configuration had to name the tool, which is how the grep that found the gap started.
+That is now fixed in both shipped project files and guarded by
+`tests/contract/test_every_tool_is_offered_by_a_project.py`, which fails in both
+directions: a tool that can be built and is never offered, and an offered name that cannot
+be built. The same run shows `read_code` being called for real for the first time
+(`{"repo": "git.local/demo/contracts", "path": "paging/contract.py"}`), answered from the
+corpus by the composite's cross-repository path.

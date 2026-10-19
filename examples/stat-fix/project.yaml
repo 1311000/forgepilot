@@ -76,9 +76,11 @@ tool_sets:
   default:
     - read_file
     - code_search
+    - read_code
   bugfix:
     - read_file
     - code_search
+    - read_code
     - write_file
     # See `configs/projects/example/project.yaml`: `edit_file` is the targeted
     # replace, and the one to prefer for a change to an existing file.

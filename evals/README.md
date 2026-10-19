@@ -223,6 +223,7 @@ directions, which is worth knowing before reading a variant's result:
 | `full` | nothing — the reference every other arm is compared against | |
 | `baseline` | **all three at once**: no `code_search`, no held oracle, no repair loop | `two-attempts` — it is the loop this arm removes — and any task where search matters. Read the *aggregate* delta from this one |
 | `no-search` | `code_search`; the agent must already know which file to read | `find-the-rule` — eight modules, so enumeration costs something; the signal is **calls**, not pass/fail |
+| `no-shell` | `run`; discovery has to go through the retriever, which is the shape a GVFS checkout has | `stale-corpus` — with a shell, `findstr` finds the helper the index lacks and the composite cannot be priced; without one it can |
 | `no-pinning` | the oracle is not held fixed, so an edited test decides the check | `bug-fix/weakens-the-test` |
 | `no-repair` | one attempt; a failing check ends the task | `two-attempts` |
 | `no-memory` | recall: earlier runs in the repository are still learned from, and never read back | any task where a second attempt could use what the first learned — read `memories_served`, not the rate |

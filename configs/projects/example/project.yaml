@@ -50,9 +50,11 @@ tool_sets:
   default:
     - read_file
     - code_search
+    - read_code
   bugfix:
     - read_file
     - code_search
+    - read_code
     - write_file
     # Targeted replace. Prefer this to `write_file` for a change to an existing
     # file: it edits one place instead of re-emitting the whole file, and it refuses
