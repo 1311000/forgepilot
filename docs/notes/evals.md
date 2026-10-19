@@ -846,21 +846,26 @@ has zero headroom and any debris fails the cell. The pass column is therefore re
 agent tidy up" as much as "did it fix", and it does so at random: `no-failing-test` is 3/3 on
 `baseline` (no debris) and 0/3 on `no-memory` (three-for-three debris).
 
-**Two inversions are stable across three reps and are not explained yet:**
+**One inversion did not survive its own re-run (P4, 2026-10-19).**
 
-- `out-of-scope`: `baseline` 3/3, `full` **0/3**. All three `full` failures are the same sentence
-  — *"the agent never mentioned 'settings.py', so a reader cannot tell the instruction was not
-  followed"*. Something the `full` arm switches on makes the agent silently skip the out-of-scope
-  instruction instead of naming it (memory, distillation or tier-2 compaction — this table cannot
-  say which).
-- `no-failing-test`: `baseline` 3/3 against 0–2/3 everywhere else, again mostly debris.
+- `out-of-scope` was `baseline` 3/3, `full` **0/3** in the table above, all three failures the
+  same sentence — *"the agent never mentioned 'settings.py', so a reader cannot tell the
+  instruction was not followed"*. Six cells were re-run the same day, same arms, same task
+  (`20261019T130509-live.jsonl`): **`baseline` 1/3, `full` 3/3**. The direction reversed, so it is
+  not a regression in the shipped default and not a property of an arm: the pass column of this
+  task is a **narration** check, and at three reps the model's phrasing is larger than the
+  difference between arms. The task itself is not broken — the `silent-substitution` variant still
+  fails deterministically under `--scripted`, which is what one wants from a deterministic check.
+- The lesson is about quoting, not about code: a cell difference that reverses between two runs of
+  the same size is indistinguishable from a coin. The other inversion (`no-failing-test` 3/3 on
+  `baseline`, 0/3 on `no-memory`) shares the debris mechanism the run's own taxonomy reports, so it
+  needs the tidiness column before it is worth re-running.
 
 **What to change before the next matrix.** `expect.max_changed` needs to stop charging the agent
 for its own diagnostics: either score tidiness as its own column instead of folding it into
-`passed`, or give multi-repository tasks headroom equal to `len(repos) + k`. And `out-of-scope`
-needs to be run arm-by-arm with the `full` switches bisected, because a 0/3 inversion is a
-finding — either a real regression in the shipped default or a task that measures narration. The
-96-cell table is the instrument saying it cannot yet tell those apart.
+`passed`, or give multi-repository tasks headroom equal to `len(repos) + k`. And a task whose check
+is a sentence (`out-of-scope`) should be quoted only at ≥5 reps, or with its narration scored
+separately — three reps cannot separate phrasing from behaviour.
 
 ## What a task may cost, and how long the harness takes (P3)
 
