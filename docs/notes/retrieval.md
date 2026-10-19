@@ -186,15 +186,53 @@ branch name, and it refuses a `--root` that is merely *inside* a repository — 
 <subdir> rev-parse` walks up, so a subdirectory would be labelled with the whole
 repository's revision while holding a corner of it.
 
-⚠️ **What is still missing, and must not be claimed from the bundle.** (1) There is no
-composite provider, so a deployment cannot have both an index *and* the working-tree
-overlay at once; `covers_working_tree: false` is the honest capability, and the index
-bundle therefore replaces local retrieval rather than adding to it. (2) The eval task
-whose answer is **only** in the index is still unwritten — the shape that would finally
-price retrieval, since `find-the-rule`'s own note records that `findstr /s` matches
-`code_search` on a local checkout. The row it needs exists — `EvalTask.patches`
-(`evals/harness.py`) lets a task override a plugin row, and that is exactly the row that
-points `retriever` at the index; the earlier version of this paragraph said the field did
-not exist, which was true when it was written and stopped being true at `7d7579d`. What is
-still unwritten is the task itself, not the mechanism underneath it.
+⚠️ **Two claims in this paragraph were true when it was written and are not now, and the
+paragraph is kept as the record of that.** It said (1) that there was no composite
+provider — there is one, below — and (2) that the eval task whose answer is only in the
+index was unwritten — `evals/tasks/not-in-the-checkout/` has had it since M19/M21, with a
+held-out probe for the exact contract, and `task.yaml:35-40` is the `patches` row that
+points `retriever` at the index. That is the same defect this table records elsewhere: a
+sentence with no reader keeps asserting a gap long after the code closed it.
+
+⚠️ **What is still missing, and must not be claimed from either bundle.** The **shared
+enterprise index** — server-side, incremental per commit, shared across developers — does
+not exist and cannot be verified on this machine. What exists is a file one deployment
+lays down (`tools/build_code_index.py`), read whole and searched in memory. `supports_remote:
+false` is the honest capability for both the index and the composite.
+
+## M24 — the corpus, with the tree in front of it
+
+`providers/retrieve/composite.py` (`CompositeRetrieverPlugin`, bundle
+`bundles/code_index_working_tree/patch.yaml`) is the composition the target design
+describes and the one the two existing providers could not express. It is composed by
+**inheritance from the local provider** and by **holding an `IndexCorpus`** rather than by
+instantiating a second plugin: `cordis_port.Service.__init__` registers the provide row, so
+a provider that built another `Service` inside itself would provide `retriever` twice.
+
+Three rules, each of which is a way the composition can be convenient and wrong:
+
+- **A file that exists on disk is answered from disk.** The corpus copy of that path is
+  stale by definition — same path, older content — and serving it produces exactly the
+  confidently wrong answer `CodeRef.root` was added for at M14.
+- **Deleted is not absent.** A path in `HEAD` but missing from disk is a deletion in
+  progress: `search` drops it, `symbols` drops it, and `open` refuses it *and says which of
+  the two it is*, because "the corpus has no such file" would be false.
+- **Every hit names its revision**, and the two halves name different ones:
+  `WORKING_TREE`-relative hits report the commit actually read (with `+dirty` when the tree
+  is not clean), corpus hits report the revision the corpus holds.
+
+`capabilities().covers_working_tree` is `bool(roots)`, not `True`: a deployment whose
+`roots` is empty has a corpus and nothing else — the GVFS shape — and telling a caller its
+edits are visible when nothing is looking at them is the overclaim the field exists to
+prevent.
+
+**The eval task that prices it**: `evals/tasks/stale-corpus/` points the composite at an
+index holding a **draft of `limits.py` itself** (`MAX_PER_PAGE = 500`) while the checkout's
+branch says 250. The visible test asserts a band that excludes 500; the held-out probe goes
+through the contract's guard and pins the clamp to the tree's number. Measured 2026-10-19:
+the correct fix passes, and the `trusts-the-corpus` variant — which passes every visible
+check — fails on the probe with `enforce_page_size(5000) is 500; it must clamp to this
+checkout's MAX_PER_PAGE (250)`. Offline, all eight arms pass (the scripted model writes the
+answer), so the arm that separates composite from index-only is a **live** measurement, and
+this note must not be read as one.
 

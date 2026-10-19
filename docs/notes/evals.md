@@ -9,7 +9,7 @@
 
 ## Evaluation notes (`evals/`)
 
-Ten tasks, eight arms, one JSONL row per attempt. **This cannot produce the doc's
+Eleven tasks, eight arms, one JSONL row per attempt. **This cannot produce the doc's
 "+32% vs Claude Code" number** — there is no comparison arm here, and inventing
 one would be the same unfounded claim in a new place. What it answers instead is
 the question underneath: **does each mechanism earn its place**, by running the
@@ -591,7 +591,7 @@ is what found both.
 
 ## The offline matrix runs on a schedule (M21's third item)
 
-`evals/matrix.py` runs all eight arms over all ten tasks with `--scripted` and compares
+`evals/matrix.py` runs all eight arms over all eleven tasks with `--scripted` and compares
 the result with the table in that file, measured on 2026-10-18 (`78/80`; the two failures
 are `two-attempts` under `baseline` and `no-repair`, which is the task's whole point).
 `.github/workflows/ci.yml` grows a fourth job — `evals`, on `schedule` (Mondays 03:00 UTC)
@@ -734,3 +734,21 @@ finding for the next era: **the task fixtures live inside the same repository th
 reach**, so `solution/` is one `type` away; either the checkout root moves outside the repository
 or the tool's path scope should refuse the tree the eval lives in.
 
+## M24 — a task for a corpus that disagrees with the tree
+
+`evals/tasks/stale-corpus/` is the eleventh task and the first one whose *retriever row is the
+composite*. Its index holds a draft of `limits.py` **itself** (`MAX_PER_PAGE = 500`) while the
+fixture's branch says 250, which is the one disagreement `CompositeRetrieverPlugin` exists to
+resolve in the tree's favour.
+
+Measured 2026-10-19 on this box:
+
+| cell | state | what it shows |
+|---|---|---|
+| `stale-corpus` / `full` | pass, 2 calls | the composite serves the tree's 250 and the corpus's contract in one result set |
+| `full` / `trusts-the-corpus` | **FAIL** on the probe | `enforce_page_size(5000) is 500; it must clamp to this checkout's MAX_PAGE (250)` — every visible check passes, so only the held-out input can see it |
+
+Offline, **all eight arms pass** (88 cells, 86 expected passes, `evals/matrix.py --check` green):
+the scripted model writes the solution file, so removing `code_search` changes nothing about
+the row. The arm that separates a composite from an index-only provider has to be **live**, and
+the M23 table must not be read as having measured it.

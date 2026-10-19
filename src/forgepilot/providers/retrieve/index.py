@@ -27,6 +27,13 @@ differed would answer "it is not there" about a file it is holding. See `_refs_t
 **Loading is strict and eager.** A malformed index raises at boot naming the file and the
 entry, for the same reason a malformed ticket source does — a provider that silently serves a
 subset of its corpus answers "there is nothing there" to a question it never really asked.
+
+**Two objects, deliberately.** `IndexCorpus` holds the corpus and every rule about how to
+answer from it; `CodeIndexRetrieverPlugin` only reads configuration and delegates. That split
+exists because a second provider needs the same rules: `providers/retrieve/composite.py`
+combines a corpus with a local checkout, and a copy of these rules would be exactly the drift
+`ref_to_serve` was created to stop (it already happened once, between this provider and the
+mock). One corpus, one set of rules, two compositions.
 """
 
 from __future__ import annotations
@@ -53,7 +60,7 @@ from forgepilot.seams.retriever import (
 )
 from forgepilot.seams.security import ExecutionConstraints
 
-__all__ = ["CodeIndexRetrieverPlugin", "load_index"]
+__all__ = ["CodeIndexRetrieverPlugin", "IndexCorpus", "IndexedFile", "load_index"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,34 +140,34 @@ def load_index(path: Path) -> tuple[tuple[IndexedFile, ...], tuple[SymbolHit, ..
     return tuple(files), tuple(symbols)
 
 
-class CodeIndexRetrieverPlugin(PluginService):
-    """Serves ``retriever`` from a configured index rather than from a checkout."""
+class IndexCorpus:
+    """The corpus, plus every rule for answering from it.
 
-    provide = SERVICE_NAME
+    Plain object rather than a service: a second provider composes it, and `Service.__init__`
+    registers a provide row — two of those on one context would be two `retriever`s.
+    """
 
-    def __init__(self, ctx: Any, config: Any = None) -> None:
-        # Configuration is read **before** the service is initialised, deliberately: a missing
-        # or malformed index is a configuration error, and surfacing one should not require a
-        # kernel context. It also means the same failure whether a container built this
-        # provider or a person did.
-        cfg = dict(config or {})
-        self.max_hits: int = int(cfg.get("max_hits", 200))
-        configured = cfg.get("index_path")
-        if not configured:
-            raise ValueError(
-                "the code index provider needs `index_path`. Without it there is no corpus, "
-                "and defaulting to one would be inventing a deployment's data."
-            )
-        self.index_path = Path(str(configured))
-        self._files, self._symbols = load_index(self.index_path)
-
-        super().__init__(ctx)
+    def __init__(
+        self,
+        files: Sequence[IndexedFile],
+        symbols: Sequence[SymbolHit],
+        *,
+        max_hits: int = 200,
+    ) -> None:
+        self.files: tuple[IndexedFile, ...] = tuple(files)
+        self.symbol_hits: tuple[SymbolHit, ...] = tuple(symbols)
+        self.max_hits = max_hits
         #: Repos skipped because the caller's constraints did not permit them. The seam says a
         #: provider re-checks rather than trusting its caller, and a count is how that is shown
         #: rather than asserted.
         self.denied_repo_requests: int = 0
 
-    # -- Retriever ---------------------------------------------------------
+    @classmethod
+    def from_path(cls, path: Path, *, max_hits: int = 200) -> IndexCorpus:
+        files, symbols = load_index(path)
+        return cls(files, symbols, max_hits=max_hits)
+
+    # -- what it covers ----------------------------------------------------
     def capabilities(self) -> RetrieverCapabilities:
         return RetrieverCapabilities(
             supports_symbols=True,
@@ -171,12 +178,21 @@ class CodeIndexRetrieverPlugin(PluginService):
     def repositories(self) -> tuple[RepoRef, ...]:
         """What the index **covers**. Not a grant: the caller still intersects."""
         seen: dict[RepoRef, None] = {}
-        for indexed in self._files:
+        for indexed in self.files:
             seen.setdefault(indexed.repo, None)
-        for symbol in self._symbols:
+        for symbol in self.symbol_hits:
             seen.setdefault(symbol.location.repo, None)
         return tuple(seen)
 
+    def paths(self, repo: RepoRef) -> frozenset[str]:
+        """Every path this corpus holds for ``repo``, at any revision.
+
+        Exists for the composition: an overlay needs to tell "this corpus knows the file" from
+        "this corpus has never heard of it" without re-implementing the lookup.
+        """
+        return frozenset(indexed.path for indexed in self.files if indexed.repo == repo)
+
+    # -- permission and revision selection ---------------------------------
     def _permitted(
         self, repos: Sequence[RepoRef], constraints: ExecutionConstraints
     ) -> set[RepoRef]:
@@ -206,10 +222,10 @@ class CodeIndexRetrieverPlugin(PluginService):
         same task serve the same revision — and every hit still says which one that was.
         """
         available: dict[RepoRef, set[str]] = {}
-        for indexed in self._files:
+        for indexed in self.files:
             if indexed.repo in permitted:
                 available.setdefault(indexed.repo, set()).add(indexed.ref)
-        for symbol in self._symbols:
+        for symbol in self.symbol_hits:
             if symbol.location.repo in permitted:
                 available.setdefault(symbol.location.repo, set()).add(symbol.location.ref)
 
@@ -218,6 +234,7 @@ class CodeIndexRetrieverPlugin(PluginService):
             served.add((repo, ref_to_serve(refs, requested)))
         return served
 
+    # -- Retriever ---------------------------------------------------------
     async def search(
         self, query: SearchQuery, constraints: ExecutionConstraints
     ) -> Sequence[CodeHit]:
@@ -236,7 +253,7 @@ class CodeIndexRetrieverPlugin(PluginService):
         limit = min(query.max_hits, self.max_hits)
         served = self._refs_to_serve(permitted, query.ref)
         hits: list[CodeHit] = []
-        for indexed in self._files:
+        for indexed in self.files:
             if indexed.repo not in permitted or (indexed.repo, indexed.ref) not in served:
                 continue
             if query.globs and not any(
@@ -273,7 +290,7 @@ class CodeIndexRetrieverPlugin(PluginService):
         served = self._refs_to_serve(permitted, query.ref)
         found = [
             hit
-            for hit in self._symbols
+            for hit in self.symbol_hits
             if hit.location.repo in permitted
             and (hit.location.repo, hit.location.ref) in served
             and needle in hit.name.lower()
@@ -292,7 +309,7 @@ class CodeIndexRetrieverPlugin(PluginService):
 
         held = {
             indexed.ref
-            for indexed in self._files
+            for indexed in self.files
             if indexed.repo == location.repo and indexed.path == location.path
         }
         if not held:
@@ -310,7 +327,7 @@ class CodeIndexRetrieverPlugin(PluginService):
         # `read_code` puts that in the header.
         ref = ref_to_serve(held, location.ref)
 
-        for indexed in self._files:
+        for indexed in self.files:
             if (
                 indexed.repo == location.repo
                 and indexed.path == location.path
@@ -329,3 +346,53 @@ class CodeIndexRetrieverPlugin(PluginService):
         raise FileNotFoundError(
             f"the index has no {location.repo.slug}:{location.path}@{ref}"
         )
+
+
+class CodeIndexRetrieverPlugin(PluginService):
+    """Serves ``retriever`` from a configured index rather than from a checkout."""
+
+    provide = SERVICE_NAME
+
+    def __init__(self, ctx: Any, config: Any = None) -> None:
+        # Configuration is read **before** the service is initialised, deliberately: a missing
+        # or malformed index is a configuration error, and surfacing one should not require a
+        # kernel context. It also means the same failure whether a container built this
+        # provider or a person did.
+        cfg = dict(config or {})
+        configured = cfg.get("index_path")
+        if not configured:
+            raise ValueError(
+                "the code index provider needs `index_path`. Without it there is no corpus, "
+                "and defaulting to one would be inventing a deployment's data."
+            )
+        self.index_path = Path(str(configured))
+        self.corpus = IndexCorpus.from_path(
+            self.index_path, max_hits=int(cfg.get("max_hits", 200))
+        )
+
+        super().__init__(ctx)
+
+    @property
+    def denied_repo_requests(self) -> int:
+        return self.corpus.denied_repo_requests
+
+    def capabilities(self) -> RetrieverCapabilities:
+        return self.corpus.capabilities()
+
+    def repositories(self) -> tuple[RepoRef, ...]:
+        return self.corpus.repositories()
+
+    async def search(
+        self, query: SearchQuery, constraints: ExecutionConstraints
+    ) -> Sequence[CodeHit]:
+        return await self.corpus.search(query, constraints)
+
+    async def symbols(
+        self, query: SymbolQuery, constraints: ExecutionConstraints
+    ) -> Sequence[SymbolHit]:
+        return await self.corpus.symbols(query, constraints)
+
+    async def open(
+        self, location: CodeRef, span: LineSpan, constraints: ExecutionConstraints
+    ) -> FileSlice:
+        return await self.corpus.open(location, span, constraints)

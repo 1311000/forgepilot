@@ -1,6 +1,6 @@
 """Run the whole offline matrix and check it against the verdicts this repo recorded.
 
-    python evals/matrix.py              # run all 8 arms x 10 tasks, then verify
+    python evals/matrix.py              # run all 8 arms x 11 tasks, then verify
     python evals/matrix.py --check FILE # verify an existing results file
 
 **Why a matrix and not a number.** `--scripted` measures nothing about the agent: the
@@ -13,8 +13,11 @@ the only kind of eval a schedule can afford.
 
 **Why the expectations are written down rather than computed.** A check that derives
 its verdict from the run it is checking cannot fail. The table below was measured on
-2026-10-18 (`evals/results/20261018T083206-scripted.jsonl`, 78/80); a row that moves is
-a change in the harness and has to be *decided*, not absorbed.
+2026-10-18 (`evals/results/20261018T083206-scripted.jsonl`, 78/80 over ten tasks) and
+`stale-corpus` joined it on 2026-10-19 as the eleventh, offline-green in every arm — its
+discriminating column is live, where a provider that serves a stale corpus copy is what
+`--scripted` cannot see. A row that moves is a change in the harness and has to be
+*decided*, not absorbed.
 
 **What it does not check.** Whether any mechanism earns its place — that needs `--live`
 and money, and `evals/report.py` answers it. A green matrix here must never be quoted

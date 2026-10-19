@@ -1,0 +1,29 @@
+# The corpus, with the working tree in front of it — service `retriever`.
+#
+# The row `bundles/code_index/patch.yaml` ships is a *replacement*: the index answers for
+# everything and `covers_working_tree` becomes `false`, so an agent's own uncommitted edits are
+# invisible to the search meant to find them. This row is the composition the target design
+# actually describes, and it is what `docs/notes/retrieval.md` meant by "no composite provider"
+# until it existed.
+#
+# Two config keys, and both are deliberate:
+#
+#   index_path — no default. An empty corpus answers "no such code" confidently, which is the
+#                failure mode this project keeps paying for; a missing file is a configuration
+#                error instead.
+#   roots      — a map of repo slug to checkout. Empty is legal and means "the corpus is all
+#                this deployment has", the GVFS-shaped case: repositories materialise on demand
+#                and most are never checked out at all. `capabilities()` reports
+#                `covers_working_tree: false` when this map is empty, because with no checkout
+#                there is no working tree to cover — the field is a claim about the deployment,
+#                not about the class.
+#
+# A deployment overrides `index_path` (and usually `roots`) for its own layout. `--dump-config`
+# prints the row it ended up with, which is the cheapest way to confirm the map expanded.
+- id: retriever
+  plugin: forgepilot.providers.retrieve.composite:CompositeRetrieverPlugin
+  config:
+    index_path: .tmp/code.index.json
+    roots: {}
+    max_hits: 200
+  tier: trusted

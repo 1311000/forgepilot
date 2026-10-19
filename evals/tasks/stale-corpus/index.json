@@ -1,0 +1,38 @@
+{
+  "files": [
+    {
+      "repo": "git.local/demo/stats",
+      "path": "limits.py",
+      "ref": "main",
+      "text": "\"\"\"Paging limits for the listing (draft).\n\nThis is the copy the index holds: it was indexed on the branch that still thought 500 was a\ngood page size. It is here because a corpus is a snapshot of commits, and this task is about\nwhat happens when that snapshot disagrees with the tree in front of it.\n\"\"\"\n\nfrom __future__ import annotations\n\nMAX_PER_PAGE = 500\n\n\ndef page(requested: int) -> int:\n    return min(requested, MAX_PER_PAGE)\n"
+    },
+    {
+      "repo": "git.local/demo/contracts",
+      "path": "paging/contract.py",
+      "ref": "main",
+      "text": "\"\"\"The reporting service's paging contract.\n\nThis repository is not checked out where the listing is developed. It names the guard the\nlisting has to expose and how it clamps; it deliberately does not restate the limit, because\nthe limit belongs to the file that owns it and a second copy would be a second answer.\n\"\"\"\n\n#: The function the listing must expose to its callers.\nGUARD_NAME = \"enforce_page_size\"\n\n#: How the guard clamps: the smaller of what the caller asked for and the page limit the\n#: listing declares locally.\nCLAMP = \"min(requested, MAX_PER_PAGE)\"\n"
+    }
+  ],
+  "symbols": [
+    {
+      "repo": "git.local/demo/contracts",
+      "path": "paging/contract.py",
+      "ref": "main",
+      "name": "GUARD_NAME",
+      "kind": "constant",
+      "start": 10,
+      "end": 11,
+      "signature": "GUARD_NAME = \"enforce_page_size\""
+    },
+    {
+      "repo": "git.local/demo/stats",
+      "path": "limits.py",
+      "ref": "main",
+      "name": "MAX_PER_PAGE",
+      "kind": "constant",
+      "start": 9,
+      "end": 10,
+      "signature": "MAX_PER_PAGE = 500"
+    }
+  ]
+}

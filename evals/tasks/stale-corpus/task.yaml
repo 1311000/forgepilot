@@ -1,0 +1,95 @@
+# **A corpus that disagrees with the tree, and the tree is right.**
+#
+# `not-in-the-checkout` proves a corpus is necessary. This one proves it is not sufficient: the
+# index it points at holds a *draft of `limits.py` itself* — the same path, an older revision —
+# and the checkout is on a branch where the number changed. A retriever that serves the corpus
+# copy answers with 500; the file in front of the agent says 250.
+#
+# That is the defect `CompositeRetrieverPlugin` exists for, and it is the one an index-only
+# provider cannot see: `covers_working_tree: false` is the field that admits it. The visible
+# test's band excludes 500, so the failure is loud rather than subtle.
+#
+# ⚠️ **The composite patch is the point of this task.** The retriever row is overridden to the
+# composition, with the corpus beside the task file and the checkout named in `roots` — the same
+# two halves a deployment runs. `FORGEPILOT_EVAL_TASK_DIR` is exported by `harness.run_layers`;
+# a committed task file cannot carry a machine's absolute path.
+name: stale-corpus
+fixture: fixture
+
+patches:
+  - id: retriever
+    plugin: forgepilot.providers.retrieve.composite:CompositeRetrieverPlugin
+    config:
+      index_path: ${FORGEPILOT_EVAL_TASK_DIR}/index.json
+      roots:
+        git.local/demo/stats: ${FORGEPILOT_EXAMPLE_REPO}
+    tier: trusted
+
+probes:
+  - name: the_guard_clamps_to_the_tree
+    file: probes/the_guard_clamps_to_the_tree.py
+
+ticket:
+  id: BUG-8
+  title: 一页能要 5000 行，分页契约要求的守卫没有
+  description: |
+    复现步骤：
+    1. 打开 limits.py，看 MAX_PER_PAGE 是多少
+    2. 调用 page(5000) —— 它把 5000 原样返回
+    3. 用 code_search 查 reporting 服务发布的分页契约
+       （git.local/demo/contracts:paging/contract.py，那个仓库不在这个 checkout 里）
+       确认守卫应该叫什么、怎么钳制
+
+    预期结果：暴露契约要求的守卫；钳制到 limits.py 自己声明的页大小 —— 上限值由这个文件
+    决定，契约只规定守卫的名字和钳制方式
+    实际结果：没有这个守卫，page() 信任调用方
+
+    受影响仓库：git.local/demo/stats
+    相关文件：limits.py
+
+expect:
+  states: [ready, delivered]
+  checks: pass
+  changed_paths_include: [limits.py]
+  max_changed_paths: 2
+  max_tool_calls: 40
+  max_turns: 4
+  # The exact number and the clamp, which the visible band deliberately does not pin.
+  probes: pass
+
+understanding:
+  category: bug
+  symptom: page() trusts the caller, and the contract's guard does not exist
+  expected: a guard named enforce_page_size that clamps to the page limit limits.py declares
+  actual: no guard, and a page size of 5000 is answered with 5000
+  confidence: 0.95
+
+# --- offline: what a correct agent does -------------------------------------
+#
+# The search, because the guard's name is only in the corpus; then the write, because the answer
+# has to end up in the tree.
+script:
+  - search: {pattern: "MAX_PER_PAGE"}
+  - write: {path: limits.py, from: solution/limits.py}
+  - say: "契约要求 enforce_page_size，钳制到 limits.py 里的 250 —— 索引里那份 500 是旧草稿"
+
+# --- the plausible wrong answer ----------------------------------------------
+#
+# Everything the agent can check is green: the visible band, and `page(5000) <= MAX_PER_PAGE`.
+# The guard exists and is named right; it just clamps to the corpus's 500.
+#
+#   evals/run.py --scripted --task stale-corpus \
+#       --variant trusts-the-corpus                -> FAIL, on the probe
+variants:
+  trusts-the-corpus:
+    script:
+      - search: {pattern: "MAX_PER_PAGE"}
+      - write: {path: limits.py, from: solution/limits_from_the_corpus.py}
+      - say: "加了契约要求的 enforce_page_size，按索引里的值钳制到 500"
+    expect:
+      states: [ready, delivered]
+      checks: pass
+      changed_paths_include: [limits.py]
+      # This is what the row actually fails on.
+      probes: pass
+      max_changed_paths: null
