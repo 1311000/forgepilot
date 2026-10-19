@@ -82,14 +82,21 @@ def test_the_weekly_job_runs_it() -> None:
         )
 
 
-def test_the_audit_skips_the_package_this_repository_is() -> None:
-    """`--strict` without `--skip-editable` is red every week, for the layout.
+def test_the_audit_is_handed_the_dependencies_and_not_this_package() -> None:
+    """`--strict` fails on any distribution pip-audit did not audit — including ours.
 
-    Measured on dispatch run 46, the first time the job ever executed:
-    `ERROR:pip_audit._cli:forgepilot: Dependency not found on PyPI and could not be audited:
-    forgepilot (0.0.1)`, exit 1. The editable install *is* this repository, so there is no
-    advisory database entry to find for it, and a check that can never pass is a check
-    nobody reads — the same lesson as the `..` detector.
+    Two measured false starts, both the job's *first* execution (dispatch runs 46 and 48):
+
+    - `pip_audit --strict`:
+      `ERROR:pip_audit._cli:forgepilot: Dependency not found on PyPI and could not be
+      audited: forgepilot (0.0.1)` — exit 1;
+    - `pip_audit --strict --skip-editable`:
+      `ERROR:pip_audit._cli:forgepilot: distribution marked as editable` — exit 1.
+
+    So the exclusion has to happen *before* pip-audit sees the package: the job writes
+    `pip freeze --exclude forgepilot` to a file and audits that. What is audited is exactly
+    the dependency set a deployment installs; the package under test is not a dependency of
+    itself, and a check that can never pass is a check nobody reads.
     """
     workflow = yaml.safe_load((FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
     lines = [
@@ -100,8 +107,22 @@ def test_the_audit_skips_the_package_this_repository_is() -> None:
     ]
     assert lines, "no CI job runs `pip-audit`"
     for line in lines:
-        assert "--skip-editable" in line, (
-            f"`{line}` audits the editable install, which is this repository: pip-audit then "
-            f"reports 'Dependency not found on PyPI' and `--strict` fails. The weekly job "
-            f"must audit the dependencies, not the package they are installed with."
+        assert "--strict" in line, (
+            f"`{line}` drops `--strict`, which is what makes an advisory with no fixed "
+            f"version a failure. Non-strict exits 0 on exactly the case worth reporting."
         )
+        assert "--skip-editable" not in line, (
+            f"`{line}` uses `--skip-editable`, which still counts as an unaudited "
+            f"distribution under `--strict`: measured on dispatch 48 as "
+            f"`distribution marked as editable`, exit 1."
+        )
+        assert "--requirement" in line or " -r " in line, (
+            f"`{line}` must audit a requirement list, so the local package can be excluded "
+            f"before pip-audit decides it was skipped."
+        )
+    joined = "\n".join(lines)
+    assert "forgepilot" in joined and "freeze" in joined, (
+        "the job has to build its requirement list with `pip freeze --exclude forgepilot`; "
+        "otherwise pip-audit is asked to audit the editable install and `--strict` fails "
+        "every week for a fact about the layout."
+    )
