@@ -115,15 +115,24 @@ def fetch(
     proxy: str | None = None,
     page: int = 100,
     timeout: float = 30.0,
+    repo: str | None = None,
 ) -> tuple[str, ...]:
-    """Write at most `limit` instances to `out`, then prove the file is usable."""
+    """Write at most `limit` instances to `out`, then prove the file is usable.
+
+    `repo` keeps only rows whose `repo` contains it. The split is ordered by repository,
+    so without a filter the first `n` rows are the first `n` of one repository — which is
+    fine for a spike and useless for "one instance of a repository that installs".
+    """
     if limit < 1:
         raise ValueError(f"limit must be positive, not {limit}")
     opener = _opener(proxy)
     kept: list[dict[str, Any]] = []
     offset = 0
     while len(kept) < limit:
-        length = min(page, limit - len(kept))
+        # With a filter the page size cannot be the number still wanted: most rows in a
+        # page will not match, and asking for `limit - len(kept)` rows per request would
+        # walk the split one row at a time.
+        length = page if repo else min(page, limit - len(kept))
         rows, total = _rows(
             opener,
             api,
@@ -134,13 +143,19 @@ def fetch(
             length=length,
             timeout=timeout,
         )
-        kept.extend(rows)
         offset += len(rows)
+        for row in rows:
+            if repo and repo not in str(row.get("repo", "")):
+                continue
+            kept.append(row)
+            if len(kept) >= limit:
+                break
         if not rows or offset >= total:
             break
 
     if not kept:
-        raise SystemExit(f"error: {dataset} ({config}/{split}) returned no rows")
+        wanted = f" matching {repo!r}" if repo else ""
+        raise SystemExit(f"error: {dataset} ({config}/{split}) returned no rows{wanted}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
@@ -174,6 +189,21 @@ def main(argv: list[str] | None = None) -> int:
         help="http(s) proxy for the dataset server, e.g. http://127.0.0.1:18787",
     )
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--page",
+        type=int,
+        default=100,
+        help=(
+            "rows per request (default 100). A proxy that truncates a large body shows up "
+            "as http.client.IncompleteRead; a smaller page is the workaround, and it is a "
+            "flag rather than a retry because the truncation here is size-dependent"
+        ),
+    )
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="keep only instances of this repository (substring, e.g. psf/requests)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -186,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
             split=args.split,
             proxy=args.proxy,
             timeout=args.timeout,
+            repo=args.repo,
+            page=args.page,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

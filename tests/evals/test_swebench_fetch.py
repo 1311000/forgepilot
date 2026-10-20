@@ -132,3 +132,27 @@ def test_an_empty_dataset_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     with pytest.raises(SystemExit) as caught:
         write(monkeypatch, FakeOpener([]), tmp_path / "i.jsonl", limit=1)
     assert "returned no rows" in str(caught.value)
+
+
+def test_a_repository_filter_pages_until_it_has_enough(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The split is ordered by repository, so a filter has to keep reading past the first page."""
+    rows = [row(f"astropy__astropy-{index}") for index in range(5)]
+    rows += [row(f"psf__requests-{index}", repo="psf/requests") for index in range(3)]
+    opener = FakeOpener(rows)
+    out = tmp_path / "instances.jsonl"
+    ids = write(monkeypatch, opener, out, limit=2, page=2, repo="psf/requests")
+    assert ids == ("psf__requests-0", "psf__requests-1")
+    assert len(opener.urls) > 1, "a filter that stopped at the first page would find nothing"
+
+
+def test_a_filter_that_matches_nothing_is_an_error_not_an_empty_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "instances.jsonl"
+    with pytest.raises(SystemExit, match="matching 'django/django'"):
+        write(
+            monkeypatch, FakeOpener([row("astropy__astropy-1")]), out, limit=1, repo="django/django"
+        )
+    assert not out.exists(), "an empty file would be handed to the spike as a dataset"

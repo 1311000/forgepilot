@@ -1097,3 +1097,32 @@ task, whose answer lives in the seam between a stale index and a live tree, need
 On every task in the matrix the corpus is current, so the composite and the index alone are
 indistinguishable there — which is why the matrix does not include `no-tree` and why this arm
 is an instrument rather than an ablation.
+
+## P13 — the dataset came back for an hour, and the environment is still the blocker
+
+Measured 2026-10-20, the same day the three instances were fetched through the proxy at
+`127.0.0.1:18787`:
+
+- **The dataset server is unreachable again.** Six requests over three rounds, direct and
+  through the proxy: direct times out (`WinError 10060`), the proxy dies mid-TLS
+  (`SSL: UNEXPECTED_EOF_WHILE_READING`) or times out on read. The earlier `200` was an hour
+  of a proxy being up, not a route that exists. That is why the fetch is a separate step
+  with a `--proxy` flag: the dataset is not something this deployment can assume.
+- **The three instances on disk are astropy**, at base commits from the 5.0 era. `astropy`
+  5.x has no `cp311` wheel (PyPI starts at 7.1.1), and this box has **no C toolchain** —
+  `vswhere` is absent and `cl.exe` is not on `PATH` — so `pip install -e .` cannot produce
+  a tree the tests can run in. Python 3.11 is present
+  (`D:\software\anaconda\envs\myenv\python.exe`, 3.11.17), so the interpreter is not the
+  blocker; the compiler is. The system interpreter is 3.14.6, which is *worse*: no 5.x
+  astropy supports it at all.
+- **What unblocks it**, in the order this repository would take them: fetch a pure-Python
+  repository's instances (`--repo psf/requests` or `pallets/flask`) while the server is up —
+  the `--repo` filter and `--page` flag exist for exactly this, and the filter pages past
+  the repositories that sort first; or run the whole thing on Linux with `build-essential`,
+  which is what production is anyway (`docs/notes/deployment.md`) and where `astropy` 5.x
+  builds from source.
+
+So the number remains absent, and the reason is recorded rather than left as "an adapter
+exists". A benchmark whose data cannot be fetched and whose environments cannot be built
+grades nothing; saying `resolved: 0` would be a fabricated measurement of the environment,
+not of the agent.
