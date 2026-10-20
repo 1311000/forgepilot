@@ -1,0 +1,39 @@
+# The enterprise retriever: a shared index service, over HTTP.
+#
+#   forgepilot --config-dir configs \
+#     --patch src/forgepilot/bundles/retriever_remote/patch.yaml --chat
+#
+# ⚠️ This bundle is **not in any shipped profile.** It sends a bearer token to a
+# service and answers from a corpus this machine does not hold, so a deployment
+# enables it deliberately. `tests/contract/test_the_index_seam.py` fails if a
+# profile people start with ever loads it.
+#
+# The row overrides `base`'s ripgrep provider by id — the same `Retriever` seam,
+# a different reach — so `code_search` and `read_code` are unchanged.
+#
+# ⚠️ `service_url` has no default on purpose. A provider that guessed would send
+# an enterprise token somewhere unintended; a missing value raises at load time
+# and names the key.
+#
+# ⚠️ `repositories` is the index's coverage, declared rather than fetched:
+# `Retriever.repositories()` is synchronous, and a provider that could only answer
+# it by calling the network would make every narrowing decision asynchronous for a
+# list that changes per deployment, not per request. A deployment that adds a
+# repository adds a line.
+#
+# ⚠️ This provider does **not** cover the working tree
+# (`covers_working_tree: false`): a shared index holds committed revisions, and
+# claiming the overlay would be the stale-answer defect with a flag on it. A
+# deployment that wants both overlays the local provider's bundle on top (the
+# composite provider in `code_index_working_tree` is the single-machine version
+# of the same idea).
+- id: retriever
+  plugin: forgepilot.providers.retrieve.remote:RemoteIndexRetrieverPlugin
+  config:
+    service_url: ${FORGEPILOT_INDEX_URL}
+    token_env: FORGEPILOT_INDEX_TOKEN
+    timeout_s: 30
+    max_hits: 200
+    repositories:
+      - git.corp/team/svc-a
+  tier: trusted

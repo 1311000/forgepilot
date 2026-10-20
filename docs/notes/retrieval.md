@@ -260,3 +260,41 @@ with the composite and 3/3 with `index-only`, because `read_file` on a directory
 thus remains a discovery path over a local checkout. Pricing the composite needs a checkout
 where reading is itself a retrieval call, which is a deployment property; see
 `docs/notes/evals.md`.
+
+## Q4 — the shared index is an interface now, not a paragraph (2026-10-20)
+
+The target environment in `ForgePilot文档.md` is **remote-index-first**: 300+ GB across
+repositories, a local checkout holding metadata, contents fetched on demand. Until Q4 the
+only thing that existed for it was `providers/retrieve/grep.py` (the local overlay) and
+`providers/retrieve/index.py` (a JSON file — the *shape* of an answer, not a service). The
+enterprise provider was a paragraph in this note.
+
+`src/forgepilot/seams/index_service.py` is that paragraph turned into something a deployment
+can satisfy, and `src/forgepilot/providers/retrieve/remote.py` is the client for it. The
+provider implements **both** interfaces on purpose: `IndexService` is what a team's existing
+search service adapts to, and `Retriever` is what the tools already talk to — so a deployment
+enables it by overriding one row (`bundles/retriever_remote/`) and no tool changes.
+
+Three rules, each one a defect this repository has already recorded:
+
+1. **Permission is re-checked at the provider, before the wire.** A repository the caller
+   names and may not read is refused rather than quietly dropped from the request; sending
+   the question and filtering the answer would let a compromised server answer it. A hit the
+   service returns for a repository the caller may not read is dropped anyway, by both the
+   adapter and the provider — a server bug must not become a leak.
+2. **Every answer carries its revision and the corpus's freshness.** Slices carry
+   `indexed_at`; hits carry the `ref` the service served. A slice that does not say which
+   revision it came from is the confidently-wrong answer M19 was about.
+3. **"I cannot answer" is not "nothing there".** `IndexRefused` (permission), `IndexUnavailable`
+   (outage, 5xx, transport failure, non-JSON) and an empty result are three different answers,
+   because the first two are fixed by different actions and an empty result is a finding. A
+   transport failure says so in its message, so a model cannot read it as "no match".
+
+`covers_working_tree` is `False` and `supports_remote` is `True` — the only provider that may
+claim the second, and none of them may claim the first from a shared corpus. The bundle is
+**not** in a shipped profile: `tests/contract/test_the_index_seam.py` fails if any profile
+people start with loads it, because it sends a bearer token to a service.
+
+⚠️ Still not here: an actual index service, incremental updates, and a permission model the
+service enforces. What Q4 fixes is that the interface, the failure taxonomy and the opt-in
+exist and are tested against a mock transport; the service is a deployment's to run.

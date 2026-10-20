@@ -69,7 +69,13 @@
 # skips disabled rows. A row that names a plugin nobody implemented is a claim,
 # not a placeholder.
 #
-# Adding one is a later layer overriding this row id:
+# That module exists now, under its real name, with the bundle that enables it:
+# `forgepilot.providers.retrieve.remote:RemoteIndexRetrieverPlugin` in
+# `bundles/retriever_remote/`. It is not in this file because it needs a service
+# URL and a token, so a deployment opts in (`tests/contract/test_the_index_seam.py`
+# keeps it out of every shipped profile).
+#
+# Adding your own is a later layer overriding this row id:
 #
 #   - id: retriever
 #     plugin: your.org.forgepilot.EnterpriseIndexRetriever
