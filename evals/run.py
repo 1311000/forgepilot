@@ -471,6 +471,12 @@ async def run_one(
         row.setdefault(key, 0)
     row["wall_s"] = round(time.monotonic() - started, 2)
     row["failures"] = H.score(row, task)
+    # **Two facts the report cannot recover later.** `scratch` is the debris the
+    # change limit stopped counting (M23), and `failure_kinds` says which question
+    # each failure answers — behaviour, narration, cost, probe. A report that
+    # re-derived either from the sentence would drift the moment a message is
+    # reworded; both are recorded where they are known.
+    row["scratch"] = H.scratch_paths(row["changed"])
     # **What the row is allowed to cost, judged here and recorded here.** The ceiling is
     # not part of `H.score`, because `score` answers "did this task succeed" and a run can
     # succeed expensively — the two facts belong in the same row, not in one verdict. The
@@ -480,6 +486,7 @@ async def run_one(
     over = ceilings.exceeded(task.name, row.get("tool_calls", 0))
     if over is not None:
         row["failures"] = [*row["failures"], over]
+    row["failure_kinds"] = [H.failure_kind(reason) for reason in row["failures"]]
     row["passed"] = not row["failures"]
     return row
 

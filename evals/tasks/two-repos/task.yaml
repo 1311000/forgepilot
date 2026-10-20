@@ -112,8 +112,15 @@ expect:
   checks: pass
   oracle_pinned: any
   # Two files, one per repository. A run that touched three is doing something the
-  # ticket did not ask for.
+  # ticket did not ask for. **Notes it wrote to itself are not edits** (M23: 20 of 32
+  # failed cells were `_commit_msg.txt`-style debris, and 12 of those were this
+  # task), so the change limit counts deliveries and the notes are bounded on their
+  # own line below — named in the failure and in the row's `scratch` list, not folded
+  # into "changed too much".
   max_changed_paths: 2
+  # Measured: one or two notes per delivery, four once. Five is a flood rather than
+  # tidiness, and this task keeps failing for that.
+  max_scratch_paths: 4
   max_tool_calls: 60
   # Two deliveries, each one turn when the fix works first time. Four leaves room
   # for one repair without accepting a run that spins.

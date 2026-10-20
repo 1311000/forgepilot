@@ -938,3 +938,42 @@ directions: a tool that can be built and is never offered, and an offered name t
 be built. The same run shows `read_code` being called for real for the first time
 (`{"repo": "git.local/demo/contracts", "path": "paging/contract.py"}`), answered from the
 corpus by the composite's cross-repository path.
+
+
+## Q3 -- a red cell now says which question it answered (2026-10-20)
+
+M23's failure table listed 32 failures and **20 of them were notes the agent left in the
+tree** (`_commit_msg.txt`, `BUG2_MSG.txt`, `_repro.py`, ...). P4 then found `out-of-scope`
+inverting between sweeps because its only check is a sentence. Both facts were *in* the
+results files and neither was *readable*: the change limit counted debris beside edits, and
+the report added narration to behaviour at the same rate. Two red cells could mean opposite
+things and the report could not say which.
+
+What changed, and why each piece is where it is:
+
+- **`harness.scratch_paths()`** -- a *named* heuristic: a basename that starts with `_`, ends
+  in a note suffix (`.txt`/`.log`/`.bak`/`.orig`/`.rej`), or contains a note-shaped token
+  (`commit_msg`, `repro`, `scratch`, `tmp`, `_msg`). Its blind spot is written down rather
+  than papered over: `verify_fix.py` is debris by intent and is not caught, because the
+  smarter rule that would catch it also swallows real files.
+- **`max_changed_paths` counts edits; `max_scratch_paths` bounds the notes.** They are
+  separate failures because they answer different questions. `changed_paths_include`/
+  `_exclude` still read the whole list: a forbidden path is forbidden however it is named.
+  `two-repos` gets `max_scratch_paths: 4` -- measured, one or two notes per delivery and
+  four once; five is a flood rather than tidiness, and that still fails.
+- **Rows carry `scratch` and `failure_kinds`** (a list parallel to `failures`), recorded
+  where the facts are known instead of re-derived from a sentence that may be reworded.
+  `failure_kind()` names the question: `narration`, `checks`, `changed`, `state`,
+  `delivery`, `cost`, `probe`, `scratch`, `other`.
+- **The report prints `[kind]`** beside each reason and tags rows written before the kinds
+  existed as `?` -- a missing fact, not a guessed one.
+
+Evidence: `tests/evals/test_a_failure_says_which_question_it_answers.py` (30 assertions,
+including the exact debris names the matrix measured and the `out-of-scope` narration case),
+and the **re-recorded scripted matrix**: 88 cells, 86 passed, `every cell matches the
+recorded matrix` -- so the scoring change moved no offline cell. On this box that comparison
+needs `FORGEPILOT_EVAL_INSIDE_REPO=1`, and the command prints that the rows are *not
+evidence* while it compares them; the weekly job is where the same rows are published.
+
+What this does not do: it prices nothing new, and three reps still cannot separate phrasing
+from behaviour -- it only makes the difference visible instead of averaging it away.

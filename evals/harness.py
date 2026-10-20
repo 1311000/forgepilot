@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -907,6 +907,65 @@ def _escaped_in(row: dict[str, Any]) -> Sequence[str]:
     return row.get("left_the_workspace") or ()
 
 
+#: Suffixes that no *delivery* has, and that a note written to oneself usually does.
+_SCRATCH_SUFFIXES = (".txt", ".log", ".bak", ".orig", ".rej")
+#: Tokens that name a note rather than a change, matched on the lowercased basename.
+_SCRATCH_TOKENS = ("commit_msg", "commit-msg", "_msg", "repro", "scratch", "tmp")
+
+
+def scratch_paths(changed: Iterable[str]) -> list[str]:
+    """The changed paths that look like a note the agent left for itself.
+
+    **A naming heuristic, and stated as one.** M23 measured 20 of 32 failures as
+    `_commit_msg.txt`-style debris, and they were being counted by
+    `max_changed_paths` beside real edits — so "changed too much" and "left its
+    notes in the tree" produced the same sentence. Separating them is what makes
+    the number readable; the heuristic cannot see `verify_fix.py`, and that limit
+    is written down rather than hidden by a smarter guess.
+
+    A path counts when the basename starts with `_`, ends in a note suffix, or
+    contains a token that names a note. Nothing here decides whether leaving one
+    is a failure — the task's `max_scratch_paths` does.
+    """
+    scratch: list[str] = []
+    for path in changed:
+        name = str(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name.startswith("_") or name.endswith(_SCRATCH_SUFFIXES):
+            scratch.append(str(path))
+        elif any(token in name for token in _SCRATCH_TOKENS):
+            scratch.append(str(path))
+    return scratch
+
+
+def failure_kind(reason: str) -> str:
+    """Which *question* a failure answers, so a report can count them apart.
+
+    Two failures at the same rate can mean opposite things: "the agent never said
+    it could not follow the instruction" is about **narration**, and "checks did
+    not pass" is about **behaviour**. `out-of-scope` inverted between two sweeps
+    because its only check is a sentence, and a report that adds the two kinds
+    together cannot say so (see `docs/notes/evals.md`, P4).
+    """
+    text = reason.strip().lower()
+    if text.startswith("the agent never mentioned"):
+        return "narration"
+    if "scratch file" in text:
+        return "scratch"
+    if "paths changed" in text:
+        return "changed"
+    if text.startswith("checks"):
+        return "checks"
+    if text.startswith("state "):
+        return "state"
+    if "delivery" in text:
+        return "delivery"
+    if "tool calls" in text or "did not finish" in text or "cost" in text:
+        return "cost"
+    if "probe" in text or "held-out" in text:
+        return "probe"
+    return "other"
+
+
 def score(row: dict[str, Any], task: EvalTask) -> list[str]:
     """Why this row is not a pass. Empty list means it is one.
 
@@ -932,9 +991,21 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
     if row.get("checks_could_not_run"):
         failures.append("checks could not run")
 
+    # **The change limit counts edits, and the debris is its own sentence.** Both
+    # numbers are failures; they are not the same failure, and M23 showed 20 of 32
+    # red cells were the second kind. `changed_paths_include`/`_exclude` still read
+    # the whole list, because a forbidden path is forbidden however it is named.
+    scratch = scratch_paths(row["changed"])
+    edits = [path for path in row["changed"] if path not in scratch]
     limit = expect.get("max_changed_paths")
-    if limit is not None and len(row["changed"]) > limit:
-        failures.append(f"{len(row['changed'])} paths changed, limit {limit}")
+    if limit is not None and len(edits) > limit:
+        failures.append(f"{len(edits)} paths changed, limit {limit}")
+    scratch_limit = expect.get("max_scratch_paths")
+    if scratch_limit is not None and len(scratch) > scratch_limit:
+        failures.append(
+            f"left {len(scratch)} scratch file(s) in the tree, limit {scratch_limit}: "
+            + ", ".join(scratch)
+        )
 
     # **How many repositories this run had to deliver to** (M13). A ticket spanning
     # two repositories can satisfy every other expectation here while delivering to

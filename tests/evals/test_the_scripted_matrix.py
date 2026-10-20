@@ -64,6 +64,24 @@ def test_the_measured_table_passes_its_own_check(matrix: Any) -> None:
     assert matrix.check(rows_for(matrix)) == []
 
 
+def test_a_local_control_checks_the_scoring_without_calling_it_evidence(matrix: Any) -> None:
+    """The opt-in exists for a box whose only writable scratch is inside the checkout.
+
+    On that box the rows are not evidence and the refusal is right. But the question
+    a developer is asking after a scoring change is *"did any cell move?"*, and that
+    is answerable from a row that is not a measurement — as long as the output says
+    which of the two it is. Without this the sweep could not be compared at all here,
+    and the alternative (silently publishing the rows) is the defect this file exists
+    to prevent.
+    """
+    rows = rows_for(matrix)
+    for row in rows:
+        row["scratch_inside_repo"] = True
+
+    assert matrix.check(rows, local_control=True) == []
+    assert matrix.check(rows), "the default must still refuse them"
+
+
 def test_a_row_that_flipped_is_named_with_both_verdicts(matrix: Any) -> None:
     rows = rows_for(matrix, passed={("two-attempts", "no-repair"): True})
     problems = matrix.check(rows)

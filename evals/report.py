@@ -407,14 +407,24 @@ def _is_crash(row: dict[str, Any]) -> bool:
     return bool(row.get("error"))
 
 
-def _reasons_of(group: list[dict[str, Any]]) -> dict[str, int]:
-    """Distinct failure reasons in a group of rows, with how many produced each."""
-    reasons: dict[str, int] = defaultdict(int)
+def _reasons_of(group: list[dict[str, Any]]) -> dict[tuple[str, str], int]:
+    """Distinct failures in a group of rows, with how many produced each.
+
+    Keyed by **(kind, reason)**, using the kinds the runner recorded beside the
+    reasons: the same words can answer different questions — "checks did not pass"
+    is behaviour, "the agent never mentioned" is narration — and a report that adds
+    them together cannot say which moved. Rows written before the kinds existed get
+    `?`, which is the honest answer rather than a re-derived guess.
+    """
+    reasons: dict[tuple[str, str], int] = defaultdict(int)
     for row in group:
         if row.get("passed"):
             continue
-        for reason in row.get("failures") or ("(no reason recorded)",):
-            reasons[_shorten(str(reason))] += 1
+        reasons_for_row = row.get("failures") or ("(no reason recorded)",)
+        kinds = list(row.get("failure_kinds") or ())
+        for index, reason in enumerate(reasons_for_row):
+            kind = kinds[index] if index < len(kinds) else "?"
+            reasons[(kind, _shorten(str(reason)))] += 1
     return reasons
 
 
@@ -459,8 +469,10 @@ def _print_failures(rows: list[dict[str, Any]]) -> None:
     print("-" * 88)
     for key, group in sorted(groups.items()):
         print(f"{_cell_label(key)}  — {len(group)} of the rows above")
-        for reason, count in sorted(_reasons_of(group).items(), key=lambda kv: (-kv[1], kv[0])):
-            print(f"    {count}x  {reason}")
+        for (kind, reason), count in sorted(
+            _reasons_of(group).items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            print(f"    {count}x  [{kind}] {reason}")
         print()
 
     crashes = [r for r in rows if _is_crash(r)]

@@ -1016,7 +1016,14 @@ Three views, and the rate is the least useful of them:
 | the grouped table | one line per (task, arm) — counts, medians, terminal states |
 | **the matrix** | task × arm passes, with `*` on a cell that did less well than `full` |
 | **what each arm actually changed** | the configuration diff, read off the rows |
-| **why the runs that did not pass, did not pass** | every distinct failure reason, with how many rows produced it |
+| **why the runs that did not pass, did not pass** | every distinct failure reason, with how many rows produced it, tagged with the *kind* of question it answers — `[checks]`/`[changed]`/`[state]` is behaviour, `[narration]` is what the agent said, `[scratch]` is debris it left behind, `[cost]` is the ceiling |
+
+**A failure carries its kind** (`failure_kinds`, recorded beside `failures`), because two
+red cells at the same rate can mean opposite things: M23 measured 20 of 32 failures as
+`_commit_msg.txt`-style notes, and P4 found `out-of-scope` inverting because its only check
+is a sentence. The change limit now counts **edits**, and notes are bounded separately by
+`max_scratch_paths` — so "changed too much" and "left its notes in the tree" no longer
+produce the same sentence. See `docs/notes/evals.md`, Q3.
 
 ⚠️ **"What each arm actually changed" is not a description — it is a diff**, and it
 is recorded into every row (`arm_changes`) so a results file carries its own

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -68,15 +69,22 @@ def expected(arm: str, task: str) -> bool:
     return task not in EXPECTED_FAILURES[arm]
 
 
-def check(rows: Iterable[dict[str, Any]]) -> list[str]:
-    """Every way the rows disagree with the recorded table, as printable lines."""
+def check(rows: Iterable[dict[str, Any]], *, local_control: bool = False) -> list[str]:
+    """Every way the rows disagree with the recorded table, as printable lines.
+
+    ``local_control`` lets a developer run the sweep on a box where the only writable
+    scratch is inside this checkout — the rows are then not *evidence* (the shell can
+    walk to `evals/tasks/<name>/solution/`), but the table still answers the question
+    the run was made for: *did the scoring change move a cell?* The refusal stays the
+    default; the caller has to say that is what it is doing, and the message says so.
+    """
     problems: list[str] = []
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     expected_cells = {(task, name) for name in EXPECTED_FAILURES for task in H.available_tasks()}
 
     for row in rows:
         key = (str(row.get("task")), str(row.get("arm")))
-        if row.get("scratch_inside_repo"):
+        if row.get("scratch_inside_repo") and not local_control:
             # The row's `passed` is not evidence of anything when the shell could walk to
             # `evals/tasks/<name>/solution/`. It stays in the file (a sweep that happened is
             # a fact) and it stops being a cell of the table.
@@ -133,6 +141,14 @@ def run_matrix() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from forgepilot.console import use_utf8_output
+
+    # Before the first `print`, and for the reason `forgepilot.console` records: a
+    # piped stdout is encoded with the machine's code page, so the first `⚠️` this
+    # command printed died with `UnicodeEncodeError: 'gbk' codec` — after the sweep,
+    # on a run that had already done its work.
+    use_utf8_output()
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--check",
@@ -153,9 +169,15 @@ def main(argv: list[str] | None = None) -> int:
         path = run_matrix()
 
     rows = read_rows(path)
-    problems = check(rows)
+    local_control = os.environ.get(H.ALLOW_INSIDE_REPO, "") not in ("", "0", "false", "False")
+    problems = check(rows, local_control=local_control)
     cells = len({(r.get("task"), r.get("arm")) for r in rows})
     print(f"\n{path.name}: {cells} cell(s), {sum(1 for r in rows if r.get('passed'))} passed")
+    if local_control:
+        print(
+            f"  ⚠️ {H.ALLOW_INSIDE_REPO} is set: this compares the scoring against the "
+            "table, and the rows are not evidence (the answer was inside the checkout)."
+        )
     if problems:
         for problem in problems:
             print(f"  MISMATCH  {problem}")
