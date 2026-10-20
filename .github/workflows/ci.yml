@@ -50,7 +50,18 @@ jobs:
   check:
     runs-on: ubuntu-22.04
     steps:
+      # ⚠️ **`fetch-depth: 0` is load-bearing, and the first run without it went red.**
+      # `tests/contract/test_the_format_gate_is_adopted.py` verifies that every revision
+      # in `.git-blame-ignore-revs` is a commit whose files are all Python. A default
+      # checkout is one commit deep, so a revision that *is* in the history fails
+      # `git cat-file -e` with 128 — the same answer a revision that never existed gives.
+      # The gate reads history, so the job fetches it; the two costs are a few MB against
+      # a guard that silently stops guarding. The test now also refuses a shallow clone by
+      # name, so stripping this again produces a directed failure rather than a false
+      # accusation (measured: run 39422869822, `2 failed, 2106 passed`).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:

@@ -19,8 +19,11 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 FORGE = Path(__file__).resolve().parents[2]
 IGNORE_REVS = FORGE / ".git-blame-ignore-revs"
+WORKFLOW = FORGE / ".github" / "workflows" / "ci.yml"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -40,6 +43,60 @@ def _ignored_revisions() -> list[str]:
     return revisions
 
 
+def _require_history() -> None:
+    """Refuse a shallow clone by name, because absence is not evidence here.
+
+    `actions/checkout` fetches one commit by default, and in such a clone `cat-file -e` on
+    a revision that *is* in the history answers 128 — indistinguishable, from inside the
+    suite, from a revision that never existed. The workflow fetches the full history for
+    the job that runs this file (`fetch-depth: 0`); when someone strips that again, this
+    refuses with the cause instead of accusing the file of naming a commit that is real.
+    """
+    shallow = subprocess.run(
+        ["git", "-C", str(FORGE), "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert shallow.stdout.strip() != "true", (
+        "this checkout is shallow, so `.git-blame-ignore-revs` cannot be verified: a "
+        "revision that its history contains is absent from this clone, which reads exactly "
+        "like a revision that never existed. Fetch the history — `actions/checkout` with "
+        "`fetch-depth: 0`, or `git fetch --unshallow` — because a gate that reads history "
+        "needs the history."
+    )
+
+
+def test_the_job_that_runs_the_gate_fetches_the_history() -> None:
+    """The other half of `_require_history()`: the workflow is what makes it pass.
+
+    A directed failure in the suite is better than a confusing one, but it is still a red
+    build. This asserts the thing that keeps it green — the job that runs `tools/check.py`
+    checks out with `fetch-depth: 0` — so removing that line fails here, naming the job,
+    before CI spends a minute discovering it.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    runners = [
+        name
+        for name, job in jobs.items()
+        if any("tools/check.py" in str(step.get("run", "")) for step in job["steps"])
+    ]
+    assert runners == ["check"], (
+        f"expected exactly one job to run `tools/check.py`, found {runners}. The "
+        f"fetch-depth assertion below is written against that job."
+    )
+    checkouts = [step for step in jobs["check"]["steps"] if "checkout" in str(step.get("uses", ""))]
+    assert checkouts, "the `check` job does not check anything out"
+    depth = checkouts[0].get("with", {}).get("fetch-depth")
+    assert depth == 0, (
+        f"the `check` job checks out with `fetch-depth: {depth!r}`, so it is shallow: "
+        f"`tests/contract/test_the_format_gate_is_adopted.py` cannot resolve "
+        f"`.git-blame-ignore-revs` in a one-commit clone and fails with a message about a "
+        f"revision that does exist. Set `fetch-depth: 0`."
+    )
+
+
 def test_the_gate_checks_formatting() -> None:
     source = (FORGE / "tools" / "check.py").read_text(encoding="utf-8")
     assert '"format"' in source and '"--check"' in source, (
@@ -49,6 +106,7 @@ def test_the_gate_checks_formatting() -> None:
 
 
 def test_every_ignored_revision_exists() -> None:
+    _require_history()
     for revision in _ignored_revisions():
         assert _SHA.match(revision), (
             f"{revision!r} in `.git-blame-ignore-revs` is not a full 40-character sha. An "
@@ -73,6 +131,7 @@ def test_an_ignored_commit_changes_no_behaviour() -> None:
     behaviour change smuggled into an ignored revision would be invisible to blame, so an
     ignored commit must not touch a test, a config, a fixture or a document.
     """
+    _require_history()
     for revision in _ignored_revisions():
         shown = subprocess.run(
             ["git", "-C", str(FORGE), "show", "--name-only", "--format=", revision],
