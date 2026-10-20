@@ -330,3 +330,37 @@ Two rules make the list a plan rather than a wish:
 The rendering is `[x]` / `[~]` / `[ ]` with a header that says how much is left
 and what is being worked on. That header is the part a reviewer reads; the list
 is the part they check the diff against.
+
+## A step's reads overlap, and a write is a barrier (P6-1)
+
+A model asks for five reads in one step because it wants them *at once*. Serving
+them one after another costs five subprocesses or five round-trips, and the
+ordering between them is not information — they cannot observe each other. So
+`ToolRegistry.invoke_all` runs consecutive reads concurrently.
+
+Three rules, each one a way this could have been wrong:
+
+- **Only adjacent calls are grouped.** `[read, read, write, read]` is three
+  groups; the trailing read still sees the write. Grouping every read in the
+  step would silently reorder it, and the model's next step would be reasoning
+  about a tree that the write had not touched yet.
+- **The rule is the declared effect, never a guess about the arguments.** The
+  registry knows `ToolEffect`, and that is the only thing it knows. A heuristic
+  ("this `run` looks read-only") would be a second place for the answer to live,
+  and it would be wrong the first time someone passed `sed -i`.
+- **Each call gets its own `ToolPipeline` clone.** `invoke` resets
+  `self.trace = []` on entry, so a shared pipeline would have two callers
+  overwriting one diagnostic — the trace would describe the last call and claim
+  to describe the step. The clone shares every decision (guards, approval,
+  enforcement, listeners) and isolates the trace, because a copy of the
+  *decisions* is a second policy that drifts.
+
+What does not change: `tool/call` is durable before execution and is written in
+request order (`pipeline.py` flushes it before the tool runs, so it cannot be
+buffered), results arrive in completion order, and the projection pairs them by
+`callId`. An unknown tool is its own group — a refusal must appear in request
+order, not jump ahead of the call that preceded it.
+
+The cost is measured, not assumed: `tests/tools/test_parallel_reads.py` asserts
+two reads finish in one delay, that a write between them makes the step strictly
+sequential, and that two writes never overlap.

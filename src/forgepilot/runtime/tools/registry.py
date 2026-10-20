@@ -14,7 +14,8 @@ pull request has no reason to be shown the tool that does.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -114,3 +115,100 @@ class ToolRegistryPlugin(PluginService):
             constraints=constraints,
             workspace_root=workspace_root,
         )
+
+    async def invoke_all(
+        self,
+        calls: Sequence[ToolCall],
+        *,
+        recorder: ToolSessionRecorder,
+        turn: TurnId,
+        step: int,
+        constraints: ExecutionConstraints,
+        workspace_root: Path | None = None,
+    ) -> None:
+        """Run the calls a model asked for in one step, overlapping the safe ones.
+
+        A mature agent asks for several reads at once, and paying their latency
+        one after another is a self-inflicted cost: they cannot observe each
+        other. Writes and execs can, so they are their own group — the ordering
+        rule is the *declared* effect, not a guess about the arguments, because
+        the declaration is the only thing the registry actually knows.
+
+        The groups are consecutive: a read after a write still waits for the
+        write, so "read the file I just changed" keeps meaning what it means in
+        a sequential step. Only a run of adjacent read-only calls overlaps.
+
+        Two consequences worth stating rather than discovering:
+
+        - **Each call records its own ``tool/call`` before it runs** (the
+          pipeline's durable-before-execution rule is untouched). Calls therefore
+          appear in request order, while results appear as they finish. The log
+          is a record, not a schedule, and results are paired by ``callId``.
+        - **Each call gets its own pipeline clone**, because the pipeline keeps
+          the phase trace of "the most recent call" on itself. Sharing one would
+          make that trace a race rather than a diagnostic.
+        """
+        if self._pipeline is None:
+            raise PluginContractViolation(
+                "no pipeline is attached, so tool execution has no approval, no guards "
+                "and no sandbox. Refusing rather than running a tool bare."
+            )
+
+        for parallel, group in _groups(calls, self._tools):
+            if parallel and len(group) > 1:
+                await asyncio.gather(
+                    *(
+                        self._pipeline.clone().invoke(
+                            call,
+                            session=recorder,
+                            turn=turn,
+                            step=step,
+                            constraints=constraints,
+                            workspace_root=workspace_root,
+                        )
+                        for call in group
+                    )
+                )
+            else:
+                for call in group:
+                    await self.invoke(
+                        call,
+                        recorder=recorder,
+                        turn=turn,
+                        step=step,
+                        constraints=constraints,
+                        workspace_root=workspace_root,
+                    )
+
+
+#: Effects that let a call share a step with its neighbours. A reader and a
+#: session-only tool change nothing another call can observe; a writer, an
+#: executor or a network call changes what the next call would see, so it runs
+#: alone and in order.
+PARALLEL_EFFECTS = frozenset({ToolEffect.READ, ToolEffect.SESSION})
+
+
+def _may_share_a_step(definition: ToolDefinition | None) -> bool:
+    # An unknown tool is *not* parallel-safe: it will be refused, and a refusal
+    # belongs in request order rather than in a burst with its neighbours.
+    return definition is not None and definition.effects <= PARALLEL_EFFECTS
+
+
+def _groups(
+    calls: Sequence[ToolCall], definitions: Mapping[str, ToolDefinition]
+) -> list[tuple[bool, list[ToolCall]]]:
+    """Split a step's calls into runs that may overlap.
+
+    Consecutive is the point: `[read, read, write, read]` is three groups, so the
+    trailing read still sees the write. Grouping all the reads together would
+    reorder the step and make the second read a snapshot of a tree that has not
+    been written yet.
+    """
+    groups: list[tuple[bool, list[ToolCall]]] = []
+    for call in calls:
+        safe = _may_share_a_step(definitions.get(call.name))
+        if safe and groups and groups[-1][0]:
+            groups[-1][1].append(call)
+        else:
+            groups.append((safe, [call]))
+    return groups

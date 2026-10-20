@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -126,6 +126,18 @@ class ToolPipeline:
 
     def on_post_execute(self, listener: PostExecuteListener) -> None:
         self.post_execute_listeners.append(listener)
+
+    def clone(self) -> ToolPipeline:
+        """A second coordinator that shares every collaborator but the trace.
+
+        ``invoke`` resets ``trace`` on entry and appends to it through the call,
+        so two calls sharing one pipeline would overwrite each other's phases —
+        a diagnostic that lies. The clone shares the registry, guards, approval
+        service, sandbox probe and listeners: those are the *policy*, and copying
+        them would let a per-call copy drift from what the session was built
+        with.
+        """
+        return replace(self, trace=[])
 
     # -- entry point -------------------------------------------------------
     async def invoke(

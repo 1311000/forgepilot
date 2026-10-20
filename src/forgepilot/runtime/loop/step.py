@@ -203,19 +203,25 @@ async def run_step(
 
     # Every requested call goes through the pipeline, including ones that will be
     # refused. A refusal is a result the model must see, or it will ask again.
-    for requested in result.tool_calls:
-        await tools.invoke(
+    #
+    # `invoke_all` overlaps the calls that declared read-only effects and keeps
+    # the rest in order — the rule lives in the registry, next to the declaration
+    # it reads, rather than here where it would be a second opinion.
+    await tools.invoke_all(
+        [
             ToolCall(
                 call_id=requested.call_id,
                 name=requested.name,
                 arguments_json=requested.arguments_json,
-            ),
-            recorder=session,
-            turn=turn,
-            step=step,
-            constraints=constraints,
-            workspace_root=workspace_root,
-        )
+            )
+            for requested in result.tool_calls
+        ],
+        recorder=session,
+        turn=turn,
+        step=step,
+        constraints=constraints,
+        workspace_root=workspace_root,
+    )
 
     await session.step_end(turn, step)
     return result
