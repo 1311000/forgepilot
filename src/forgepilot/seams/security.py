@@ -53,6 +53,11 @@ class Operation(StrEnum):
     #: read stays inside a boundary the deployment owns, and a URL leaves it. A
     #: deployment that never grants this cannot be made to fetch by a prompt.
     FETCH_URL = "fetch_url"
+    #: Calling a tool this deployment did not write, reached through an MCP server. Like
+    #: :attr:`FETCH_URL` it leaves the code the deployment owns, and it is separate from it
+    #: because the two are different decisions: a fetch reads a document, a remote tool may
+    #: do whatever its server does. A deployment can grant one and refuse the other.
+    CALL_EXTERNAL_TOOL = "call_external_tool"
     #: Forgetting: stop returning a memory, keep it and its evidence in the audit.
     #: Separate from :attr:`PURGE_MEMORY` because they are different decisions with
     #: different costs, and a policy that can only say yes to both is not a policy.

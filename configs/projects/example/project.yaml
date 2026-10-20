@@ -79,6 +79,12 @@ tool_sets:
   # are true.
   web:
     - web_fetch
+  # MCP tools, for the same reason and with the same shape: `bundles/mcp` registers
+  # them, ships with no servers, and an empty `tools` allowlist refuses every name.
+  # `mcp_servers` first — the model has to read the schema before it can call.
+  mcp:
+    - mcp_servers
+    - mcp_call
   # Delegation is opt-in per project: a research question may be split across
   # read-only children, and `spawn_subagent` is registered by its own bundle.
   research:

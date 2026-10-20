@@ -1,0 +1,31 @@
+# `mcp` — opt-in, and it ships with no servers.
+#
+# Adding this bundle registers `mcp_servers` and `mcp_call` and starts **nothing**: the
+# `servers` list below is empty, so both tools answer "no MCP tools are configured" until
+# a deployment writes a server. That is deliberate — an MCP server is a process this
+# deployment starts, and it does whatever that process can do; the decision to run one
+# belongs in configuration, with the binary named, not in a default.
+#
+#     mcp:
+#       servers:
+#         - name: "filesystem"
+#           command: "npx"
+#           args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/repo"]
+#           tools: ["read_file", "list_directory"]   # required; empty refuses everything
+#           env_allow: ["PATH", "SYSTEMROOT"]        # names only, never values
+#
+# Two rows, because they are two services: the transport serves `mcp`, and the tool plugin
+# registers the two tools against it. `tools` in the second row is the model's tool set,
+# not the server's allowlist.
+- id: mcp
+  plugin: forgepilot.providers.mcp.stdio:StdioMcpPlugin
+  config:
+    servers: []
+    max_bytes: 256000
+    max_chars: 60000
+  tier: trusted
+
+- id: toolsMcp
+  plugin: forgepilot.runtime.tools.mcp:McpToolsPlugin
+  config: {}
+  tier: trusted

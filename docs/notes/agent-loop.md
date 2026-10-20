@@ -419,3 +419,43 @@ copy that drifts, so one test reads the signature and fails if the two disagree
 the `max_tokens=` line from `_deliver_repository` turns
 `test_a_project_can_cap_one_reply` red with `the loop was told [None], not the
 project's cap`.
+
+## An MCP tool: reached by name, never registered (P8-1)
+
+The seam (seams/mcp.py) states four rules; this is where they become a tool.
+
+**The server's tools are not ForgePilot tools, and that is the design.** Registration
+happens when a plugin loads; the list belongs to a process that may be down, slow, or
+different from the one that answered at boot. So the surface is two tools whose arguments
+name what to reach -- mcp_servers prints each tool with **its own schema** (the server
+wrote it; a rewritten schema is this codebase's guess at a contract it does not own), and
+mcp_call invokes one by server + 	ool. A server that dies costs a tool result, not a
+boot.
+
+**The effect is EXTERNAL, which grants no host capability.** An external tool is not this
+deployment's read or shell: it runs in a process the pipeline does not mediate, so claiming
+READ would hand the model a capability it did not earn. What bounds it is the allowlist
+and Operation.CALL_EXTERNAL_TOOL -- never the effect. The test that pins this also pins
+the reason: Capabilities() in a test is empty because an external tool is granted nothing.
+
+**Three refusals that must not be confusable.** Not configured / not in the allowlist is
+McpRefused (the model can fix the name); a server that is down, slow, or malformed is
+McpUnavailable (a tool result that says "no such tool" sends the model looking for a name
+that was right); and a listing is *not* a call, so showing a tool the policy forbids is
+correct. The tool checks CALL_EXTERNAL_TOOL **before** touching the client, so a refused
+call starts no process.
+
+**The transport bounds what comes back, and says where it died.** max_bytes per line,
+	imeout_s per request, the child's stderr carried into the refusal, and the process killed
+on a protocol violation. One measurement worth keeping: asyncio's reader refuses a line over
+*its own* limit with a bare ValueError naming a number nobody configured, before this
+module can compare it with max_bytes -- so create_subprocess_exec(..., limit=max_bytes + 1024)
+makes the configured cap the first thing that bites, and a xcept ValueError belt keeps the
+refusal naming that cap if a platform ignores it.
+
+The shipped bundle configures **no servers** (undles/mcp/patch.yaml), so both tools answer
+"no MCP tools are configured" until a deployment names a command, and the 	ools allowlist
+of an empty entry refuses every name. An MCP server is a process this deployment starts and
+can do whatever that process can do; that decision belongs beside 
+un and web_fetch, in
+configuration, not in a default.

@@ -23,6 +23,7 @@ from forgepilot.runtime.tools.builtin import (
     build_search_definitions,
     build_tool_definitions,
 )
+from forgepilot.runtime.tools.mcp import built_names as mcp_names
 from forgepilot.runtime.tools.subagent import built_names as subagent_names
 from forgepilot.runtime.tools.web import build_web_definitions
 
@@ -48,6 +49,9 @@ def _built() -> set[str]:
     names |= {definition.name for definition in build_search_definitions(None)}
     names |= {definition.name for definition in build_web_definitions({})}
     names |= subagent_names()
+    # MCP needs a transport to *build*, not to name: the builder is asked for its names
+    # rather than handed a client, because the question here is "does a project name it".
+    names |= mcp_names()
     return names
 
 
