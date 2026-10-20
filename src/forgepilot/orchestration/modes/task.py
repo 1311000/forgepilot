@@ -620,7 +620,12 @@ async def _deliver_repository(
     from forgepilot.runtime.loop.turn import run_turn
     from forgepilot.runtime.pinning import pinned_to_base
     from forgepilot.runtime.recall import Recaller
-    from forgepilot.runtime.repair import combine_checks, run_checks
+    from forgepilot.runtime.repair import (
+        CheckResult,
+        combine_checks,
+        run_checks,
+        run_checks_until_stable,
+    )
     from forgepilot.seams.agent_loop import UserInput
     from forgepilot.seams.refs import CommitAuthor, Mode
     from forgepilot.seams.security import Operation
@@ -709,7 +714,29 @@ async def _deliver_repository(
         # rather than once, because each turn may edit the tests again. See
         # `runtime/pinning.py` for why this is a mechanism rather than a warning.
         pins = project.tests_in(tuple(await workspace.changed_paths(handle)))
-        if pins:
+
+        async def _decide_checks(pins: tuple[str, ...] = pins) -> CheckResult:
+            """One check decision — the unit ``run_checks_until_stable`` retries.
+
+            The whole decision, not one command: a pinned run and an agent run are
+            two halves of one verdict, and retrying them independently would pair
+            one tree's second attempt with the other tree's first.
+
+            ``pins`` is bound as a default rather than closed over: the retry runs
+            inside the same attempt and must pin what *this* attempt's diff said,
+            not whatever a later turn would compute.
+            """
+            nonlocal pinned
+            if not pins:
+                return await run_checks(
+                    commands=project.test,
+                    sandbox=sandbox,
+                    session=session,
+                    constraints=constraints,
+                    workspace_root=handle.root,
+                    session_id=session_id,
+                    repo=repo.slug,
+                )
             # **Two trees, both must pass.** Pinned alone cannot see a feature —
             # restoring the tests to base deletes the specification for something
             # that does not exist yet. Agent alone cannot see a weakened
@@ -740,16 +767,29 @@ async def _deliver_repository(
                 repo=repo.slug,
             )
             check = combine_checks((("pinned", strict), ("agent", extended)))
-            # The extension is already in the log from its own run, so recording
-            # the conjunction would double every check event. Re-record the one
-            # that decides, so a reader sees the verdict the task acted on.
+            return check
+
+        # A project's test command is sometimes flaky, and one failing run then
+        # fails the task. `check_attempts` asks the *command* again — not the model —
+        # and a pass on a later attempt is recorded as flaky rather than as clean.
+        check = await run_checks_until_stable(_decide_checks, attempts=project.check_attempts)
+        # Recorded here rather than inside `_decide_checks` so that this event is the
+        # **deciding** verdict — including the retry's reading of it. Each attempt has
+        # already logged its own `task/check` (from `run_checks`); what no single one
+        # of them says is that the green one came second.
+        #
+        # `pins` needs it because the conjunction of two trees is a verdict no single
+        # run logged; a retry needs it for the same reason, one level up. An ordinary
+        # single run at one attempt is already in the log from its own run, and
+        # recording it twice would double every check event.
+        if pins or check.meta.get("attempts", 1) > 1:
             await session.append(
                 EventKind.TASK_CHECK,
                 {
                     # Named for the same reason the state events are: with several
-                    # deliveries the check events interleave in one log, and a
-                    # passing check that does not say which tree it ran in cannot
-                    # be told apart from the other repository's.
+                    # deliveries the check events interleave in one log, and a passing
+                    # check that does not say which tree it ran in cannot be told apart
+                    # from the other repository's.
                     "repo": repo.slug,
                     "passed": check.passed,
                     "command": check.command,
@@ -761,16 +801,6 @@ async def _deliver_repository(
                     "meta": dict(check.meta),
                 },
                 surface=SurfaceOp.APPEND,
-            )
-        else:
-            check = await run_checks(
-                commands=project.test,
-                sandbox=sandbox,
-                session=session,
-                constraints=constraints,
-                workspace_root=handle.root,
-                session_id=session_id,
-                repo=repo.slug,
             )
         checks.append(check)
 
@@ -1360,6 +1390,11 @@ def _pull_request_body(
     for index, check in enumerate(checks):
         command = declared[index] if index < len(declared) else check.command
         status = "passed" if check.passed else "FAILED"
+        if check.meta.get("flaky"):
+            status += (
+                f" on attempt {check.meta.get('attempts', 2)} — the first run failed, "
+                "so this check is flaky and a reviewer should not read it as stable"
+            )
         lines.append(f"- `{command}` — {status}")
     if pinned:
         # A reviewer reading "checks passed" has to know what they were run

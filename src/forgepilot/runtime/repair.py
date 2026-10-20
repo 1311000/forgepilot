@@ -21,8 +21,8 @@ how a broken build consumes a day.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,7 @@ from forgepilot.seams.session import EventKind, SurfaceOp
 # it too. It was never about repair; it is a fact about the platform, and two
 # callers that split differently is how the same command line comes to mean two
 # things.
-__all__ = ["CheckResult", "run_checks"]
+__all__ = ["CheckResult", "combine_checks", "run_checks", "run_checks_until_stable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,3 +352,78 @@ def combine_checks(named: Sequence[tuple[str, CheckResult]]) -> CheckResult:
             "pinned": [p for _, c in named for p in c.meta.get("pinned", [])],
         },
     )
+
+
+async def run_checks_until_stable(
+    run: Callable[[], Awaitable[CheckResult]],
+    *,
+    attempts: int = 1,
+) -> CheckResult:
+    """Run a check, and run it again when the first failure may have been noise.
+
+    A project's own test command is sometimes flaky — a test that depends on
+    wall-clock time, an ordering, a port. A single failing run then fails the whole
+    task, and the task's repair loop spends a model turn on a bug that is not in the
+    change. Asking twice is what tells those apart, and the cost is one more run of
+    a command the project already paid for.
+
+    ``run`` is the **whole check decision**, not a command list, because task mode's
+    decision can be two trees combined (see :func:`combine_checks`): retrying each
+    command of each tree independently would mix one tree's second attempt with the
+    other tree's first.
+
+    Three rules, each of which is a way this could lie instead:
+
+    - **Only a failure is retried.** ``could_not_run`` is a configuration fact and a
+      timeout is a budget fact; neither improves by being asked again, and retrying
+      them spends the task's budget to learn nothing.
+    - **Every attempt is in the log.** ``run`` records its own ``task/check`` events,
+      so the log holds the failing attempt as well as the passing one. A retry that
+      erased its first run would be a hidden failure — the exact defect this codebase
+      keeps finding.
+    - **A pass on a later attempt is flaky, not clean.** The returned result carries
+      ``meta["flaky"]``, ``meta["attempts"]`` and the first failure's exit code and
+      failing test ids, and the pull request body says so. A reviewer deciding
+      whether to trust a green check has to know it was green the second time.
+
+    ``attempts`` is validated by the caller (``config/project.py``) because this
+    module may not import the config layer: the number comes from a project file and
+    the bound belongs with the other project-file rules.
+    """
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, not {attempts}")
+
+    first = await run()
+    first.meta["attempts"] = 1
+    if first.passed or first.could_not_run or first.meta.get("timed_out"):
+        return first
+
+    last = first
+    for attempt in range(2, attempts + 1):
+        last = await run()
+        last.meta["attempts"] = attempt
+        if last.passed:
+            return _flaky(first, last, attempt)
+        if last.could_not_run or last.meta.get("timed_out"):
+            return last
+    return last
+
+
+def _flaky(first: CheckResult, last: CheckResult, attempt: int) -> CheckResult:
+    """The later, passing result — saying that the first run said otherwise."""
+    head = (
+        f"flaky: attempt 1 of {attempt} failed and attempt {attempt} passed, so this "
+        "check is not reliable. Both runs are below; the verdict above is the later "
+        "one, and the pull request says it was flaky."
+    )
+    earlier = f"--- attempt 1 (failed, exit {first.exit_code}) ---\n{first.output}".strip()
+    body = bound("\n\n".join([earlier, f"--- attempt {attempt} (passed) ---", last.output]))
+    last.meta.update(
+        {
+            "flaky": True,
+            "attempts": attempt,
+            "firstExitCode": first.exit_code,
+            "firstFailedTests": list(first.meta.get("failedTests") or ()),
+        }
+    )
+    return replace(last, output=f"{head}\n\n{body}".strip())

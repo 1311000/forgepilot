@@ -522,6 +522,115 @@ async def test_a_whole_task_is_decided_by_a_real_test_runner(real_task_rig) -> N
     assert outcome.delivered, outcome.reason
 
 
+async def test_a_flaky_check_is_retried_and_the_retry_is_named(real_task_rig, tmp_path) -> None:
+    """``check_attempts`` really reaches the check, and the log keeps both runs.
+
+    The command below fails on its first run and passes on the second — a stand-in
+    for the flaky test this key exists for. With ``check_attempts: 2`` the task is
+    delivered, the deciding result says ``flaky``, and the pull request body a
+    reviewer reads says it too. With the default of one attempt the same command
+    would fail the task, which is the behaviour the key changes.
+    """
+    import json
+    from dataclasses import replace
+
+    from forgepilot.orchestration import ClassifierGateway
+    from forgepilot.orchestration.modes.task import plan_task, run_task
+    from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+    from forgepilot.seams.classifier import TicketUnderstanding
+    from forgepilot.seams.refs import TicketId
+    from forgepilot.seams.session import EventKind
+    from forgepilot.seams.tickets import Ticket, TicketPriority
+
+    rig = real_task_rig
+    script = tmp_path / "flaky_check.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "marker = pathlib.Path(__file__).with_suffix('.marker')\n"
+        "if marker.exists():\n"
+        "    print('this check passes on its second run')\n"
+        "    sys.exit(0)\n"
+        "marker.write_text('1')\n"
+        "print('this check failed on its first run')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    project = replace(
+        rig.project,
+        test=(f"{sys.executable} {script}",),
+        check_attempts=2,
+    )
+
+    ticket = Ticket(
+        id=TicketId("T-2"),
+        title="登录无限重试",
+        description_md="复现步骤：\n1. 输错密码\n\n预期结果：提示密码错误\n实际结果：无限重试",
+        priority=TicketPriority.HIGH,
+    )
+    plan = await plan_task(
+        ticket=ticket,
+        project=project,
+        constraints=rig.constraints,
+        registry=rig.registry,
+        classifier=ClassifierGateway(
+            _FixedClassifier(
+                TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95)
+            )
+        ),
+    )
+    assert plan.ready, plan.reason
+
+    rig.llm.script(
+        tool_call_turn(
+            "write_file",
+            json.dumps({"path": "src/login.py", "content": REAL_FIX}),
+            call_id="c1",
+        ),
+        text_turn("给重试循环加上了上限"),
+    )
+
+    outcome = await run_task(
+        plan=plan,
+        project=project,
+        session=rig.session,
+        llm=rig.llm,
+        tools=rig.registry,
+        vcs=rig.vcs,
+        workspace=rig.workspace,
+        sandbox=rig.sandbox,
+        constraints=rig.constraints,
+        pipeline=rig.pipeline,
+        tracker=rig.tracker,
+        model="replay-1",
+        policy=rig.policy,
+        approval=rig.approval,
+        principal=rig.principal,
+    )
+
+    delivery = _delivery(outcome)
+    final = delivery.checks[-1]
+    assert final.passed is True, final.output
+    assert final.meta.get("flaky") is True, final.meta
+    assert final.meta.get("attempts") == 2
+    assert "attempt 1 (failed, exit 1)" in final.output
+    assert "attempt 2 (passed)" in final.output
+    assert outcome.delivered, outcome.reason
+
+    # The decision is in the log, with the reading that no single attempt carries.
+    recorded = [
+        event
+        for event in rig.session.events
+        if event.kind == EventKind.TASK_CHECK and event.data.get("meta", {}).get("flaky")
+    ]
+    assert recorded, "the flaky verdict was not recorded"
+    # And the artifact a reviewer reads says it rather than calling it green.
+    from forgepilot.orchestration.modes.task import _pull_request_body
+
+    body = _pull_request_body(plan, delivery.checks, delivery.changed_paths, delivery.diff or "")
+    assert "flaky" in body
+    assert "passed on attempt 2" in body
+
+
 async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered(
     real_task_rig,
 ) -> None:

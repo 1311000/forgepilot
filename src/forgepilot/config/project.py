@@ -60,6 +60,15 @@ DEFAULT_TEST_PATHS: tuple[str, ...] = (
     "conftest.py",
 )
 
+#: The most times ``check_attempts`` may ask a failing check to run again.
+#:
+#: The cap lives here rather than in ``runtime/repair.py`` because the config
+#: layer may not import the runtime layer, and a second copy of a bound is the
+#: defect shape this codebase keeps recording: a number with a reader that does
+#: not agree with it. ``runtime`` imports ``config``, so the constant has one home
+#: and the runtime helper trusts its caller (documented in its docstring).
+MAX_CHECK_ATTEMPTS = 3
+
 
 def matches_test_path(path: str, pattern: str) -> bool:
     """Does ``path`` (a repository-relative path) match one test-path pattern?
@@ -131,6 +140,20 @@ class ProjectConfig:
     #: costs too much lowers the budget. Setting one cannot substitute for the
     #: other.
     max_tokens: int | None = None
+    #: How many times one check decision may be run before its verdict is believed.
+    #:
+    #: A project's own test command is sometimes flaky, and a single failing run
+    #: then fails the task — the repair loop spends a model turn on a bug that is
+    #: not in the change. ``2`` asks a failing check once more; a pass on the second
+    #: attempt is recorded as **flaky** (``meta["flaky"]``) all the way into the pull
+    #: request body, so the verdict is never quietly upgraded.
+    #:
+    #: ⚠️ **This is not ``retry.max_attempts``**: that one bounds how many model
+    #: turns the repair loop may take after a failure, and asking the *model* again
+    #: is the expensive response. This one asks the *command* again, which costs a
+    #: run and no turn. The cap is 3 — a fourth run costs more than the certainty
+    #: it buys. See ``runtime/repair.py::run_checks_until_stable``.
+    check_attempts: int = 1
     #: Named tool sets the router may choose between, e.g.
     #: ``{"default": [...], "bugfix": [...], "investigate": [...]}``.
     #:
@@ -285,6 +308,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
             max_cost_usd=float(budget_raw.get("max_cost_usd", Budget().max_cost_usd)),
         ),
         max_tokens=(None if raw.get("max_tokens") is None else int(raw["max_tokens"])),
+        check_attempts=_check_attempts(raw.get("check_attempts")),
         tool_sets=_string_tuple_map("tool_sets"),
         category_tool_sets=_string_map("category_tool_sets"),
         category_engines=_string_map("category_engines"),
@@ -346,6 +370,26 @@ def _declared_commands(value: Any) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(str(v) for v in value)
     raise ConfigError(f"a check command must be a string or a list, not {value!r}")
+
+
+def _check_attempts(value: Any) -> int:
+    """Validate ``check_attempts``. Absent means one run, as it always has.
+
+    Refusing out-of-range values rather than clamping them is deliberate: a
+    project that asks for five attempts and silently gets three has a config file
+    that says something the harness does not do, which is the shape of defect this
+    repository keeps finding.
+    """
+    if value is None:
+        return 1
+    # `True` is an int, and `check_attempts: true` is a typo, not a number of runs.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"check_attempts must be an integer between 1 and {MAX_CHECK_ATTEMPTS}, not {value!r}"
+        )
+    if not 1 <= value <= MAX_CHECK_ATTEMPTS:
+        raise ConfigError(f"check_attempts must be between 1 and {MAX_CHECK_ATTEMPTS}, not {value}")
+    return value
 
 
 def find_project(start: Path | None = None) -> ProjectConfig | None:

@@ -514,3 +514,41 @@ Limits, stated rather than implied: other runners (go test, cargo test, jest)
 yield no ids until someone adds a pattern for them; the bound is a character
 count, not a semantic reduction; and a check that fails by exit code with no
 parseable line is still reported as a failure with the raw output.
+
+## A flaky check, and why the retry is of the *command* (P7-2, 2026-10-20)
+
+The eval matrix had been reporting failures that were never in the change: a test
+that depends on ordering, on the wall clock, on a port. One failing run failed the
+whole task, and the repair loop then spent a model turn — the expensive retry —
+looking for a bug that did not exist.
+
+`project.yaml: check_attempts` (1–3, default **1**) asks the command again instead.
+The decision lives in `runtime/repair.py::run_checks_until_stable`, and it takes
+the **whole check decision** as a callable rather than a command list, because task
+mode's decision can be two trees combined (`combine_checks`): retrying each command
+of each tree independently would pair one tree's second attempt with the other
+tree's first.
+
+Three rules, each one a way this could lie instead:
+
+- **Only a failure is retried.** `could_not_run` is a configuration fact and a
+  timeout is a budget fact; neither improves by being asked twice.
+- **Every attempt is in the log.** `run_checks` records its own `task/check` per
+  attempt, and the deciding verdict — with `meta.flaky`, `meta.attempts`,
+  `meta.firstExitCode` — is recorded once more after the retry. A retry that erased
+  its first run would be a hidden failure.
+- **A pass on a later attempt is flaky, not clean.** The pull request body says
+  `passed on attempt 2 — the first run failed, so this check is flaky` rather than
+  `passed`. A reviewer deciding whether to trust a green check has to know it was
+  green the second time.
+
+⚠️ **`check_attempts` is not `retry.max_attempts`.** The latter bounds how many
+model turns may follow a failure; this one bounds how many times the command runs.
+The config layer validates the value and refuses 0, 4, `true` and `"two"` by name —
+clamping would leave a file saying something the harness does not do.
+
+Measured: `tests/task/test_real_check.py::test_a_flaky_check_is_retried_and_the_retry_is_named`
+runs a command that fails once and passes on its second run, and asserts the
+delivery, the flaky meta, the log event and the body line. Setting the wiring back
+to `attempts=1` turns it red with `ReplayLLM ran out of scripted turns: request #3`
+— the second turn is the cost the key avoids, which is the whole argument for it.
