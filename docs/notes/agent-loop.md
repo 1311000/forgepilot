@@ -459,3 +459,43 @@ of an empty entry refuses every name. An MCP server is a process this deployment
 can do whatever that process can do; that decision belongs beside 
 un and web_fetch, in
 configuration, not in a default.
+
+## A second model provider: what a protocol swap actually costs (P8-2)
+
+The seam says the provider is expected to change and "nothing downstream may depend on
+which one is installed". One provider cannot demonstrate that: it can only show that the
+*first* one fits. providers/llm/anthropic.py speaks the Messages API and **nothing above
+llm changed** -- 
+un_turn, projection, the classifier, the review narrative and
+compaction all reach it through the same ChatRequest.
+
+Three differences are structural rather than cosmetic, and each is a place where a naive
+port would lose information:
+
+- **Tool calls are content blocks.** An assistant turn interleaves text and 	ool_use
+  blocks in one content list, so a message with both is one message here and two fields
+  in the OpenAI format. The block order is the order the model emitted them.
+- **A tool result is a *user* message.** There is no 	ool role, and two user turns in a
+  row are refused -- so a run of consecutive results has to be folded into one turn
+  (_tool_results).
+- **input is an object, not a JSON string.** ToolCallRequest.arguments_json stays
+  unparsed on purpose (a malformed argument must be replayable from the log), so this
+  provider parses at the boundary and **refuses** what it cannot translate, naming the
+  call. Sending {} instead would turn a malformed call into a different call.
+
+One measurement worth keeping: **usage arrives in two events.** message_start carries
+input tokens (and the cache-read count), message_delta carries output tokens, and
+drain_stream replaces its usage wholesale on each usage chunk -- so a provider that
+emitted either one alone would silently record zero for the other. The fold accumulates it
+and emits one usage chunk at message_stop; a test drives the two events and asserts both
+numbers survive.
+
+⚠️ **No live call was made.** There is no Anthropic key on this machine, so the wire shapes
+are the documented ones, exercised against a real socket in
+	ests/providers/test_anthropic_llm.py (13 tests: translation, the fold, headers, pricing,
+an error body, and the missing-key message naming the variable rather than the value). The
+first live run is unverified -- the same caveat as the TAPD provider, stated rather than
+implied.
+
+undles/llm_anthropic/patch.yaml overrides the llm row by id; it is in no shipped
+profile, so the default still boots ReplayLLMPlugin and --chat still costs nothing.

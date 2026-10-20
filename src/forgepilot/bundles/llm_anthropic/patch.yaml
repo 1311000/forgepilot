@@ -1,0 +1,34 @@
+# A second wire format: the Messages API instead of `/chat/completions`.
+#
+#     FORGEPILOT_HOME=... .venv/Scripts/python.exe -m forgepilot --config-dir configs \
+#       --patch src/forgepilot/bundles/llm_anthropic/patch.yaml --patch .tmp/anthropic.yaml \
+#       --chat
+#
+# The row overrides `base`'s replay model by id, so everything downstream —
+# `run_turn`, `projection`, the classifier, the review narrative, compaction —
+# is unchanged. That is the seam's claim, and this bundle is the second half of
+# the proof: `providers/llm/anthropic.py` speaks a different protocol (content
+# blocks, tool results as user turns, `input` as an object, usage split across two
+# events) and nothing above `llm` had to learn about it.
+#
+# ⚠️ **No live call has been made from this machine** — there is no Anthropic key
+# here — so the wire shapes are the documented ones, exercised against a real
+# socket in `tests/providers/test_anthropic_llm.py`. Treat the first live run as
+# unverified, exactly like the TAPD provider.
+#
+# `api_key_env` carries the *name* of the variable, never the value, so the key
+# cannot land in a profile file or in `--dump-config`.
+- id: llm
+  plugin: forgepilot.providers.llm.anthropic:AnthropicLLMPlugin
+  config:
+    model: claude-sonnet-4-5
+    base_url: https://api.anthropic.com/v1
+    api_key_env: ANTHROPIC_API_KEY
+    api_version: "2023-06-01"
+    timeout_s: 120
+    max_context_tokens: 200000
+    # Prices per 1,000 tokens. Optional, but a `max_cost_usd` budget is dead
+    # without them — and `turn/usage` would record 0.0 for every call.
+    price_per_1k_input: 3.0
+    price_per_1k_output: 15.0
+  tier: trusted
