@@ -918,6 +918,119 @@ async def _apply_patch(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
 
 
 # ---------------------------------------------------------------------------
+# todo_write
+# ---------------------------------------------------------------------------
+#: A plan longer than this is not a plan; it is a wish. Refusing keeps the list
+#: something a reader can actually check the work against.
+MAX_TODOS = 20
+#: One todo is a line a reader can hold. Longer is a paragraph, and a paragraph
+#: in a checklist is where the exit criteria go to hide.
+MAX_TODO_CONTENT = 200
+
+_TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
+async def _todo_write(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
+    """Record the plan, and answer with it.
+
+    There is no store behind this tool, and that is the design rather than an
+    omission. The list *is* the tool result, so it lives in the session log by
+    the same rule as every other result, and the next turn sees it through the
+    projection without a hidden side channel that the log would not contain.
+
+    It therefore declares ``ToolEffect.SESSION``: no capability, no host state,
+    nothing a policy has to grant beyond "this tool is in the set". The
+    alternative — a mutable todo store — would make the model's plan a second
+    account of a turn's progress, invisible to the log.
+    """
+    import json
+
+    args = json.loads(call.arguments_json or "{}")
+    todos = args.get("todos")
+    if not isinstance(todos, list) or not todos:
+        return ToolOutcome(
+            content='`todos` must be a non-empty list of {"content", "status"} objects',
+            is_error=True,
+            meta={"phase": "arguments"},
+        )
+    if len(todos) > MAX_TODOS:
+        return ToolOutcome(
+            content=f"{len(todos)} todos is more than a plan holds ({MAX_TODOS})",
+            is_error=True,
+            meta={"phase": "arguments", "todos": len(todos)},
+        )
+
+    rendered: list[str] = []
+    in_progress: list[str] = []
+    for index, todo in enumerate(todos, start=1):
+        if not isinstance(todo, dict):
+            return ToolOutcome(
+                content=f"todo {index}: must be an object with `content` and `status`",
+                is_error=True,
+                meta={"phase": "arguments", "todo": index},
+            )
+        content = todo.get("content")
+        status = todo.get("status")
+        if not isinstance(content, str) or not content.strip():
+            return ToolOutcome(
+                content=f"todo {index}: `content` must be non-empty text",
+                is_error=True,
+                meta={"phase": "arguments", "todo": index},
+            )
+        if len(content) > MAX_TODO_CONTENT:
+            return ToolOutcome(
+                content=(
+                    f"todo {index}: {len(content)} characters is longer than a todo "
+                    f"({MAX_TODO_CONTENT}). A todo is a line a reader can check the "
+                    f"work against; the detail belongs in the answer."
+                ),
+                is_error=True,
+                meta={"phase": "arguments", "todo": index},
+            )
+        if status not in _TODO_STATUSES:
+            return ToolOutcome(
+                content=(
+                    f"todo {index}: `status` must be one of "
+                    f"{', '.join(_TODO_STATUSES)}, not {status!r}"
+                ),
+                is_error=True,
+                meta={"phase": "arguments", "todo": index},
+            )
+        if status == "in_progress":
+            in_progress.append(content.strip())
+        mark = {"pending": " ", "in_progress": "~", "completed": "x"}[status]
+        rendered.append(f"[{mark}] {content.strip()}")
+
+    if len(in_progress) > 1:
+        return ToolOutcome(
+            content=(
+                f"{len(in_progress)} todos are in progress at once. Exactly one thing "
+                f"is being worked on, so at most one todo may be `in_progress`; mark "
+                f"the others `pending`."
+            ),
+            is_error=True,
+            meta={"phase": "arguments", "inProgress": len(in_progress)},
+        )
+
+    done = sum(1 for todo in todos if todo["status"] == "completed")
+    open_count = len(todos) - done
+    header = f"todo list: {done} of {len(todos)} done, {open_count} open"
+    if in_progress:
+        header += f"; working on: {in_progress[0]}"
+    return ToolOutcome(
+        content=header + "\n" + "\n".join(rendered),
+        meta={
+            "todos": [
+                {"content": str(todo["content"]).strip(), "status": todo["status"]}
+                for todo in todos
+            ],
+            "done": done,
+            "open": open_count,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # write_file
 # ---------------------------------------------------------------------------
 async def _write_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
@@ -1472,6 +1585,44 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             required_operation=Operation.WRITE_CODE,
             execute=_apply_patch,
             describe_targets=_targets_patches,
+        ),
+        ToolDefinition(
+            name="todo_write",
+            description=(
+                "Record the plan for this turn and keep it current: send the WHOLE "
+                "list every time, with exactly one item `in_progress`. The answer is "
+                "the list itself, so it is in the transcript and nobody has to "
+                "remember it out of band. Use it for work with several steps; do not "
+                "use it for a one-line answer."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "the complete list, in order",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "one line, the work item",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                },
+                            },
+                            "required": ["content", "status"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["todos"],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.SESSION}),
+            execute=_todo_write,
         ),
         ToolDefinition(
             name="run",

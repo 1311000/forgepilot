@@ -55,6 +55,11 @@ class ToolEffect(StrEnum):
     EXEC = "exec"
     NETWORK = "network"
     EXTERNAL = "external"
+    #: The tool writes the session's own record and nothing on the host. It is
+    #: granted no capability by ``Capabilities.for_effects`` — deliberately: a
+    #: tool that can only answer cannot reach anything, and its answer *is* its
+    #: recorded result, so the log still holds everything the model saw.
+    SESSION = "session"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,10 @@ class Capabilities:
 
     @classmethod
     def for_effects(cls, effects: frozenset[ToolEffect]) -> Capabilities:
+        # ``SESSION`` (and ``EXTERNAL``) grant nothing here by design: the first
+        # only appends to the session, the second reaches a service the pipeline
+        # does not model as a host capability. Both are declared so the registry
+        # can refuse a tool that declared *no* effect at all.
         return cls(
             fs_read=ToolEffect.READ in effects,
             fs_write=ToolEffect.WRITE in effects,

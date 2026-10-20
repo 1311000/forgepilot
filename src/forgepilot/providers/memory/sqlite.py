@@ -388,14 +388,22 @@ class SqliteMemoryStorePlugin(PluginService):
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
-        # WAL, because a distillation process and a `--chat` process may hold the same
-        # file at the same time and the default journal serialises readers against a
-        # writer.
-        conn.execute("PRAGMA journal_mode=WAL")
-        # Create, migrate, or refuse — see `apply_schema`. This replaces the bare
-        # `executescript(SCHEMA)` the first version ran on every connection, which
-        # made "the file is version 7" a thing nobody could ever find out.
-        apply_schema(conn)
+        try:
+            # WAL, because a distillation process and a `--chat` process may hold the
+            # same file at the same time and the default journal serialises readers
+            # against a writer.
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Create, migrate, or refuse — see `apply_schema`. This replaces the bare
+            # `executescript(SCHEMA)` the first version ran on every connection, which
+            # made "the file is version 7" a thing nobody could ever find out.
+            apply_schema(conn)
+        except BaseException:
+            # A refused schema must not leak the handle it opened to find out. The
+            # callers all use `closing()`, which never runs when `_connect` raises,
+            # so the close has to happen here — and the warning it surfaced was the
+            # only sign anybody would have had.
+            conn.close()
+            raise
         return conn
 
     def _put(self, record: MemoryRecord, *, quarantined: bool = False) -> None:

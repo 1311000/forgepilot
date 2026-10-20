@@ -91,6 +91,9 @@ tool_sets:
     - edit_file
     # The same exact-match edit, but several places at once and all-or-nothing.
     - apply_patch
+    # The plan, recorded where the log can see it. Not in `default`: a question
+    # needs no write access, and this tool does write — to the session.
+    - todo_write
     - run
 
 category_tool_sets:

@@ -299,3 +299,34 @@ is the matching phase, which is where a batch is most likely to go wrong.
 `edit_file` and `apply_patch` share `_splice`, so "exact match or refuse", the
 ambiguity message, the CRLF normalisation retry and the rule that inserted text
 adopts the file's own line endings cannot drift between them.
+
+## `todo_write`: the plan is a tool result (P5-3)
+
+A turn with twelve steps needs a plan the model can see and the reader can check
+the work against. The obvious build is a todo store — a small mutable thing
+behind the tool. That build is wrong here, and the reason is the invariant this
+repository already lives by: *model-visible means logged*. A store would be a
+second account of the turn's progress, one the session log cannot contradict,
+and the first time it disagreed with the transcript nobody could say which was
+true.
+
+So the tool has no store. It takes the whole list, validates it, and answers
+with it — the list *is* the tool result, which means the log holds it by the same
+rule as every other result and the next turn sees it through the projection.
+This is why it declares `ToolEffect.SESSION`: no capability, no host state. The
+effect exists because the registry refuses a tool that declares no effect at
+all, and `SESSION` says the honest thing — the write target is the session.
+
+Two rules make the list a plan rather than a wish:
+
+- **At most one item is `in_progress`.** Exactly one thing is being worked on;
+  a list that says otherwise is a list nobody is following. Zero is allowed,
+  because "everything left is pending" is a normal state.
+- **An item is one line (200 characters) and the list is at most 20.** Longer is
+  a paragraph, and a paragraph in a checklist is where exit criteria go to hide.
+  The refusal says which todo and how long, because the usual cause is that the
+  model pasted the whole plan into the first item.
+
+The rendering is `[x]` / `[~]` / `[ ]` with a header that says how much is left
+and what is being worked on. That header is the part a reviewer reads; the list
+is the part they check the diff against.

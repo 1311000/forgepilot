@@ -68,6 +68,9 @@ tool_sets:
     # Several exact edits as one decision: if any of them no longer matches,
     # nothing is written, so a change across files never lands half-applied.
     - apply_patch
+    # The plan, recorded where the log can see it: the answer is the list, so a
+    # later turn reads it back through the projection like any other result.
+    - todo_write
     - run
 category_tool_sets:
   bug: bugfix
