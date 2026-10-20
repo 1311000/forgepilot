@@ -50,6 +50,41 @@ def test_dependabot_watches_both_ecosystems_weekly() -> None:
         )
 
 
+def test_the_pinned_kernel_is_ignored_by_the_bot_that_would_bump_it() -> None:
+    """A deliberate pin and an open bot are two decisions pointing opposite ways.
+
+    `cordis-port==0.1.5` is an exact pin: the kernel's semantics are what the 16 assertions
+    in `tests/kernel/` hold, and its releases ship no changelog beyond a compare link, so a
+    bump is an experiment rather than maintenance. Dependabot proposed 0.1.5 -> 0.1.7 on
+    2026-10-19 and it was not taken (the diff touched `fiber.py` and the hook-disposal path
+    in `events.py`). Without an `ignore` entry the bot proposes it every week, and a PR
+    nobody intends to merge trains people to dismiss bot PRs — including the security ones.
+
+    Read as a pair: while `pyproject.toml` pins `cordis-port` exactly, the bot must be told.
+    When the pin becomes a range (or the kernel is evaluated and bumped), this test should be
+    deleted with it rather than relaxed.
+    """
+    pyproject = tomllib.loads((FORGE / "pyproject.toml").read_text(encoding="utf-8"))
+    pinned = [
+        requirement
+        for requirement in pyproject["project"].get("dependencies") or ()
+        if requirement.split("==")[0].strip().lower() == "cordis-port" and "==" in requirement
+    ]
+    if not pinned:
+        return
+    config = _dependabot()
+    ignored = {
+        str(entry.get("dependency-name"))
+        for update in config.get("updates") or ()
+        for entry in update.get("ignore") or ()
+    }
+    assert "cordis-port" in ignored, (
+        f"`pyproject.toml` pins {pinned[0]!r} exactly and dependabot is not told to ignore "
+        f"it, so the bot will keep proposing a bump this project has decided is an "
+        f"experiment. Either add the ignore entry (with its reason) or stop pinning."
+    )
+
+
 def test_the_audit_tool_is_a_declared_extra() -> None:
     pyproject = tomllib.loads((FORGE / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"].get("optional-dependencies") or {}
@@ -62,7 +97,9 @@ def test_the_audit_tool_is_a_declared_extra() -> None:
 
 
 def test_the_weekly_job_runs_it() -> None:
-    workflow = yaml.safe_load((FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(
+        (FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
     jobs = workflow.get("jobs") or {}
     auditing = [
         name
@@ -98,7 +135,9 @@ def test_the_audit_is_handed_the_dependencies_and_not_this_package() -> None:
     the dependency set a deployment installs; the package under test is not a dependency of
     itself, and a check that can never pass is a check nobody reads.
     """
-    workflow = yaml.safe_load((FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(
+        (FORGE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
     lines = [
         str(step.get("run", ""))
         for job in (workflow.get("jobs") or {}).values()

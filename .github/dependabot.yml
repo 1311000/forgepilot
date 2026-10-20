@@ -18,6 +18,16 @@ updates:
     groups:
       python-dependencies:
         patterns: ["*"]
+    # `cordis-port` is pinned deliberately: its releases ship no changelog beyond a compare
+    # link, and its semantics (the 16 assertions in tests/kernel/) are what this project is
+    # built on, so a version bump is a behavioural experiment rather than a maintenance
+    # chore. Decided 2026-10-20 (0.1.5 -> 0.1.7 proposed, not taken): the diff touched
+    # `fiber.py` (+102/-52) and the `events.py` hook-disposal path — the two places the
+    # kernel contract exists to pin. Revisit by running `tests/kernel/`, `--kernel-check`,
+    # `--boot` and `tools/check.py` against the new version on a branch; until that happens
+    # the bot should not keep proposing it.
+    ignore:
+      - dependency-name: "cordis-port"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
