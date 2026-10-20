@@ -65,6 +65,9 @@ tool_sets:
     # an ambiguous or unmatched search rather than guessing. `write_file` stays for
     # a new file or a wholesale rewrite.
     - edit_file
+    # Several exact edits as one decision: if any of them no longer matches,
+    # nothing is written, so a change across files never lands half-applied.
+    - apply_patch
     - run
 category_tool_sets:
   bug: bugfix

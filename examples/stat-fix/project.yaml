@@ -89,6 +89,8 @@ tool_sets:
     # See `configs/projects/example/project.yaml`: `edit_file` is the targeted
     # replace, and the one to prefer for a change to an existing file.
     - edit_file
+    # The same exact-match edit, but several places at once and all-or-nothing.
+    - apply_patch
     - run
 
 category_tool_sets:

@@ -718,6 +718,206 @@ async def _glob(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
 
 
 # ---------------------------------------------------------------------------
+# apply_patch
+# ---------------------------------------------------------------------------
+#: One call changes several places, so the bound is on the batch rather than on a
+#: file. Fifty is far more than a coherent change needs and far less than a model
+#: rewriting a tree one edit at a time through this tool.
+MAX_PATCHES = 50
+
+
+def _targets_patches(arguments: dict[str, Any]) -> ResourceTargets:
+    """Every path the batch would write, so the guard sees all of them.
+
+    A batch is refused as a whole, so a guard that only saw the first path would
+    let a patch list smuggle a write outside the writable set past a check that
+    reported one path it liked.
+    """
+    patches = arguments.get("patches")
+    if not isinstance(patches, list):
+        return ResourceTargets()
+    return ResourceTargets(
+        paths=tuple(
+            str(patch["path"]) for patch in patches if isinstance(patch, dict) and patch.get("path")
+        )
+    )
+
+
+async def _apply_patch(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
+    """Apply several exact edits as one decision.
+
+    Why a batch tool at all: a change that spans three files is one intention, and
+    issuing it as three `edit_file` calls makes the *between* states real. If the
+    second fails, the first is already on disk, and the model's next turn works on
+    a tree nobody planned. Here every patch is applied in memory first and nothing
+    is written unless all of them match, so the answer to "did it change anything"
+    is never "partly".
+
+    The write phase is staged and then renamed. A failure while *writing* can still
+    leave a subset — rename is atomic per file, not across files — and when that
+    happens the message says which files were written rather than claiming a
+    rollback that did not occur.
+    """
+    if not ctx.capabilities.fs_write:
+        raise CapabilityNotGranted("this call was not granted filesystem write")
+    if not ctx.capabilities.fs_read:
+        raise CapabilityNotGranted("this call was not granted filesystem read")
+
+    import json
+    import os
+
+    args = json.loads(call.arguments_json or "{}")
+    patches = args.get("patches")
+    if not isinstance(patches, list) or not patches:
+        return ToolOutcome(
+            content=(
+                '`patches` must be a non-empty list of {"path", "old_string", "new_string"} objects'
+            ),
+            is_error=True,
+            meta={"phase": "arguments"},
+        )
+    if len(patches) > MAX_PATCHES:
+        return ToolOutcome(
+            content=f"{len(patches)} patches is more than this tool applies at once ({MAX_PATCHES})",
+            is_error=True,
+            meta={"phase": "arguments", "patches": len(patches)},
+        )
+
+    root = ctx.workspace_root
+    if root is None:
+        raise _no_root()
+
+    staged: dict[Path, str] = {}
+    labels: dict[Path, str] = {}
+    occurrences: dict[Path, int] = {}
+
+    def _fail(index: int, path: str, message: str, **meta: Any) -> ToolOutcome:
+        return ToolOutcome(
+            content=(
+                f"patch {index} of {len(patches)}: {message} "
+                f"Nothing was written — the patches before it are rolled back in "
+                f"memory, so the tree is exactly as it was."
+            ),
+            is_error=True,
+            meta={"phase": "apply", "patch": index, "path": path, **meta},
+        )
+
+    for index, patch in enumerate(patches, start=1):
+        if not isinstance(patch, dict):
+            return _fail(index, "", "a patch must be an object")
+        label = str(patch.get("path") or "")
+        old = patch.get("old_string")
+        new = patch.get("new_string")
+        if not label:
+            return _fail(index, "", "`path` is required")
+        if not isinstance(old, str) or not old:
+            return _fail(index, label, "`old_string` must be non-empty text")
+        if not isinstance(new, str):
+            return _fail(index, label, "`new_string` must be text")
+        if old == new:
+            return _fail(index, label, "`old_string` and `new_string` are identical")
+
+        try:
+            path = _resolve(root, label)
+        except CapabilityNotGranted:
+            return _fail(index, label, f"{label!r} is not a path inside the workspace")
+
+        if path not in staged:
+            if not path.exists():
+                return _fail(
+                    index,
+                    label,
+                    f"no such file: {label}. apply_patch edits files that exist; "
+                    f"use write_file to create one.",
+                )
+            if path.is_dir():
+                return _fail(index, label, f"{label} is a directory, not a file")
+            raw = path.read_bytes()
+            if len(raw) > MAX_READ_BYTES:
+                return _fail(
+                    index,
+                    label,
+                    f"{label} is {len(raw)} bytes, larger than this tool edits "
+                    f"({MAX_READ_BYTES}); use a narrower edit or write_file",
+                    bytes=len(raw),
+                )
+            staged[path] = raw.decode("utf-8", errors="replace")
+            labels[path] = label
+            occurrences[path] = 0
+
+        text = staged[path]
+        try:
+            result, count, _ = _splice(
+                text, old, new, replace_all=bool(patch.get("replace_all", False))
+            )
+        except _PatchMismatch:
+            return _fail(
+                index,
+                label,
+                f"old_string was not found in {label} ({len(text.splitlines())} lines "
+                f"read). It must match the file exactly, including indentation.",
+                occurrences=0,
+            )
+        except _PatchAmbiguous as exc:
+            return _fail(
+                index,
+                label,
+                f"old_string appears {exc.occurrences} times in {label} and "
+                f"`replace_all` is false. Include more surrounding text, or pass "
+                f"replace_all deliberately.",
+                occurrences=exc.occurrences,
+                ambiguous=True,
+            )
+        staged[path] = result
+        occurrences[path] += count
+
+    # Stage every file beside itself, then rename: nothing is visible until all
+    # the bytes are on disk, and a rename cannot fail on a full disk.
+    pending: list[tuple[Path, Path]] = []
+    try:
+        for path, text in staged.items():
+            temporary = path.with_name(f".{path.name}.forgepilot-patch")
+            temporary.write_text(text, encoding="utf-8", newline="")
+            pending.append((temporary, path))
+    except OSError as exc:
+        for temporary, _ in pending:
+            temporary.unlink(missing_ok=True)
+        return ToolOutcome(
+            content=f"cannot write the patched files: {exc}. Nothing was written.",
+            is_error=True,
+            meta={"phase": "write"},
+        )
+
+    written: list[str] = []
+    try:
+        for temporary, path in pending:
+            os.replace(temporary, path)
+            written.append(labels[path])
+    except OSError as exc:
+        for temporary, _ in pending:
+            temporary.unlink(missing_ok=True)
+        return ToolOutcome(
+            content=(
+                f"writing stopped at {exc}: already written {', '.join(written) or 'nothing'}"
+                f"; the remaining files are unchanged."
+            ),
+            is_error=True,
+            meta={"phase": "write", "written": written},
+        )
+
+    summary = ", ".join(f"{labels[path]} ({occurrences[path]})" for path in staged)
+    noun = "file" if len(staged) == 1 else "files"
+    return ToolOutcome(
+        content=(f"applied {len(patches)} patch(es) across {len(staged)} {noun}: {summary}"),
+        meta={
+            "patches": len(patches),
+            "files": [labels[path] for path in staged],
+            "occurrences": {labels[path]: occurrences[path] for path in staged},
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # write_file
 # ---------------------------------------------------------------------------
 async def _write_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
@@ -799,6 +999,69 @@ def _uniqueness_refusal(path: str, count: int) -> ToolOutcome:
     )
 
 
+class _PatchMismatch(Exception):
+    """The search text is not in the file."""
+
+
+class _PatchAmbiguous(Exception):
+    """The search text appears more than once and `replace_all` was not given."""
+
+    def __init__(self, occurrences: int) -> None:
+        super().__init__(f"{occurrences} occurrences")
+        self.occurrences = occurrences
+
+
+def _splice(text: str, old: str, new: str, *, replace_all: bool) -> tuple[str, int, bool]:
+    """Apply one exact match to ``text``, or raise rather than guess.
+
+    Shared by `edit_file` and `apply_patch` on purpose. Two implementations of "an
+    exact match, or a refusal" would drift, and the drift would show as one tool
+    accepting an edit the other refuses — the model would learn the wrong rule from
+    whichever it happened to call first.
+
+    Returns ``(result, occurrences, newline_normalised)``.
+    """
+    offsets = _match_offsets(text, old)
+    normalised = False
+
+    if not offsets:
+        # Second attempt: the model may have normalised the line endings when it
+        # wrote the search text, which is the one difference a copy-paste makes
+        # invisible. Matching is retried on a flattened copy; the *result* is still
+        # spliced into the original bytes, so untouched text is byte-identical.
+        flat, positions = _flatten_map(text)
+        flat_offsets = _match_offsets(flat, old.replace("\r\n", "\n"))
+        if not flat_offsets:
+            raise _PatchMismatch(old)
+        if len(flat_offsets) > 1 and not replace_all:
+            raise _PatchAmbiguous(len(flat_offsets))
+        offsets = [positions[index] for index in flat_offsets]
+        ends = [positions[index + len(old.replace("\r\n", "\n"))] for index in flat_offsets]
+        normalised = True
+    else:
+        if len(offsets) > 1 and not replace_all:
+            raise _PatchAmbiguous(len(offsets))
+        ends = [index + len(old) for index in offsets]
+
+    if not replace_all:
+        offsets, ends = offsets[:1], ends[:1]
+
+    # ⚠️ **The inserted text takes the file's own line endings.** Without this an
+    # edit into a CRLF file splices LF lines into it, and the mixed endings show up
+    # as a whole-file diff in review — a one-line change presented as hundreds.
+    replacement = new
+    if "\r\n" in text and "\r\n" not in new:
+        replacement = new.replace("\n", "\r\n")
+
+    result = text
+    # `strict=True`: `offsets` and `ends` are built in lockstep from the same match
+    # list, so unequal lengths would be a bug in this function rather than a case to
+    # absorb quietly.
+    for start, end in reversed(list(zip(offsets, ends, strict=True))):
+        result = result[:start] + replacement + result[end:]
+    return result, len(offsets), normalised
+
+
 async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
     """Replace an exact piece of a file, refusing anything it cannot do exactly.
 
@@ -870,53 +1133,21 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
         )
 
     text = raw.decode("utf-8", errors="replace")
-    offsets = _match_offsets(text, old)
-    normalised = False
-
-    if not offsets:
-        # Second attempt: the model may have normalised the line endings when it
-        # wrote the search text, which is the one difference a copy-paste makes
-        # invisible. Matching is retried on a flattened copy; the *result* is still
-        # spliced into the original bytes, so untouched text is byte-identical.
-        flat, positions = _flatten_map(text)
-        flat_offsets = _match_offsets(flat, old.replace("\r\n", "\n"))
-        if not flat_offsets:
-            return ToolOutcome(
-                content=(
-                    f"old_string was not found in {label} ({len(text.splitlines())} "
-                    f"lines read). It must match the file exactly, including "
-                    f"indentation and blank lines — read the file and copy the text "
-                    f"you want to replace."
-                ),
-                is_error=True,
-                meta={"path": label, "occurrences": 0},
-            )
-        if len(flat_offsets) > 1 and not replace_all:
-            return _uniqueness_refusal(label, len(flat_offsets))
-        offsets = [positions[index] for index in flat_offsets]
-        ends = [positions[index + len(old.replace("\r\n", "\n"))] for index in flat_offsets]
-        normalised = True
-    else:
-        if len(offsets) > 1 and not replace_all:
-            return _uniqueness_refusal(label, len(offsets))
-        ends = [index + len(old) for index in offsets]
-
-    if not replace_all:
-        offsets, ends = offsets[:1], ends[:1]
-
-    # ⚠️ **The inserted text takes the file's own line endings.** Without this an
-    # edit into a CRLF file splices LF lines into it, and the mixed endings show up
-    # as a whole-file diff in review — a one-line change presented as hundreds.
-    replacement = new
-    if "\r\n" in text and "\r\n" not in new:
-        replacement = new.replace("\n", "\r\n")
-
-    result = text
-    # `strict=True`: `offsets` and `ends` are built in lockstep from the same match
-    # list, so unequal lengths would be a bug in this function rather than a case to
-    # absorb quietly.
-    for start, end in reversed(list(zip(offsets, ends, strict=True))):
-        result = result[:start] + replacement + result[end:]
+    try:
+        result, occurrences, normalised = _splice(text, old, new, replace_all=replace_all)
+    except _PatchMismatch:
+        return ToolOutcome(
+            content=(
+                f"old_string was not found in {label} ({len(text.splitlines())} "
+                f"lines read). It must match the file exactly, including "
+                f"indentation and blank lines — read the file and copy the text "
+                f"you want to replace."
+            ),
+            is_error=True,
+            meta={"path": label, "occurrences": 0},
+        )
+    except _PatchAmbiguous as exc:
+        return _uniqueness_refusal(label, exc.occurrences)
 
     # `newline=""`: the default translates `\n` to `os.linesep` on the way out, so
     # on Windows a file already holding CRLF would come back with `\r\r\n`. The text
@@ -925,7 +1156,7 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
 
     return ToolOutcome(
         content=(
-            f"edited {label}: replaced {len(offsets)} occurrence(s) of the search "
+            f"edited {label}: replaced {occurrences} occurrence(s) of the search "
             f"text, {len(result) - len(text):+d} bytes"
             + (
                 " (the search text was matched with line endings normalised, and the "
@@ -936,7 +1167,7 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
         ),
         meta={
             "path": label,
-            "occurrences": len(offsets),
+            "occurrences": occurrences,
             "replaceAll": replace_all,
             "newlineNormalised": normalised,
             "bytes": len(result),
@@ -1199,6 +1430,48 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             required_operation=Operation.WRITE_CODE,
             execute=_edit_file,
             describe_targets=_targets_paths("path"),
+        ),
+        ToolDefinition(
+            name="apply_patch",
+            description=(
+                "Apply several exact edits as one decision: a change that spans files "
+                "is one intention, and a half-applied one leaves a tree nobody planned. "
+                "Every patch is matched first; if any fails, NOTHING is written and the "
+                "message names the patch that failed. Patches applying to the same file "
+                "are applied in the order given."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "patches": {
+                        "type": "array",
+                        "description": "the edits, applied in order",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "workspace-relative"},
+                                "old_string": {
+                                    "type": "string",
+                                    "description": "exact text to replace, copied from a read",
+                                },
+                                "new_string": {"type": "string"},
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "description": "default false; an ambiguous match is refused",
+                                },
+                            },
+                            "required": ["path", "old_string", "new_string"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["patches"],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.READ, ToolEffect.WRITE}),
+            required_operation=Operation.WRITE_CODE,
+            execute=_apply_patch,
+            describe_targets=_targets_patches,
         ),
         ToolDefinition(
             name="run",

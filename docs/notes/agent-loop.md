@@ -262,3 +262,40 @@ Three details are load-bearing.
 ⚠️ `read_file` still lists a directory in its error. That is deliberate and now
 redundant rather than harmful: the message names the entries and points at
 `list_dir`, and removing it would break a shape the M28 logs depend on.
+
+## `apply_patch`, and why a batch is a decision (P5-2)
+
+`write_file` and `edit_file` each answer about one file. A change that spans
+three is one intention, and issuing it as three calls makes the state *between*
+them real: if the second fails, the first is already on disk, and the next turn
+reasons about a tree nobody planned. `apply_patch` takes a list of exact edits
+and applies them as one decision — every `old_string` is matched against the
+in-memory text first, and nothing is written unless **all** of them match.
+
+Three details are load-bearing.
+
+- **The refusal names the patch, not the batch.** "One of your eleven edits did
+  not match" costs another turn to interpret; `patch 2 of 11: old_string was not
+  found in src/limits.py (14 lines read)` does not. The count and the line count
+  matter because the usual cause is a stale read rather than a wrong idea.
+- **The guard is shown every path.** `_targets_patches` lists all of them, not
+  the first: a batch that carried a write outside the writable set past a guard
+  that only saw the path it liked would be a permission defect wearing a
+  convenience API. Writability itself stays the guard's job — the tool cannot
+  know the policy, and duplicating that check here would let the two disagree.
+- **Patches to one file apply in order, and see each other.** That is what lets
+  a caller express "rename this, then use the new name" in one call. The
+  alternative — a snapshot per patch — would make the second patch match text
+  the first had already replaced, which is the same class of silent-wrong the
+  tool exists to prevent.
+
+The write phase stages each file beside itself (`.<name>.forgepilot-patch`) and
+then `os.replace`s it, so a file is never visible half-written and a rename
+cannot fail on a full disk. Rename is atomic *per file*, not across files: if a
+later rename fails, the message says which files were already written rather
+than claiming a rollback that did not happen. What the tool guarantees exactly
+is the matching phase, which is where a batch is most likely to go wrong.
+
+`edit_file` and `apply_patch` share `_splice`, so "exact match or refuse", the
+ambiguity message, the CRLF normalisation retry and the rule that inserted text
+adopts the file's own line endings cannot drift between them.
