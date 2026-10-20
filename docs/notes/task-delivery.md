@@ -485,3 +485,32 @@ already means — and the draft goes back with the outcome so a person can raise
 by hand. Verifying this by removing the gate makes the task report `DELIVERED` on
 an unanswered ask.
 
+
+## A failed check now says which test failed (P7, 2026-10-20)
+
+`run_checks` used to copy whatever the runner printed into `CheckResult.output`,
+which is written to the session log and replayed into every later request. A task
+whose checks fail four times therefore paid for four full tracebacks, and the one
+line that matters sat somewhere in the middle of each.
+
+Two mechanisms in `runtime/checkoutput.py`:
+
+- **`bound()`** keeps the **head and the tail**, with a marker naming how many
+  characters were dropped (`MAX_CHECK_OUTPUT_CHARS = 20_000`). Truncating only the
+  tail is the tempting version and the wrong one: the tail is where the failing
+  assertions and the runner's summary live.
+- **`failed_tests()`** extracts ids from pytest's short summary and unittest's
+  `FAIL:`/`ERROR:` lines, de-duplicates them, and caps the list at 50. It
+  recognises two runners and **guesses at nothing else** — a fabricated test name
+  sends the agent to a file that does not exist, which is worse than the blob it
+  replaced.
+
+`CheckResult.meta["failedTests"]` carries the ids, and the output **begins** with
+`failing tests: …` so the model cannot miss it; the `task/check` event already
+carries `meta`, so an auditor and the eval read the same list without parsing
+prose.
+
+Limits, stated rather than implied: other runners (go test, cargo test, jest)
+yield no ids until someone adds a pattern for them; the bound is a character
+count, not a semantic reduction; and a check that fails by exit code with no
+parseable line is still reported as a failure with the raw output.

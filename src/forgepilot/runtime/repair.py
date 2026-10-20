@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from forgepilot.runtime.checkoutput import bound, failed_tests
 from forgepilot.runtime.commandline import split_command
 from forgepilot.runtime.pinning import unpinned_notice
 from forgepilot.runtime.sandbox_env import command_env
@@ -198,20 +199,31 @@ async def run_checks(
 
     if broken is None:
         body = "\n".join(sections).strip()
+        # Bounded before it is stored: the log and every later request would
+        # otherwise carry the whole traceback of every failed run. `bound` keeps
+        # the head *and* the tail, because the tail is where the failing
+        # assertions and the summary are.
+        body = bound(body)
+        names = () if exit_code == 0 else failed_tests(body)
         # Prepended rather than appended: on a failure the tail is the traceback,
         # and a note after it is a note nobody reads — including the model, which
         # is the one that has to act on it.
         notice = unpinned_notice(pinned)
+        failed_line = f"failing tests: {', '.join(names)}" if names else ""
+        head = "\n".join(part for part in (notice, failed_line) if part)
         result = CheckResult(
             passed=exit_code == 0,
             commands=tuple(commands),
             command=command,
-            output=f"{notice}\n{body}".strip() if notice else body,
+            output=f"{head}\n{body}".strip() if head else body,
             exit_code=exit_code,
             meta={
                 "pinned": list(pinned),
                 "enforcement": str(enforcement),
                 "timed_out": timed_out,
+                # Named so the model can go straight to them, and so the eval can
+                # count them without parsing prose.
+                "failedTests": list(names),
                 # Which command stopped the chain, when one did.
                 "failedIndex": next(
                     (
