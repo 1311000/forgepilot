@@ -515,6 +515,14 @@ yield no ids until someone adds a pattern for them; the bound is a character
 count, not a semantic reduction; and a check that fails by exit code with no
 parseable line is still reported as a failure with the raw output.
 
+**No JUnit XML reader, and that is a change from the plan.** The plan named one, and
+it is the wrong first move: a runner writes JUnit XML only when it has been told to, so
+the reader would work on a project that had already configured its runner and return
+nothing everywhere else — while the summary line is already in the output `run_checks`
+captures, for both runners this repository uses, with no configuration at all. The
+sequence when a deployment needs it is a `--junitxml` path in `project.yaml` first, the
+reader second; a reader with nothing to read is a field with no consumer.
+
 ## A flaky check, and why the retry is of the *command* (P7-2, 2026-10-20)
 
 The eval matrix had been reporting failures that were never in the change: a test
