@@ -11,6 +11,9 @@
 # The row overrides `base`'s ripgrep provider by id — the same `Retriever` seam,
 # a different reach — so `code_search` and `read_code` are unchanged.
 #
+# `tools/serve_index.py` is a reference service this interface was checked against on a
+# real socket; it is not the enterprise index, and nothing here starts it.
+#
 # ⚠️ `service_url` has no default on purpose. A provider that guessed would send
 # an enterprise token somewhere unintended; a missing value raises at load time
 # and names the key.

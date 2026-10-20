@@ -295,6 +295,35 @@ claim the second, and none of them may claim the first from a shared corpus. The
 **not** in a shipped profile: `tests/contract/test_the_index_seam.py` fails if any profile
 people start with loads it, because it sends a bearer token to a service.
 
-⚠️ Still not here: an actual index service, incremental updates, and a permission model the
-service enforces. What Q4 fixes is that the interface, the failure taxonomy and the opt-in
-exist and are tested against a mock transport; the service is a deployment's to run.
+⚠️ Still not here: incremental updates and a permission model that survives an attacker with
+the service's own database. What Q4 added is the interface and the failure taxonomy; what
+**P11** added is a service that actually answers — `tools/serve_index.py`, a reference index
+over SQLite FTS5 with `--token NAME=SCOPE`, `/search`, `/symbols`, `/file` and `/status`, whose
+bearer scope is checked before the corpus is read. It is a reference, not the enterprise one:
+it indexes files an operator hands it, holds one revision per path, and its "incremental
+update" is `--index` again.
+
+The client is now tested two ways rather than one: against `httpx.MockTransport` (the wire
+shape) and against that process on a real socket
+(`tests/providers/test_the_index_over_http.py`). The second found four defects the first could
+not, because a mock never serialises a request, never runs a server's event loop, and never
+returns a 500:
+
+- `from __future__ import annotations` turned `request: Request` into a string FastAPI could
+  not resolve inside `build_app`, so it read the parameter as a **query field** and every POST
+  answered `422 missing query parameter request`. The fix is a module-scope alias, and the
+  comment beside it is the only reason a reader will not undo it.
+- `IndexCorpus.search`/`symbols`/`open` are `async`; the handlers called them synchronously
+  and iterated a coroutine (`TypeError: 'coroutine' object is not iterable` → 500).
+- `SymbolQuery` takes `kinds` (a tuple), not `kind`; the service passed the singular and every
+  `/symbols` call was a 500.
+- The test redirected the server's stderr into a `subprocess.PIPE` and never read it. A
+  traceback is bigger than a pipe buffer, so the server blocked writing its own error and
+  stopped answering: a 500 arrived as a **client timeout**. The error was an answer, and the
+  harness had made it unreadable — the same shape as the defects in `docs/notes/defect-shape.md`,
+  one layer out.
+
+**A slice that could not come from disk.** The test also asks for
+`corpus-only/remote_only.py`, a path that exists nowhere in this repository, and asserts the
+service returns its text. Every other assertion in that file could in principle be satisfied by
+a provider that quietly read a checkout; that one cannot.

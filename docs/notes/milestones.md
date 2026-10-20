@@ -57,6 +57,27 @@
 
 **P1-11 (an eval set, and ablation arms) — complete.** `evals/` — **eleven tasks and eight arms as it stands**, one JSONL row per attempt, a report, and an offline path so a task can be verified without spending anything. It answers **"does each mechanism earn its place"** by running the same tasks with one thing switched off at a time; it deliberately produces **no** number against Claude Code, because there is no comparison arm and inventing one would be the same unfounded claim in a new place. It found four defects, two of them in shipped code. See `docs/notes/evals.md`.
 
+**P11 (a service that can be met, and a socket between the two halves) — complete.** Q4 gave
+the enterprise corpus an interface (`seams/index_service.py`), an HTTP client
+(`providers/retrieve/remote.py`) and an opt-in bundle, and tested the client against
+`httpx.MockTransport` — which proves the client agrees with *itself*. `tools/serve_index.py`
+is the other half: a reference service over SQLite FTS5, with `--index`, repeatable
+`--token NAME=SCOPE` (`*` or a repository prefix), `/search`, `/symbols`, `/file` and
+`/status`, bearer tokens whose scope is enforced before the corpus is read, and 400/401/403/404
+kept distinct from 5xx. `tests/providers/test_the_index_over_http.py` starts it **as its own
+process** on a free port and drives the real client through a real socket — including a slice
+of `corpus-only/remote_only.py`, a path that exists nowhere on this machine: an answer that
+could not have come from a checkout is the only proof that it came from the service. Four
+defects surfaced that `MockTransport` could not see, each a 500 or a hang rather than a wrong
+shape: `from __future__ import annotations` made FastAPI resolve `request: Request` as a
+**query field**, so every POST answered 422; `IndexCorpus.search`/`symbols`/`open` are `async`
+and the service called them synchronously (`'coroutine' object is not iterable`); `SymbolQuery`
+takes `kinds`, not `kind`; and the test's `stderr=subprocess.PIPE` let the server deadlock on
+its own traceback, so a 500 arrived as a client timeout — the error was an answer nobody read.
+The proof lives in a test rather than a twelfth matrix task on purpose: a matrix task starts no
+services, and a task that needed an external port would be unrunnable in CI and would price the
+environment rather than the mechanism. See `docs/notes/retrieval.md`.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.
