@@ -176,6 +176,29 @@ OUTPUT_MODES = ("files_with_matches", "content", "count")
 #: enough that a broad pattern does not arrive as a wall of text.
 DEFAULT_MAX_RESULTS = 100
 
+#: One directory listing and one glob, bounded for the same reason: a model that
+#: asked "what is here" does not want ten thousand names.
+DEFAULT_LIST_ENTRIES = 200
+DEFAULT_GLOB_RESULTS = 200
+
+
+def _targets_dir(key: str):
+    """A directory named in the arguments, where the default is the root itself.
+
+    Distinct from :func:`_targets_paths` because ``"."`` normalises to ``None`` —
+    the workspace root is not a file anyone can address — and the path guard reads
+    ``None`` as an escape. Listing the root is a legitimate request, so the default
+    target has to be *no target* rather than a target that normalises away.
+    """
+
+    def describe(arguments: dict[str, Any]) -> ResourceTargets:
+        raw = str(arguments.get(key) or "").strip()
+        if raw in ("", ".", "./"):
+            return ResourceTargets()
+        return ResourceTargets(paths=(raw,))
+
+    return describe
+
 
 def _targets_paths(*keys: str):
     def describe(arguments: dict[str, Any]) -> ResourceTargets:
@@ -559,6 +582,142 @@ async def _read_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
 
 
 # ---------------------------------------------------------------------------
+# list_dir and glob
+# ---------------------------------------------------------------------------
+def _entry(root: Path, path: Path) -> str:
+    relative = path.relative_to(root).as_posix()
+    return f"{relative}/" if path.is_dir() else relative
+
+
+def _bounded(value: Any, default: int, *, most: int = 1000) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(number, most))
+
+
+def _no_root() -> CapabilityNotGranted:
+    return CapabilityNotGranted(
+        "this call has no workspace root, so there is nothing it may read or write"
+    )
+
+
+async def _list_dir(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
+    if not ctx.capabilities.fs_read:
+        raise CapabilityNotGranted("this call was not granted filesystem read")
+
+    import json
+
+    args = json.loads(call.arguments_json or "{}")
+    root = ctx.workspace_root
+    if root is None:
+        raise _no_root()
+
+    raw = str(args.get("path") or ".")
+    if raw in ("", ".", "./"):
+        base = root
+    else:
+        try:
+            base = _resolve(root, raw)
+        except CapabilityNotGranted:
+            # The path guard refuses escapes before the tool runs; the tool must
+            # not rely on that, and a model-visible refusal reads better than an
+            # exception the pipeline has to translate.
+            return ToolOutcome(
+                content=f"refused: {raw!r} is not a path inside the workspace",
+                is_error=True,
+            )
+    if not base.exists():
+        return ToolOutcome(content=f"no such directory: {raw}", is_error=True)
+    if not base.is_dir():
+        return ToolOutcome(
+            content=f"{raw} is a file, not a directory; use read_file for its contents",
+            is_error=True,
+        )
+
+    limit = _bounded(args.get("max_entries"), DEFAULT_LIST_ENTRIES)
+    try:
+        # Directories first, then by name: the order a person reads a tree in,
+        # and the same order on every platform.
+        children = sorted(base.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError as exc:
+        return ToolOutcome(content=f"cannot list {raw}: {exc}", is_error=True)
+
+    truncated = len(children) > limit
+    lines = [_entry(root, child) for child in children[:limit]]
+    where = base.relative_to(root).as_posix() or "."
+    noun = "entry" if len(lines) == 1 else "entries"
+    header = f"{where}: {len(lines)} {noun}" + (" (truncated)" if truncated else "")
+    return ToolOutcome(
+        content="\n".join([header, *lines]),
+        meta={
+            "path": where,
+            "entries": len(children),
+            "shown": len(lines),
+            "truncated": truncated,
+        },
+    )
+
+
+async def _glob(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
+    if not ctx.capabilities.fs_read:
+        raise CapabilityNotGranted("this call was not granted filesystem read")
+
+    import json
+
+    args = json.loads(call.arguments_json or "{}")
+    pattern = str(args.get("pattern") or "").strip()
+    if not pattern:
+        return ToolOutcome(
+            content="`pattern` is required, for example `src/**/*.py`", is_error=True
+        )
+
+    root = ctx.workspace_root
+    if root is None:
+        raise _no_root()
+
+    relative = normalise_relative(pattern)
+    if relative is None:
+        return ToolOutcome(
+            content=f"refused: {pattern!r} is not a pattern inside the workspace",
+            is_error=True,
+        )
+
+    limit = _bounded(args.get("max_results"), DEFAULT_GLOB_RESULTS)
+    try:
+        candidates = sorted(root.glob(relative), key=lambda p: p.as_posix())
+    except (OSError, ValueError) as exc:
+        return ToolOutcome(content=f"cannot search {pattern!r}: {exc}", is_error=True)
+
+    # A symlink is allowed to point outside the workspace, and the guard judged
+    # the *pattern*, not what it resolved to. Skipping the match is the only
+    # answer that neither leaks the target nor claims the file is not there.
+    resolved_root = root.resolve()
+    matches: list[str] = []
+    for candidate in candidates:
+        try:
+            candidate.resolve().relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+        matches.append(_entry(root, candidate))
+        if len(matches) >= limit:
+            break
+
+    truncated = len(candidates) > len(matches)
+    noun = "match" if len(matches) == 1 else "matches"
+    header = f"{pattern}: {len(matches)} {noun}" + (" (truncated)" if truncated else "")
+    return ToolOutcome(
+        content="\n".join([header, *matches]),
+        meta={
+            "pattern": pattern,
+            "matches": len(matches),
+            "truncated": truncated,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # write_file
 # ---------------------------------------------------------------------------
 async def _write_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
@@ -921,6 +1080,51 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
         )
 
     return (
+        ToolDefinition(
+            name="list_dir",
+            description=(
+                "List a directory in the workspace. Directories end with '/'. Use this "
+                "to learn the layout; `read_file` answers about one file and returns an "
+                "error for a directory."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "workspace-relative directory; default '.'",
+                    },
+                    "max_entries": {"type": "integer"},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.READ}),
+            required_operation=Operation.READ_CODE,
+            execute=_list_dir,
+            describe_targets=_targets_dir("path"),
+        ),
+        ToolDefinition(
+            name="glob",
+            description=(
+                "Find files by a glob pattern relative to the workspace root, for "
+                "example `src/**/*.py` or `**/test_*.py`. Answers with paths, not "
+                "contents; read one with read_file."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "glob, workspace-relative"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["pattern"],
+                "additionalProperties": False,
+            },
+            effects=frozenset({ToolEffect.READ}),
+            required_operation=Operation.READ_CODE,
+            execute=_glob,
+            describe_targets=_targets_paths("pattern"),
+        ),
         ToolDefinition(
             name="read_file",
             description="Read a UTF-8 text file from the workspace.",

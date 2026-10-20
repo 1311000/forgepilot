@@ -309,7 +309,10 @@ def test_both_write_tools_are_registered() -> None:
     a wholesale rewrite, is still a whole-file operation."""
     names = {d.name for d in build_tool_definitions(_NoSandbox())}
 
-    assert names == {"read_file", "write_file", "edit_file", "run"}
+    # The discovery tools (`list_dir`, `glob`) arrived at P5-1; the point of this
+    # assertion is that neither write tool displaced the other.
+    assert {"read_file", "write_file", "edit_file", "run"} <= names
+    assert {"list_dir", "glob"} <= names
 
 
 def test_the_shipped_project_offers_it_to_the_model() -> None:

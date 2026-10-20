@@ -233,3 +233,32 @@ consulted by nothing).
 
 Capabilities are minted at `arm` as the intersection of three independent limits — declared effects, caller constraints, and **what the host can actually enforce**. `exec` is refused outright when sandbox enforcement is weaker than `minimum_enforcement_for_exec` (`FULL` by default), so shell tools refuse on a host reporting `partial`. That is the correct outcome, not a gap to paper over; lowering the requirement is possible and visible at the call site.
 
+
+## `list_dir` and `glob`, and why discovery is now explicit (P5-1)
+
+Two tools exist because of what M28 measured rather than because a mature agent has
+them. The `no-shell` arm removed `run`, and the agent still found files it was never
+told about — by asking `read_file` for a **directory**, which answered with a
+listing. Discovery worked, and it worked through a tool whose contract is "one
+file" and whose error message happened to be helpful. Explicit tools make the
+behaviour a contract instead of an accident: `list_dir` answers about a directory
+and says so, and `glob` answers "which files match".
+
+Three details are load-bearing.
+
+- **The root is a legitimate directory, and the path guard cannot express it.**
+  `normalise_relative(".")` is `None` — the root is not a file anyone can address —
+  and the guard reads `None` as an escape. So the definition's target for the
+  default is *no target* (`_targets_dir`), not `"."`; a target the guard would
+  refuse would have made the default unusable while looking like a permission
+  decision.
+- **A symlink may point out of the workspace, and the guard judged the pattern.**
+  `glob` resolves each match and drops the ones outside, rather than returning a
+  path whose content the tool would then read. Dropping is the only answer that
+  neither leaks the target nor claims the file is not there.
+- **Both are bounded and say when they were cut.** A listing or a glob that
+  silently stops is a wrong answer: the model concludes the rest is absent.
+
+⚠️ `read_file` still lists a directory in its error. That is deliberate and now
+redundant rather than harmful: the message names the entries and points at
+`list_dir`, and removing it would break a shape the M28 logs depend on.

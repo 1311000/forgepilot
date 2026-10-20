@@ -49,10 +49,14 @@ tool_sets:
   # A question is answered by reading and searching; it needs no write access.
   default:
     - read_file
+    - list_dir
+    - glob
     - code_search
     - read_code
   bugfix:
     - read_file
+    - list_dir
+    - glob
     - code_search
     - read_code
     - write_file
