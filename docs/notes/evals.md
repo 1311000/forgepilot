@@ -1115,6 +1115,11 @@ Measured 2026-10-20, the same day the three instances were fetched through the p
   (`D:\software\anaconda\envs\myenv\python.exe`, 3.11.17), so the interpreter is not the
   blocker; the compiler is. The system interpreter is 3.14.6, which is *worse*: no 5.x
   astropy supports it at all.
+- **There is no Linux container path on this box either.** `Docker Desktop.exe` is gone from
+  `C:\Program Files\Docker\Docker\Docker Desktop.exe` and the engine socket
+  (`//./pipe/dockerDesktopLinuxEngine`) does not exist, so the "run it on Linux with
+  `build-essential`" answer is not available *here* — it is the deployment's answer
+  (`docs/notes/deployment.md`), not this workstation's.
 - **What unblocks it**, in the order this repository would take them: fetch a pure-Python
   repository's instances (`--repo psf/requests` or `pallets/flask`) while the server is up —
   the `--repo` filter and `--page` flag exist for exactly this, and the filter pages past
