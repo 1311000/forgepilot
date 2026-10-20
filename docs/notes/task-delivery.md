@@ -144,6 +144,19 @@ the project's one command in its own tree), and a merged tree the agent itself m
 `merged_checks` is verification, not a workspace. Both are deliberate: the second would
 hand the agent a tree that no delivery owns, and a diff from it could not be attributed.
 
+**Decided at Q5 (2026-10-20): the project owns one check command, and a project whose
+repositories differ dispatches inside it.** A `test:` per repository would need the
+harness to know which tree each line belongs to before it runs, and the only source for
+that is the configuration — so a two-repository project with two different suites would
+be making the *configuration* decide what each delivery's check means, which is the same
+mistake M13 refused when it made plurality come from the ticket rather than from
+`project.yaml`. The supported shape is one command that can tell where it is (the
+existing `run_checks` runs it with `cwd` set to that delivery's tree), and
+`examples/stat-fix/two-repos/project.yaml` is the worked example: `pytest -q` in a tree
+that carries one copy of the defect. Trigger for revisiting: a real deployment where the
+per-repository commands cannot be expressed as one dispatch, *and* a place to put the
+mapping that is not guessed from the configuration.
+
 **Two pull requests against a real host — measured 2026-10-18, not asserted.** A single run
 of `BUG-2` through `examples/stat-fix/two-repos/github/` (the layout this section used to
 say did not exist) delivered both repositories to `github.com/1311000`: draft

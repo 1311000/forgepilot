@@ -297,10 +297,21 @@ required, because a row with no `id` or no `status` is damaged rather than old.
 delete only **terminal** rows (superseded, revoked, expired), which is the whole
 safety argument — no status it touches is one recall could have served, and an
 `ACTIVE` belief is never aged out by housekeeping. It emits `memory/pruned`, because
-the store keeps no log and "who deleted 400 rows" has to be answerable. What is still
-not solved: the file is a single SQLite database, so it belongs on a local
-filesystem, not on a network share (warned about in the bundle's comment). The
-default profile is unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only
+the store keeps no log and "who deleted 400 rows" has to be answerable.
+
+**Decided at Q5 (2026-10-20): the single-file store is local-only, and that is the
+deployment contract rather than a bug to fix.** The file is one SQLite database, so it
+belongs on a local filesystem, not on a network share (the bundle's comment says so).
+The process that owns the memory store is the process that owns `serve.lock`, which is
+already one process per state directory — so "a replica per state directory" and "a
+store per state directory" are the same sentence, and `deploy/compose.yaml` ships one
+`api` with no `replicas`. A shared store is not a migration of this one: it is a second
+provider behind the same `MemoryStore` protocol (the seam already requires `prune`,
+`summaries`-style ordering and the admission rules to be honoured), and it needs the
+registry question answered first (M26's single-replica SLO). Trigger for revisiting:
+two replicas are wanted, or the workspace stops being a local directory.
+
+The default profile is unchanged: `bundles/memory_sqlite/patch.yaml` is a **patch-only
 bundle**, applied with
 `--patch`, so `--boot` still resolves 20 rows and the in-memory store is still what a
 deployment gets unless it asks otherwise.
