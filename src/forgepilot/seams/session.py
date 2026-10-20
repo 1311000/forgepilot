@@ -107,6 +107,13 @@ class EventKind:
 
     TURN_START = "turn/start"
     TURN_END = "turn/end"
+    #: What one model call cost, appended by the loop for every step (P8).
+    #:
+    #: The cost used to live only in a `UsageTracker` — one process, gone on
+    #: restart — so "what did this session spend" was answerable for a running
+    #: server and unanswerable for anything older. A price is a fact about the
+    #: call that was made, so it belongs in the log beside the call.
+    TURN_USAGE = "turn/usage"
     STEP_START = "step/start"
     STEP_END = "step/end"
     USER_MESSAGE = "user/message"

@@ -305,3 +305,56 @@ async def test_a_cost_budget_stops_the_loop(tmp_path: Path) -> None:
     finally:
         await runtime.close()
         await close(fibers)
+
+
+async def test_every_model_call_is_priced_in_the_log(tmp_path: Path) -> None:
+    """The price is a fact about the call, so it is written beside the call.
+
+    The tracker above is one process's accumulator: restart the server and the
+    session's cost is gone. `turn/usage` is appended per step, and the fold in
+    `runtime/usage.py` is what the API reports — so the number a person is shown
+    is the sum of what was recorded, not of what a live object happens to hold.
+    """
+    from forgepilot.providers.llm.replay import text_turn, tool_call_turn
+    from forgepilot.runtime.usage import totals
+    from forgepilot.seams.agent_loop import UserInput
+    from forgepilot.seams.llm import Usage
+    from forgepilot.seams.session import EventKind
+
+    root, runtime, fibers = await build(tmp_path)
+    try:
+        root.llm.script(
+            tool_call_turn(
+                "read_file",
+                json.dumps({"path": "src/app.py"}),
+                call_id="c0",
+                usage=Usage(input_tokens=11, output_tokens=3, cost_usd=0.02),
+            )
+        )
+        root.llm.script(
+            text_turn("done", usage=Usage(input_tokens=5, output_tokens=7, cost_usd=0.01))
+        )
+
+        agent = await agent_for(root, runtime, constraints())
+        await agent.run_turn(UserInput(text="look"))
+
+        priced = [e for e in runtime.session.events if e.kind == EventKind.TURN_USAGE]
+        assert len(priced) == 2, f"expected one price per model call, got {len(priced)}"
+
+        spent = totals(runtime.session.events)
+        assert spent.calls == 2
+        assert (spent.input_tokens, spent.output_tokens) == (16, 10)
+        assert spent.cost_usd == pytest.approx(0.03)
+        # And it agrees with the tracker on the path that writes both, which is
+        # what makes the log a second *report* of one number rather than a second
+        # number.
+        assert spent.tokens == runtime.scope.tracker.tokens
+        assert spent.cost_usd == pytest.approx(runtime.scope.tracker.cost_usd)
+
+        # Log-only: a price must never be replayed to the model as conversation.
+        from forgepilot.seams.session import SurfaceOp
+
+        assert all(e.surface is SurfaceOp.LOG_ONLY for e in priced)
+    finally:
+        await runtime.close()
+        await close(fibers)

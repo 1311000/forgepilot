@@ -22,7 +22,7 @@ from forgepilot.runtime.recall import recall_for_turn
 from forgepilot.seams.agent_loop import TurnResult, UserInput
 from forgepilot.seams.refs import TurnId
 from forgepilot.seams.security import ExecutionConstraints
-from forgepilot.seams.session import TURN_END_REASONS
+from forgepilot.seams.session import TURN_END_REASONS, EventKind
 
 __all__ = ["run_turn", "ContextWindowExceeded", "DEFAULT_MAX_STEPS"]
 
@@ -109,6 +109,27 @@ async def run_turn(
             if result.text:
                 text_parts.append(result.text)
             tool_calls += len(result.tool_calls)
+
+            # Logged unconditionally, and before the tracker: the price is a fact
+            # about the call that was made, while a tracker is a per-scope
+            # accumulator that dies with the process. A deployment asking "what
+            # did this session spend" must not have to be the process that spent
+            # it — and an answer reconstructed from an in-memory counter is not
+            # answerable at all after a restart.
+            await session.append(
+                EventKind.TURN_USAGE,
+                {
+                    "turn": int(turn),
+                    "step": step,
+                    "model": model,
+                    "inputTokens": result.usage.input_tokens,
+                    "outputTokens": result.usage.output_tokens,
+                    "cacheReadTokens": result.usage.cache_read_tokens,
+                    "costUsd": result.usage.cost_usd,
+                },
+                turn=turn,
+                step=step,
+            )
 
             if tracker is not None:
                 tracker.tokens += result.usage.input_tokens + result.usage.output_tokens

@@ -23,6 +23,7 @@ from typing import Any
 from forgepilot.errors import ForgePilotError
 from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry, SessionStopping
 from forgepilot.httpapi.sse import LostStream, tail_session
+from forgepilot.runtime.usage import totals
 from forgepilot.seams.approval import ApprovalOutcome
 from forgepilot.seams.refs import AgentId, Mode, SessionId
 
@@ -119,6 +120,11 @@ def build_router(
             "sessionId": str(live.session_id),
             "running": live.running,
             "events": len(live.session.events),
+            # Folded from `turn/usage` events, not from a counter: the tracker
+            # lives in this process and is gone after a restart, while the log
+            # survives both. A number a person is shown must be reconstructible
+            # from what was recorded (P8).
+            "usage": totals(live.session.events).to_payload(),
             "pendingApprovals": [
                 {
                     "requestId": p.request.request_id,

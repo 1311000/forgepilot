@@ -96,6 +96,10 @@ async def test_a_single_step_turn_produces_a_balanced_log(loop_rig) -> None:
         EventKind.REQUEST_HEADER,
         EventKind.ASSISTANT_MESSAGE,
         EventKind.STEP_END,
+        # P8: the price of the call, logged beside it. It sits inside the step's
+        # span rather than after `turn/end`, because it is a fact about the model
+        # call and not about the turn's verdict.
+        EventKind.TURN_USAGE,
         EventKind.TURN_END,
     ]
 

@@ -117,6 +117,7 @@
 
 <main>
   <div class="banner" id="banner">未连接</div>
+  <div class="banner hidden" id="usage"></div>
 
   <section id="chat" style="display:flex;flex-direction:column;height:100%;min-height:0">
     <div id="taskbar" class="hidden">
@@ -296,7 +297,41 @@ function handleFrame(raw) {
 
   // The strip is a reading of the same log, so it is refreshed by the log rather
   // than by a timer. A task/state is exactly the moment the answer changes.
-  if (kind === "task/state" || kind === "turn/end") refreshTaskLater();
+  if (kind === "task/state" || kind === "turn/end") {
+    refreshTaskLater();
+    // The cost of a turn is only known once it ended, and it is a fold of the
+    // log rather than something the stream pushes — so it is re-read, not
+    // accumulated here. Two sources of the same number drift.
+    refreshUsageLater();
+  }
+}
+
+function refreshUsageLater() {
+  if (usageRefresh) return;
+  usageRefresh = setTimeout(() => {
+    usageRefresh = null;
+    refreshUsage().catch(() => {});
+  }, 160);
+}
+
+async function refreshUsage() {
+  if (!current) return;
+  let detail;
+  try {
+    detail = await call("GET", `/sessions/${encodeURIComponent(current)}`);
+  } catch {
+    $("usage").classList.add("hidden");
+    return;
+  }
+  const usage = detail?.usage || {};
+  const parts = [];
+  if (usage.calls) parts.push(`${usage.calls} 次模型调用`);
+  if (usage.tokens) parts.push(`${usage.tokens} tokens`);
+  if (usage.costUsd) parts.push(`$${Number(usage.costUsd).toFixed(4)}`);
+  $("usage").textContent = parts.length
+    ? "本会话已消耗：" + parts.join(" · ")
+    : "本会话尚未调用模型";
+  $("usage").classList.remove("hidden");
 }
 
 // -- approvals --------------------------------------------------------------
@@ -402,6 +437,7 @@ async function openSession(sessionId) {
   note("会话 " + sessionId);
   await refreshSessions();
   stream(sessionId); // replays the whole log from seq 0
+  refreshUsage().catch(() => {});
   // A history entry may be a task — including one whose process is gone. The strip
   // says so, and a 404 (this really was a chat) puts it away again.
   refreshTask().catch(() => {});
@@ -418,6 +454,7 @@ const STATE_TEXT = {
 };
 
 let taskRefresh = null;
+let usageRefresh = null;
 
 function refreshTaskLater() {
   // Coalesced: a burst of events means the strip is redrawn once, not once each.
@@ -485,6 +522,7 @@ async function openTask(taskId) {
   $("taskRepos").replaceChildren();
   await refreshSessions();
   stream(taskId);
+  refreshUsage().catch(() => {});
   await refreshTask().catch(() => {});
 }
 

@@ -88,3 +88,31 @@ behaviour a browser or an orchestrator would have hit:
 The container, the proxy and the environment table are in `deployment.md`.
 
 
+
+## P8 — what a session spent, folded from its log (2026-10-20)
+
+`/metrics` deliberately carries no per-session series (cardinality, and a
+tenant-naming label would need an authorisation check). The workbench needed the
+other number — *this* conversation's cost — and the only place it could honestly
+come from is the log.
+
+So `runtime/loop/turn.py` appends one `turn/usage` event per model call
+(`EventKind.TURN_USAGE`, `SurfaceOp.LOG_ONLY`): `model`, `inputTokens`,
+`outputTokens`, `cacheReadTokens`, `costUsd`, with the turn and step. It is
+written **before** the tracker block and whether or not a tracker exists, because
+the price is a fact about the call while the tracker is one process's
+accumulator — a `UsageTracker` that dies with the server cannot answer "what did
+this session cost" for a history entry, and that is exactly when someone asks.
+
+`runtime/usage.py::totals()` folds those events; `GET /sessions/{id}` returns the
+fold as `usage: {calls, inputTokens, outputTokens, cacheReadTokens, tokens,
+costUsd}`; the page renders it under the banner and refreshes on `turn/end` (a
+re-read, not an accumulation in JS — two sources of one number drift).
+
+Deliberately not here: prices or currencies (the provider attaches `cost_usd`,
+because it is the only thing that knows which model answered), a per-model
+breakdown, and a cross-session total. The first two are the provider's business;
+the third belongs in a report that reads the JSONL, not the UI.
+
+Malformed payloads are skipped rather than raised on, so a log written by an
+older build still answers — the honest number is the sum of what could be read.
