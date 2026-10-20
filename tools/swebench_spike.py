@@ -2,8 +2,10 @@
 
 The dataset is not downloaded here on purpose: a benchmark that fetches its own
 questions can also silently change them. Point `--instances` at a JSONL you have,
-`--repos` at a directory holding one checkout per instance (`owner__name`), and
-this refuses anything the spike could not measure honestly.
+`--repos` at a directory holding one checkout per **instance**, named by its
+`instance_id` (`astropy__astropy-12907`, not `astropy__astropy` — the first three
+rows of the published dataset are one repository at three revisions), and this
+refuses anything the spike could not measure honestly.
 
 Exit codes: 0 every instance is usable, 1 at least one is not, 2 the dataset file
 is missing.

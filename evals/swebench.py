@@ -216,12 +216,28 @@ def spike(
     The three instances the plan asks for are *spent* against a real model, so the
     cheap precondition is verified first: a checkout pointing at another revision
     turns the spike into a measurement of the wrong code.
+
+    One directory per **instance**, not per repository. The first three rows of the
+    published dataset are `astropy__astropy-12907`, `-14182` and `-14365` — one
+    repository at three base commits — so an `owner__name` layout can hold at most
+    one of them, and the other two would be refused for a reason that is the
+    layout's fault rather than the checkout's. A worktree per instance is also what
+    running the tests needs, because a run mutates the tree it runs in.
     """
     rows: list[SpikeRow] = []
     for instance in instances:
-        path = repos_dir / instance.slug
+        path = repos_dir / instance.instance_id
         if not path.is_dir():
-            rows.append(SpikeRow(instance.instance_id, path, reason="no checkout at that path"))
+            rows.append(
+                SpikeRow(
+                    instance.instance_id,
+                    path,
+                    reason=(
+                        f"no checkout at that path — clone {instance.repo} and check out "
+                        f"{instance.base_commit[:12]}"
+                    ),
+                )
+            )
             continue
         head = _git_head(path, timeout_s)
         if head is None:

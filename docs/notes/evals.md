@@ -978,23 +978,58 @@ evidence* while it compares them; the weekly job is where the same rows are publ
 What this does not do: it prices nothing new, and three reps still cannot separate phrasing
 from behaviour -- it only makes the difference visible instead of averaging it away.
 
-## P9 — SWE-bench-lite: the adapter, and why there is no number (2026-10-20)
+## P9 — SWE-bench-lite: the adapter, the three instances, and still no score (2026-10-20)
 
-The question "how does this do on somebody else's bugs" is not answerable on this
-box today, and the reason is infrastructure rather than design:
+The question "how does this do on somebody else's bugs" is not answered here, and the
+reason narrowed twice during the day. The first reading — *HuggingFace is
+unreachable* — was a measurement of one hour, not of the network:
 
-- **HuggingFace is unreachable.** `datasets-server.huggingface.co` and
-  `huggingface.co/api/...` both time out through the only working proxy
-  (`127.0.0.1:18787`), so `princeton-nlp/SWE-bench_Lite`'s `instances.jsonl`
-  cannot be fetched — and the instance list *is* the benchmark.
-- `raw.githubusercontent.com` is unreachable too; `codeload.github.com` and
-  `api.github.com` answer 200, so tarballs for a *known* commit are obtainable, but
-  knowing which commit and which tests is exactly what the dataset carries.
-- `github.com:443` itself is refused by the proxy (`CONNECT tunnel failed, 502`),
-  which is also why the six local commits could not be pushed.
+- Direct, both `huggingface.co/api/...` and `datasets-server.huggingface.co/rows?...`
+  answer **000** from this box. Through `127.0.0.1:18787` they answered 000 in the
+  morning and **200** in the evening. The proxy's own upstream is the moving part, so
+  "the dataset cannot be fetched" was true when written and false two hours later.
+  `raw.githubusercontent.com` came back 200 direct as well; `github.com:443` still
+  needs the proxy for `git`.
+- What that costs is recorded rather than argued: the same proxy that returned 502 on
+  `CONNECT github.com:443` in one hour carried a successful `git push` in the next.
 
-What *is* built is the part that can be verified without any of that —
-`evals/swebench.py` plus `tools/swebench_spike.py`:
+So the dataset was fetched, by a separate explicit step rather than by the benchmark:
+
+- **`tools/swebench_fetch.py`** asks the datasets-server `rows` API for at most
+  `--limit` instances, narrows each row to the fields the adapter reads
+  (`instance_id`, `repo`, `base_commit`, `problem_statement`, `FAIL_TO_PASS`,
+  `PASS_TO_PASS`, `test_patch`, `patch`), writes JSONL, and then **reads its own file
+  back through `load_instances`** — a file the adapter refuses is not left behind,
+  because "the download worked" and "the file is usable" must not be two answers.
+  `--proxy` is explicit and an unset one means direct: inheriting a proxy variable
+  from the environment is how "it worked on my machine" enters a benchmark.
+- Measured: `--limit 3 --proxy http://127.0.0.1:18787` wrote
+  `astropy__astropy-12907`, `astropy__astropy-14182`, `astropy__astropy-14365`; each
+  was checked out at its `base_commit` in its own worktree, and
+  `tools/swebench_spike.py` reported **`3/3 instance(s) ready to spend against a
+  model`**.
+
+**The real dataset found a defect the unit tests could not.** `spike()` looked for
+`repos/<owner>__<name>` — one directory per *repository* — and the first three Lite
+rows are one repository at three revisions, so two of them were refused for a reason
+that was the layout's fault rather than the checkout's. The path is now
+`repos/<instance_id>`: a worktree per instance, which is also what running a test
+needs, because a run mutates the tree it runs in. The regression test is
+`test_two_instances_of_one_repository_are_two_checkouts`, and it failed against the
+old layout by construction. A second, smaller lesson came from seeding the checkouts:
+a relative `git worktree add <target>` resolves against the repository named by `-C`,
+not the shell, so the first attempt put all three worktrees under
+`_origin/.tmp/swebench-repos`.
+
+What still stands between this and a score is the environment, not the adapter.
+SWE-bench ships a per-instance specification precisely because two instances of one
+repository need different dependency sets — and these are astropy 5.x revisions whose
+compiled extensions would have to be built here. `verdict()` therefore returns
+`not_run` (no run happened) or `unknown` (a run whose ids nobody could read) rather
+than a `resolved` nobody could defend, so the spike reports **readiness**, not a
+number, and says so in its own output.
+
+The refusals that make that honest, unchanged:
 
 - **Parsing refuses the unmeasurable.** A record whose `base_commit` is not a sha
   (`HEAD`), whose `FAIL_TO_PASS` is empty, or which repeats an `instance_id` is
@@ -1002,11 +1037,11 @@ What *is* built is the part that can be verified without any of that —
   *and* as a real list, because a hand-written fixture uses the latter.
 - **Grading refuses the ambiguous.** `verdict()` returns `resolved` only when no
   `FAIL_TO_PASS` (or `PASS_TO_PASS`) id appears among the run's failures — and
-  `unknown` when the caller cannot say the runner reported its ids. That second
-  case is P7's documented ambiguity, and grading it as `resolved` is how an
-  unparseable runner becomes a benchmark score.
+  `unknown` when the caller cannot say the runner reported its ids. That second case
+  is P7's documented ambiguity, and grading it as `resolved` is how an unparseable
+  runner becomes a benchmark score.
 - **The spike's precondition is checked first.** `spike()` verifies each
-  `repos/<owner>__<name>` is a checkout *root* whose HEAD starts with the pinned
+  `repos/<instance_id>` is a checkout *root* whose HEAD starts with the pinned
   commit, so the three instances are not spent against the wrong revision.
 
 ⚠️ Writing that check re-measured a lesson from M19 a third time:
@@ -1015,8 +1050,13 @@ directory inside this one answered with this repository's HEAD and the test
 expected "not a checkout". `--show-toplevel` must equal the directory, or the
 answer is about its parent.
 
+*Update:* re-measuring the lesson a fourth time, on 2026-10-20, was the point of the
+`test_two_instances_…` test above: the layout sentence was itself a claim about a
+directory name that no test had exercised against the real dataset.
+
 The spike itself is `tools/swebench_spike.py --instances <jsonl> --repos <dir>
 --limit 3`: exit 0 when every checkout is pinned, 1 when any is not, 2 when the
 dataset is missing (naming where it comes from). What it will not do is download
 the dataset or clone anything — a benchmark that fetches its own questions can
-also silently change them.
+also silently change them, which is why `swebench_fetch.py` is a separate command
+an operator runs and can inspect.

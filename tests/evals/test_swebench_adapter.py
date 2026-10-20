@@ -143,7 +143,7 @@ def git(path: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
-def checkout(tmp_path: Path, *, name: str = "astropy__astropy") -> tuple[Path, str]:
+def checkout(tmp_path: Path, *, name: str = "astropy__astropy-12907") -> tuple[Path, str]:
     path = tmp_path / "repos" / name
     path.mkdir(parents=True)
     git(path, "init", "-q")
@@ -178,7 +178,27 @@ def test_a_missing_checkout_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_directory_that_is_not_a_checkout_is_refused(tmp_path: Path) -> None:
-    (tmp_path / "repos" / "astropy__astropy").mkdir(parents=True)
+    (tmp_path / "repos" / "astropy__astropy-12907").mkdir(parents=True)
     rows = S.spike([_one()], tmp_path / "repos")
     assert not rows[0].ok
     assert "not a git checkout" in rows[0].reason
+
+
+def test_two_instances_of_one_repository_are_two_checkouts(tmp_path: Path) -> None:
+    """The published dataset's first three rows are one repo at three revisions.
+
+    An `owner__name` layout holds one of them, so the other two were refused for a
+    reason that was the layout's fault rather than the checkout's — measured against
+    the real dataset on 2026-10-20, after the adapter had passed its unit tests.
+    """
+    first, head = checkout(tmp_path, name="astropy__astropy-12907")
+    second, other = checkout(tmp_path, name="astropy__astropy-14182")
+    rows = S.spike(
+        [
+            _one(instance_id="astropy__astropy-12907", base_commit=head),
+            _one(instance_id="astropy__astropy-14182", base_commit=other),
+        ],
+        tmp_path / "repos",
+    )
+    assert [row.ok for row in rows] == [True, True]
+    assert {rows[0].path, rows[1].path} == {first, second}
