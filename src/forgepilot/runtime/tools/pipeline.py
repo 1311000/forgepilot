@@ -206,7 +206,10 @@ class ToolPipeline:
 
         if parse_error is not None:
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 ToolOutcome(content=parse_error, is_error=True, meta={"phase": "parse"}),
             )
 
@@ -218,7 +221,10 @@ class ToolPipeline:
             # "skipped because we did not know who it was" is the wrong way round
             # for the one phase whose entire job is to decide.
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 self._refusal(
                     Phase.PRE_EXECUTE,
                     "no principal is attached to this pipeline, so no pre-execute "
@@ -232,7 +238,10 @@ class ToolPipeline:
             decision = resolve_decision(tuple(self.pre_execute_listeners), preview, scope)
         except Exception as exc:  # noqa: BLE001 - a bad hook must not kill the turn
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 ToolOutcome(
                     content=f"a pre-execute hook failed: {type(exc).__name__}: {exc}",
                     is_error=True,
@@ -242,7 +251,10 @@ class ToolPipeline:
 
         if decision.kind is PreDecisionKind.DENY:
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 self._refusal(Phase.PRE_EXECUTE, decision.reason or "denied"),
             )
 
@@ -267,7 +279,10 @@ class ToolPipeline:
         )
         if verdict.decision.value == "deny":
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 self._refusal(Phase.GUARDS, verdict.reason, guard=verdict.guard),
             )
 
@@ -291,7 +306,10 @@ class ToolPipeline:
             )
         except ArmRefused as exc:
             return await self._finish(
-                session, call, turn, step,
+                session,
+                call,
+                turn,
+                step,
                 self._refusal(Phase.ARM, str(exc)),
             )
 

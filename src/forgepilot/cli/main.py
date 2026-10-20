@@ -609,8 +609,7 @@ def _serve(args: argparse.Namespace) -> int:
         import uvicorn  # noqa: F401
     except ImportError:
         print(
-            'error: the HTTP surface needs the `web` extra: '
-            'pip install -e ".[web]"',
+            'error: the HTTP surface needs the `web` extra: pip install -e ".[web]"',
             file=sys.stderr,
         )
         return 2
@@ -648,9 +647,7 @@ def _serve(args: argparse.Namespace) -> int:
                 # signal handler sets the registry's stop flag, and this bounds
                 # how long a *reply* that is still in flight may take. Without any
                 # bound, one stuck client makes `SIGTERM` mean "hang".
-                timeout_graceful_shutdown=float(
-                    row.config.get("shutdown_timeout", 15.0)
-                ),
+                timeout_graceful_shutdown=float(row.config.get("shutdown_timeout", 15.0)),
             )
         )
         _end_streams_on_signals(server, app)
@@ -730,9 +727,7 @@ def _chat(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 3
 
-        constraints = derive(
-            record.principal, record.grant, ProjectPolicy.open_project(), key=None
-        )
+        constraints = derive(record.principal, record.grant, ProjectPolicy.open_project(), key=None)
 
         # Every tool's writes are bounded by this directory, and the sandbox
         # policy takes its root from here — so an unresolved path would widen the
@@ -775,7 +770,9 @@ def _chat(args: argparse.Namespace) -> int:
             if not line:
                 continue
             result = await agent.run_turn(UserInput(text=line))
-            print(f"\n{result.assistant_text}\n[{result.reason}, {result.tool_calls} tool call(s)]\n")
+            print(
+                f"\n{result.assistant_text}\n[{result.reason}, {result.tool_calls} tool call(s)]\n"
+            )
 
         await runtime.close()
         return 0
@@ -870,10 +867,7 @@ def _print_plan(plan: Any, gateway: Any) -> None:
         return
     understanding = plan.understanding
     if understanding is not None:
-        print(
-            f"category  : {understanding.category}  "
-            f"(confidence {understanding.confidence:.2f})"
-        )
+        print(f"category  : {understanding.category}  (confidence {understanding.confidence:.2f})")
     assert plan.selection is not None  # noqa: S101 - invariant of `ready`
     print(f"tools     : {plan.selection.tool_set} -> {list(plan.selection.tools)}")
     print(f"repos     : {[r.slug for r in plan.repos]}")
@@ -1357,10 +1351,12 @@ def _interactive_answerer(memory_id: str, *, require_typed: bool):  # noqa: ANN2
             # ask, and "nobody answered" is a refusal everywhere in this system.
             return ApprovalOutcome.UNAVAILABLE
         if require_typed:
-            return (
-                ApprovalOutcome.ALLOWED_ONCE if typed == memory_id else ApprovalOutcome.REJECTED
-            )
-        return ApprovalOutcome.ALLOWED_ONCE if typed.casefold() in {"y", "yes"} else ApprovalOutcome.REJECTED
+            return ApprovalOutcome.ALLOWED_ONCE if typed == memory_id else ApprovalOutcome.REJECTED
+        return (
+            ApprovalOutcome.ALLOWED_ONCE
+            if typed.casefold() in {"y", "yes"}
+            else ApprovalOutcome.REJECTED
+        )
 
     return answer
 
@@ -1469,8 +1465,7 @@ def _task(args: argparse.Namespace) -> int:
             _print_plan(plan, gateway)
             if not plan.ready:
                 print(
-                    "\nthis ticket was not executed. Nothing was run, and no branch "
-                    "was created.",
+                    "\nthis ticket was not executed. Nothing was run, and no branch was created.",
                     file=sys.stderr,
                 )
                 return 5

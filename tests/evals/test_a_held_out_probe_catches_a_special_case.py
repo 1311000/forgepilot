@@ -87,7 +87,10 @@ def test_a_failed_probe_fails_the_row_even_though_the_checks_passed(tmp_path) ->
 def test_a_passing_probe_leaves_the_row_alone(tmp_path) -> None:
     """The control. Without it, a probe that always failed would look like a working
     instrument — and every row in the sweep would be red."""
-    assert H.score(a_row(checks_passed=True, probes=[{"name": "p", "passed": True}]), a_task(tmp_path)) == []
+    assert (
+        H.score(a_row(checks_passed=True, probes=[{"name": "p", "passed": True}]), a_task(tmp_path))
+        == []
+    )
 
 
 def test_the_probe_is_not_consulted_when_the_checks_failed(tmp_path) -> None:
@@ -113,9 +116,7 @@ def test_a_declared_probe_that_was_never_recorded_fails_closed(tmp_path) -> None
 def test_a_task_with_no_probes_is_untouched(tmp_path) -> None:
     """Every other task in the set declares none, and `score` must not invent a
     failure for them."""
-    task = H.EvalTask(
-        name="no-probes", directory=tmp_path, fixture=tmp_path, ticket={}, expect={}
-    )
+    task = H.EvalTask(name="no-probes", directory=tmp_path, fixture=tmp_path, ticket={}, expect={})
 
     assert H.score(a_row(checks_passed=True, probes=[]), task) == []
 
@@ -141,8 +142,9 @@ def _tree(tmp_path: Path, module: str) -> Path:
 
 
 def test_the_probe_passes_a_module_that_implements_the_rule(tmp_path) -> None:
-    task = a_task(tmp_path, probes=[{"name": "general", "file": "probes/p.py"}],
-                  probe_files=[("p.py", PROBE)])
+    task = a_task(
+        tmp_path, probes=[{"name": "general", "file": "probes/p.py"}], probe_files=[("p.py", PROBE)]
+    )
 
     results = H.run_probes(_tree(tmp_path, CORRECT), task)
 
@@ -152,8 +154,9 @@ def test_the_probe_passes_a_module_that_implements_the_rule(tmp_path) -> None:
 def test_the_probe_catches_a_module_that_enumerates_the_visible_inputs(tmp_path) -> None:
     """The cheat ImpossibleBench measured, in four lines. Nothing was weakened and
     no test was touched — the function simply knows the answers it was asked for."""
-    task = a_task(tmp_path, probes=[{"name": "general", "file": "probes/p.py"}],
-                  probe_files=[("p.py", PROBE)])
+    task = a_task(
+        tmp_path, probes=[{"name": "general", "file": "probes/p.py"}], probe_files=[("p.py", PROBE)]
+    )
 
     results = H.run_probes(_tree(tmp_path, ENUMERATED), task)
 
@@ -181,8 +184,9 @@ def test_the_probe_can_import_the_tree_it_is_testing(tmp_path) -> None:
     broken task rather than a broken instrument, because a correct fix and a cheat
     both "fail the probe" and the message names the probe.
     """
-    task = a_task(tmp_path, probes=[{"name": "general", "file": "probes/p.py"}],
-                  probe_files=[("p.py", PROBE)])
+    task = a_task(
+        tmp_path, probes=[{"name": "general", "file": "probes/p.py"}], probe_files=[("p.py", PROBE)]
+    )
 
     results = H.run_probes(_tree(tmp_path, CORRECT), task)
 
@@ -194,11 +198,17 @@ def test_the_probe_can_import_the_tree_it_is_testing(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True,
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
         env={
             "PATH": __import__("os").environ.get("PATH", ""),
-            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
         },
     )
 

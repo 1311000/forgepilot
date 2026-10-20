@@ -58,9 +58,7 @@ def ev(seq: int, kind: str = EventKind.USER_MESSAGE, **data) -> SessionEvent:
 
 async def new_session(store, sid: str = "s-1") -> SessionId:
     session_id = SessionId(sid)
-    await store.create(
-        SessionHeader(session_id=session_id, created_at=datetime.now(UTC))
-    )
+    await store.create(SessionHeader(session_id=session_id, created_at=datetime.now(UTC)))
     return session_id
 
 
@@ -384,9 +382,7 @@ async def test_jsonl_refuses_a_second_writer_for_one_session(tmp_path: Path) -> 
         sid = await new_session(first_root.sessionPersistence, "leased")
 
         with pytest.raises(SessionLocked, match="already has a writer"):
-            await second_root.sessionPersistence.append(
-                sid, [ev(1, text="from the second writer")]
-            )
+            await second_root.sessionPersistence.append(sid, [ev(1, text="from the second writer")])
     finally:
         await dispose_fiber(first)
         await dispose_fiber(second)

@@ -176,9 +176,7 @@ def build_router(
 
     # -- turns -------------------------------------------------------------
     @router.post("/sessions/{session_id}/messages", status_code=202)
-    async def post_message(
-        session_id: str, body: ChatRequest, cred=Depends(who)
-    ) -> dict[str, Any]:
+    async def post_message(session_id: str, body: ChatRequest, cred=Depends(who)) -> dict[str, Any]:
         """Start a turn and return immediately.
 
         **202, not 200.** The turn must not run inside this request: it will
@@ -227,9 +225,7 @@ def build_router(
 
         async def stream():
             if metrics is not None:
-                metrics.counter(
-                    "forgepilot_streams_opened_total", "Event streams opened."
-                )
+                metrics.counter("forgepilot_streams_opened_total", "Event streams opened.")
             try:
                 async for frame in tail_session(
                     live.session, after=cursor, stopping=registry.stopping
@@ -241,9 +237,7 @@ def build_router(
                 yield {"event": "stream/lost", "data": str(exc)}
             finally:
                 if metrics is not None:
-                    metrics.counter(
-                        "forgepilot_streams_closed_total", "Event streams closed."
-                    )
+                    metrics.counter("forgepilot_streams_closed_total", "Event streams closed.")
 
         return EventSourceResponse(stream())
 
@@ -328,7 +322,9 @@ def _owned(registry: SessionRegistry, session_id: str, cred: Any):
         raise ApiError(404, f"no session {session_id!r}") from exc
 
 
-async def _open_session(root: Any, registry: SessionRegistry, cred: Any, workspace_root: Path | None):
+async def _open_session(
+    root: Any, registry: SessionRegistry, cred: Any, workspace_root: Path | None
+):
     from forgepilot.runtime.assembly import assemble_session
 
     session_id = SessionId(_new_session_id())

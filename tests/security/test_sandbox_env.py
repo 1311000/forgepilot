@@ -92,7 +92,7 @@ def test_a_dot_rule_means_the_whole_workspace() -> None:
 
 
 def test_a_dot_rule_does_not_widen_to_an_absolute_path() -> None:
-    """"Everything under the workspace" is not "everything"."""
+    """ "Everything under the workspace" is not "everything"."""
     from forgepilot.seams.refs import PrincipalId, TenantId
     from forgepilot.seams.security import ExecutionConstraints, Principal
 

@@ -132,9 +132,7 @@ async def test_a_balanced_log_is_left_alone(created) -> None:
                 data={"text": "hi"},
                 surface=SurfaceOp.APPEND,
             ),
-            SessionEvent(
-                seq=3, kind=EventKind.TURN_END, data={"turn": 1, "reason": "completed"}
-            ),
+            SessionEvent(seq=3, kind=EventKind.TURN_END, data={"turn": 1, "reason": "completed"}),
         ],
     )
 

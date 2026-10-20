@@ -170,9 +170,7 @@ def test_an_arm_that_changed_nothing_says_so(capsys) -> None:
 def test_rows_written_before_this_was_recorded_do_not_claim_to_be_the_baseline(capsys) -> None:
     """An old results file has no `arm_changes`. Printing `(nothing)` for it would
     be a claim the file does not support."""
-    report._print_arm_changes(
-        [row("t", "full", 1, passed=True), row("t", "arm", 1, passed=True)]
-    )
+    report._print_arm_changes([row("t", "full", 1, passed=True), row("t", "arm", 1, passed=True)])
 
     out = capsys.readouterr().out
     assert "(not recorded in this file)" in out
@@ -188,9 +186,7 @@ def test_a_reason_with_no_task_and_arm_is_not_lost(capsys) -> None:
 def test_agent_text_is_only_printed_when_asked_for(capsys) -> None:
     """It is model prose and it is long. Opt-in, and it must actually carry the
     text — an empty section would be worse than no section."""
-    row_with_prose = row(
-        "t", "arm", 1, passed=False, agent_text="I have not modified any source"
-    )
+    row_with_prose = row("t", "arm", 1, passed=False, agent_text="I have not modified any source")
 
     report.main(["--file", "nope"])  # exercises the parser, prints nothing useful
     capsys.readouterr()

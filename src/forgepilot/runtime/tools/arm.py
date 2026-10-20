@@ -133,9 +133,7 @@ def mint_capabilities(
         granted = granted.without("fs_write")
 
     if granted.exec:
-        if enforcement_rank(scope.enforcement) < enforcement_rank(
-            minimum_enforcement_for_exec
-        ):
+        if enforcement_rank(scope.enforcement) < enforcement_rank(minimum_enforcement_for_exec):
             raise ArmRefused(
                 f"this call declares exec but the host reports sandbox enforcement "
                 f"{scope.enforcement.value!r}, which is weaker than the required "

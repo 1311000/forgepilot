@@ -102,9 +102,7 @@ async def test_a_single_step_turn_produces_a_balanced_log(loop_rig) -> None:
 
 async def test_assistant_message_carries_usage(loop_rig) -> None:
     """Usage is recorded, not just consumed — cost accounting reads the log."""
-    loop_rig.llm.script(
-        text_turn("done", usage=Usage(input_tokens=120, output_tokens=8))
-    )
+    loop_rig.llm.script(text_turn("done", usage=Usage(input_tokens=120, output_tokens=8)))
 
     await drive(loop_rig)
 
@@ -162,7 +160,8 @@ async def test_a_refused_tool_still_enters_history(loop_rig) -> None:
         text_turn("understood, I will stay in the workspace"),
     )
     read_only = constraints_for(
-        loop_rig.workspace, writable=()  # nothing is writable
+        loop_rig.workspace,
+        writable=(),  # nothing is writable
     )
 
     await drive(loop_rig, constraints=read_only)
@@ -302,8 +301,20 @@ def test_accumulate_reassembles_interleaved_tool_call_fragments() -> None:
     result would look like valid JSON often enough to be missed.
     """
     chunks = [
-        StreamChunk(kind="tool_call_delta", tool_index=0, tool_call_id="a", tool_name="first", arguments_delta='{"x":'),
-        StreamChunk(kind="tool_call_delta", tool_index=1, tool_call_id="b", tool_name="second", arguments_delta='{"y":'),
+        StreamChunk(
+            kind="tool_call_delta",
+            tool_index=0,
+            tool_call_id="a",
+            tool_name="first",
+            arguments_delta='{"x":',
+        ),
+        StreamChunk(
+            kind="tool_call_delta",
+            tool_index=1,
+            tool_call_id="b",
+            tool_name="second",
+            arguments_delta='{"y":',
+        ),
         StreamChunk(kind="tool_call_delta", tool_index=0, arguments_delta="1}"),
         StreamChunk(kind="tool_call_delta", tool_index=1, arguments_delta="2}"),
         StreamChunk(kind="usage", usage=Usage(input_tokens=3, output_tokens=4)),
@@ -341,8 +352,14 @@ async def test_the_factory_registry_selects_an_engine_by_key(loop_rig) -> None:
     registry.register_factory(OtherEngine())
 
     assert registry.keys() == ("forgepilot", "other")
-    assert isinstance(registry.build("forgepilot", spec_for(constraints_for(loop_rig.workspace)), loop_rig.root), ForgePilotAgentLoop)
-    assert isinstance(registry.build("other", spec_for(constraints_for(loop_rig.workspace)), loop_rig.root), ForgePilotAgentLoop)
+    assert isinstance(
+        registry.build("forgepilot", spec_for(constraints_for(loop_rig.workspace)), loop_rig.root),
+        ForgePilotAgentLoop,
+    )
+    assert isinstance(
+        registry.build("other", spec_for(constraints_for(loop_rig.workspace)), loop_rig.root),
+        ForgePilotAgentLoop,
+    )
 
 
 async def test_an_unknown_engine_key_is_refused_with_the_alternatives(loop_rig) -> None:

@@ -70,6 +70,7 @@ def _resolve(root: Path | None, raw: str) -> Path:
 # code_search
 # ---------------------------------------------------------------------------
 
+
 def build_search_definitions(retriever: Any) -> tuple[ToolDefinition, ...]:
     """The search and read tools, bound to a retriever.
 
@@ -165,6 +166,7 @@ def build_search_definitions(retriever: Any) -> tuple[ToolDefinition, ...]:
         ),
     )
 
+
 #: How results are rendered. The default is the *cheapest* one on purpose: a
 #: model that wanted to know which files matter, and instead receives forty
 #: matching lines, has spent context on something it did not ask for.
@@ -241,8 +243,7 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
     mode = str(arguments.get("output_mode") or "files_with_matches")
     if mode not in OUTPUT_MODES:
         return ToolOutcome(
-            content=f"unknown output_mode {mode!r}; expected one of "
-            f"{', '.join(OUTPUT_MODES)}.",
+            content=f"unknown output_mode {mode!r}; expected one of {', '.join(OUTPUT_MODES)}.",
             is_error=True,
             meta={"phase": "args"},
         )
@@ -370,9 +371,7 @@ def _render_hits(hits: tuple[Any, ...], mode: str) -> str:
         paths = list(seen)
         body = f"found {len(paths)} file(s) matching:\n" + "\n".join(paths)
 
-    served = sorted(
-        {f"{hit.location.repo.slug}@{hit.location.ref}" for hit in hits}
-    )
+    served = sorted({f"{hit.location.repo.slug}@{hit.location.ref}" for hit in hits})
     # `<worktree>` says "whatever is checked out" and is worth naming too: it tells
     # the model there is no revision to pass on, which is different from a commit.
     return body + "\n\n[served from: " + ", ".join(served) + "]"
@@ -538,9 +537,7 @@ async def _read_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
             entries = []
         listing = ", ".join(entries) if entries else "(unreadable or empty)"
         return ToolOutcome(
-            content=(
-                f"{args['path']} is a directory, not a file. It contains: {listing}"
-            ),
+            content=(f"{args['path']} is a directory, not a file. It contains: {listing}"),
             is_error=True,
             meta={"is_directory": True, "entries": entries},
         )
@@ -692,7 +689,8 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
         return ToolOutcome(content=f"no such file: {label}", is_error=True)
     if path.is_dir():
         return ToolOutcome(
-            content=f"{label} is a directory, not a file", is_error=True,
+            content=f"{label} is a directory, not a file",
+            is_error=True,
             meta={"is_directory": True},
         )
 
@@ -736,9 +734,7 @@ async def _edit_file(call: ToolCall, ctx: ToolContext) -> ToolOutcome:
             )
         if len(flat_offsets) > 1 and not replace_all:
             return _uniqueness_refusal(label, len(flat_offsets))
-        offsets = [
-            positions[index] for index in flat_offsets
-        ]
+        offsets = [positions[index] for index in flat_offsets]
         ends = [positions[index + len(old.replace("\r\n", "\n"))] for index in flat_offsets]
         normalised = True
     else:
@@ -866,12 +862,11 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             return ToolOutcome(
                 content=scrub_values(
                     "the command was NOT executed, so there is no output, and anything "
-                    "inferred from this call would be invented.\n"
+                    "inferred from this call would be invented.\n" + not_executed_reason(result),
                     # `not_executed_reason` prints the argv it was handed — which is
                     # the *substituted* one. Without this scrub the value lands in a
                     # tool result and then in the log, through the diagnostics rather
                     # than through the command.
-                    + not_executed_reason(result),
                     secrets,
                 ),
                 is_error=True,
@@ -1013,9 +1008,7 @@ def build_tool_definitions(sandbox: Any) -> tuple[ToolDefinition, ...]:
             effects=frozenset({ToolEffect.EXEC}),
             required_operation=Operation.RUN_TESTS,
             execute=run_with_sandbox,
-            describe_targets=lambda args: ResourceTargets(
-                commands=(str(args.get("command", "")),)
-            ),
+            describe_targets=lambda args: ResourceTargets(commands=(str(args.get("command", "")),)),
         ),
     )
 
@@ -1039,8 +1032,7 @@ class BuiltinToolsPlugin:
         registry = self.ctx.tools
         sandbox = self.ctx.sandbox
         unregisters = [
-            registry.register(definition)
-            for definition in build_tool_definitions(sandbox)
+            registry.register(definition) for definition in build_tool_definitions(sandbox)
         ]
 
         def cleanup() -> None:
@@ -1070,8 +1062,7 @@ class CodeSearchToolPlugin:
         registry = self.ctx.tools
         retriever = self.ctx.retriever
         unregisters = [
-            registry.register(definition)
-            for definition in build_search_definitions(retriever)
+            registry.register(definition) for definition in build_search_definitions(retriever)
         ]
 
         def cleanup() -> None:

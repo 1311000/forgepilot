@@ -121,9 +121,7 @@ class InMemoryMemoryStorePlugin(PluginService):
             return existing.id
 
         memory_id = self._next_id("prop")
-        self._records[memory_id] = new_provisional_record(
-            memory_id, candidate, provenance, now=now
-        )
+        self._records[memory_id] = new_provisional_record(memory_id, candidate, provenance, now=now)
         self._by_hash[digest] = memory_id
         return memory_id
 
@@ -191,9 +189,7 @@ class InMemoryMemoryStorePlugin(PluginService):
             if other.status in COMPETING_STATUSES
             and conflict_key(other)[:4] == conflict_key(record)[:4]
         )
-        changed, decisions = plan_resolution(
-            record, siblings_of(neighbours, record), now=moment
-        )
+        changed, decisions = plan_resolution(record, siblings_of(neighbours, record), now=moment)
         for updated in changed:
             self._store(updated)
         current = self._records.get(memory_id, record)

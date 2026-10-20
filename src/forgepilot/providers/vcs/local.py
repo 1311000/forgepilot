@@ -143,9 +143,7 @@ class LocalRepositoryVcsPlugin(PluginService):
             errors="replace",
             check=False,
         )
-        return DiffBundle(
-            base_ref=base, head_ref=head, unified_diff=completed.stdout or ""
-        )
+        return DiffBundle(base_ref=base, head_ref=head, unified_diff=completed.stdout or "")
 
     async def changed_files(
         self, repo: RepoRef, base: str, head: str, constraints: ExecutionConstraints

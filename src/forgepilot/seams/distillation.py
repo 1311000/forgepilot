@@ -94,9 +94,7 @@ MAX_EVIDENCE_SEQS = 32
 
 #: The fields the model may fill in. Everything else about a memory — status,
 #: confidence, provenance, tenant, id, timestamps — is the harness's to set.
-CANDIDATE_FIELDS = frozenset(
-    {"type", "subject", "text", "evidence_seqs", "model_confidence_hint"}
-)
+CANDIDATE_FIELDS = frozenset({"type", "subject", "text", "evidence_seqs", "model_confidence_hint"})
 
 #: Tools whose **result** witnesses an effect: something ran, or something was
 #: written. A result from one of these, when it did not fail, is what
@@ -196,9 +194,7 @@ def _unfence(raw: str) -> str:
 def _candidate(entry: Any, *, index: int) -> DistillCandidate:
     where = f"candidate #{index}"
     if not isinstance(entry, Mapping):
-        raise DistillationSchemaError(
-            f"{where} is a {type(entry).__name__}, not an object"
-        )
+        raise DistillationSchemaError(f"{where} is a {type(entry).__name__}, not an object")
     keys = set(entry)
     unknown = sorted(keys - CANDIDATE_FIELDS)
     if unknown:
@@ -243,8 +239,7 @@ def _candidate(entry: Any, *, index: int) -> DistillCandidate:
     for value in seqs_raw:
         if isinstance(value, bool) or not isinstance(value, int):
             raise DistillationSchemaError(
-                f"{where}'s evidence_seqs holds {value!r}, which is not a sequence "
-                f"number"
+                f"{where}'s evidence_seqs holds {value!r}, which is not a sequence number"
             )
         seqs.append(value)
 
@@ -386,9 +381,7 @@ def witness_for(
         if check.kind != EventKind.TASK_CHECK:
             continue
         if check.data.get("couldNotRun"):
-            near.append(
-                f"the check at {check.seq} could not run, so it reports nothing"
-            )
+            near.append(f"the check at {check.seq} could not run, so it reports nothing")
         elif not check.data.get("passed"):
             near.append(f"the check at {check.seq} did not pass")
     for failure in events:
@@ -396,10 +389,7 @@ def witness_for(
             near.append(f"the result at {failure.seq} is an error, not an observation")
     for said in events:
         if said.kind == EventKind.ASSISTANT_MESSAGE:
-            near.append(
-                f"the assistant's message {said.seq} is what the agent said, not "
-                f"evidence"
-            )
+            near.append(f"the assistant's message {said.seq} is what the agent said, not evidence")
     return Witness(
         kind=ProvenanceKind.MODEL_ASSERTED,
         evidence=evidence,

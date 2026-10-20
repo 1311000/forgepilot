@@ -195,7 +195,9 @@ async def test_all_checks_must_pass(session, constraints, tmp_path) -> None:
     assert result.passed is True
 
 
-async def test_a_command_with_arguments_is_still_one_command(session, constraints, tmp_path) -> None:
+async def test_a_command_with_arguments_is_still_one_command(
+    session, constraints, tmp_path
+) -> None:
     """Splitting the command line is right; splitting *between* commands is not."""
     sandbox = FakeSandbox()
 
@@ -394,7 +396,9 @@ async def real_task_rig(tmp_path):
 
     sid = SessionId("real-task")
     await root.sessionPersistence.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice")
+        SessionHeader(
+            session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice"
+        )
     )
 
     project = ProjectConfig(
@@ -430,7 +434,12 @@ async def real_task_rig(tmp_path):
                 Principal(principal_id=PrincipalId("alice"), tenant_id=TenantId("acme")),
                 allowed_repos=frozenset({RepoRef(host="git.corp", namespace="team", name="svc-a")}),
                 permitted_operations=frozenset(
-                    {Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS, Operation.OPEN_PR}
+                    {
+                        Operation.READ_CODE,
+                        Operation.WRITE_CODE,
+                        Operation.RUN_TESTS,
+                        Operation.OPEN_PR,
+                    }
                 ),
                 writable_paths=("src", "tests"),
                 network=NetworkAccess.ALLOW,
@@ -472,7 +481,9 @@ async def test_a_whole_task_is_decided_by_a_real_test_runner(real_task_rig) -> N
         constraints=rig.constraints,
         registry=rig.registry,
         classifier=ClassifierGateway(
-            _FixedClassifier(TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95))
+            _FixedClassifier(
+                TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95)
+            )
         ),
     )
     assert plan.ready, plan.reason
@@ -539,8 +550,14 @@ async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered
     ticket = Ticket(
         id=TicketId("T-1"),
         title="登录无限重试",
-        description_md="复现步骤：" + chr(10) + "1. 输错密码" + chr(10) + chr(10)
-        + "预期结果：提示密码错误" + chr(10) + "实际结果：无限重试",
+        description_md="复现步骤："
+        + chr(10)
+        + "1. 输错密码"
+        + chr(10)
+        + chr(10)
+        + "预期结果：提示密码错误"
+        + chr(10)
+        + "实际结果：无限重试",
         priority=TicketPriority.HIGH,
     )
     plan = await plan_task(
@@ -588,10 +605,10 @@ async def test_a_fix_that_does_not_address_the_check_leaves_the_task_undelivered
         principal=rig.principal,
     )
 
-    assert _delivery(outcome).checks, 'no check was recorded'
+    assert _delivery(outcome).checks, "no check was recorded"
     assert _delivery(outcome).checks[-1].could_not_run is False
-    assert _delivery(outcome).checks[-1].passed is False, 'a failing test suite reported as passing'
-    assert not outcome.delivered, 'a PR was opened for a change that does not fix anything'
+    assert _delivery(outcome).checks[-1].passed is False, "a failing test suite reported as passing"
+    assert not outcome.delivered, "a PR was opened for a change that does not fix anything"
 
 
 async def _plan(rig):
@@ -774,7 +791,9 @@ async def test_nothing_is_pinned_when_the_agent_touched_no_tests(real_task_rig) 
 
     rig = real_task_rig
     plan = await _plan(rig)
-    rig.llm.script(text_turn("nothing to do"), text_turn("nothing to do"), text_turn("nothing to do"))
+    rig.llm.script(
+        text_turn("nothing to do"), text_turn("nothing to do"), text_turn("nothing to do")
+    )
 
     outcome = await run_task(
         plan=plan,
@@ -795,4 +814,6 @@ async def test_nothing_is_pinned_when_the_agent_touched_no_tests(real_task_rig) 
     )
 
     assert _delivery(outcome).pinned_tests == ()
-    assert _delivery(outcome).checks[-1].passed is False, "nothing was fixed, so nothing should pass"
+    assert _delivery(outcome).checks[-1].passed is False, (
+        "nothing was fixed, so nothing should pass"
+    )

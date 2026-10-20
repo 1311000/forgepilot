@@ -143,9 +143,7 @@ def write_file(path: str, content: str):
 
 def state_events(session) -> list[dict]:
     return [
-        dict(event.data)
-        for event in session.committed_events
-        if event.kind is EventKind.TASK_STATE
+        dict(event.data) for event in session.committed_events if event.kind is EventKind.TASK_STATE
     ]
 
 
@@ -215,7 +213,9 @@ def test_a_plural_body_says_where_the_other_repositories_stand() -> None:
     assert lines[1] == "## This ticket's other repositories"
     assert any("**this pull request**" in line and REPO_A.slug in line for line in lines)
     assert any("not published" in line and REPO_B.slug in line for line in lines)
-    assert any(line.startswith(f"- `{REPO_C.slug}`") and "not reached yet" in line for line in lines), (
+    assert any(
+        line.startswith(f"- `{REPO_C.slug}`") and "not reached yet" in line for line in lines
+    ), (
         "a repository the run never reached is described as exactly that, not "
         "omitted: the reader has to know the ticket was bigger than this pull request"
     )
@@ -244,7 +244,9 @@ def test_the_body_quotes_the_command_the_project_declared() -> None:
     )
 
     assert "- `${FORGEPILOT_PYTHON} -m pytest -q` — passed" in body
-    assert "python.exe" not in body, "the declaring project's placeholder is what a reader can act on"
+    assert "python.exe" not in body, (
+        "the declaring project's placeholder is what a reader can act on"
+    )
 
 
 def test_a_sibling_already_opened_is_named_by_its_number() -> None:
@@ -494,7 +496,9 @@ async def test_a_failed_delivery_stops_the_run_and_the_rest_are_not_attempted(
 
     assert REPO_B.slug in outcome.reason and REPO_C.slug in outcome.reason
     assert outcome.attempts == 2, "one attempt per delivery that started"
-    assert outcome.turns == 2, "one model turn per attempt; the third repository's turn never happened"
+    assert outcome.turns == 2, (
+        "one model turn per attempt; the third repository's turn never happened"
+    )
 
 
 async def test_the_log_records_a_state_per_delivery_and_never_a_second_verdict(

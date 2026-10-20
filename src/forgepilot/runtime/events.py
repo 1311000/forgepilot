@@ -169,9 +169,7 @@ def turn_spans(events: Sequence[SessionEvent]) -> tuple[TurnSpan, ...]:
                     )
                 )
     for turn, start in opened.items():
-        spans.append(
-            TurnSpan(turn=TurnId(turn), start_seq=start, end_seq=start, complete=False)
-        )
+        spans.append(TurnSpan(turn=TurnId(turn), start_seq=start, end_seq=start, complete=False))
     spans.sort(key=lambda span: span.start_seq)
     return tuple(spans)
 

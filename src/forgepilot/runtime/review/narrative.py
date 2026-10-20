@@ -97,9 +97,7 @@ def compute_coverage(
     annotated = [h for h in substantive if h.hunk_id in cited]
     unexamined = [h for h in substantive if h.hunk_id not in cited]
 
-    any_tests = tests_changed or any(
-        g.role is ChangeRole.TESTS and g.hunks for g in groups
-    )
+    any_tests = tests_changed or any(g.role is ChangeRole.TESTS and g.hunks for g in groups)
 
     return Coverage(
         total_hunks=len(hunks),
@@ -188,8 +186,7 @@ def coverage_tests(diff: ParsedDiff) -> bool:
     from forgepilot.runtime.review.grouping import assign_role
 
     return any(
-        assign_role(f.path, noise=f.noise is not None) is ChangeRole.TESTS
-        for f in diff.files
+        assign_role(f.path, noise=f.noise is not None) is ChangeRole.TESTS for f in diff.files
     )
 
 
@@ -206,9 +203,7 @@ def _parse_cites(raw: object) -> tuple[EvidenceRef, ...]:
         kind = str(item.get("kind", ""))
         try:
             if kind == "diff_hunk" and item.get("hunk_id"):
-                refs.append(
-                    EvidenceRef(kind=EvidenceKind.DIFF_HUNK, hunk_id=str(item["hunk_id"]))
-                )
+                refs.append(EvidenceRef(kind=EvidenceKind.DIFF_HUNK, hunk_id=str(item["hunk_id"])))
             elif kind == "session_event" and item.get("session_seq") is not None:
                 refs.append(
                     EvidenceRef(
@@ -287,10 +282,14 @@ async def model_narrative(
     ``derive_messages`` of anything; the ``review/request`` event is what makes the
     call reconstructable afterwards, and it records the prompt verbatim.
     """
-    available = "\n".join(
-        f"- hunk_id={h.hunk_id}  {h.path} +{len(h.added)} −{len(h.removed)}"
-        for h in base.groups[0].hunks[:40]
-    ) if base.groups else ""
+    available = (
+        "\n".join(
+            f"- hunk_id={h.hunk_id}  {h.path} +{len(h.added)} −{len(h.removed)}"
+            for h in base.groups[0].hunks[:40]
+        )
+        if base.groups
+        else ""
+    )
     event_lines = "\n".join(
         f"- session_seq={e.seq}  {e.kind}"
         for e in list(getattr(session, "committed_events", ()) or ())[:60]
@@ -302,8 +301,7 @@ async def model_narrative(
         model=model or getattr(llm, "model", ""),
         system=(NARRATIVE_JSON_INSTRUCTIONS,),
         prompt=(
-            f"{user_brief}\n\n可引用的 hunk：\n{available}\n\n"
-            f"可引用的会话事件：\n{event_lines}"
+            f"{user_brief}\n\n可引用的 hunk：\n{available}\n\n可引用的会话事件：\n{event_lines}"
         ),
         max_tokens=2000,
     )
@@ -368,15 +366,11 @@ async def build_narrative(
             narrative = enriched
 
     universe = EvidenceUniverse(
-        high_water=max(
-            (e.seq for e in getattr(session, "committed_events", ()) or ()), default=0
-        ),
+        high_water=max((e.seq for e in getattr(session, "committed_events", ()) or ()), default=0),
         changed_paths=diff.paths,
         hunk_ids=[h.hunk_id for h in diff.hunks],
         check_events=[
-            e.seq
-            for e in getattr(session, "committed_events", ()) or ()
-            if e.kind == "task/check"
+            e.seq for e in getattr(session, "committed_events", ()) or () if e.kind == "task/check"
         ],
     )
     narrative = validate_narrative(narrative, universe)

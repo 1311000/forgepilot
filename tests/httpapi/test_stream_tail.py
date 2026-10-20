@@ -28,9 +28,9 @@ async def session(tmp_path):
 
     root = create_root()
     fiber = await root.plugin(
-        __import__(
-            "forgepilot.config", fromlist=["resolve_plugin"]
-        ).resolve_plugin("forgepilot.providers.session_store.memory:InMemorySessionStorePlugin"),
+        __import__("forgepilot.config", fromlist=["resolve_plugin"]).resolve_plugin(
+            "forgepilot.providers.session_store.memory:InMemorySessionStorePlugin"
+        ),
         {},
     )
     try:

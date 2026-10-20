@@ -78,16 +78,12 @@ async def build_root(policy_config: dict, **extra):
 async def open_session(root, tmp_path: Path):
     from forgepilot.runtime.assembly import assemble_session
 
-    return await assemble_session(
-        root, constraints(), workspace_root=tmp_path, principal=PRINCIPAL
-    )
+    return await assemble_session(root, constraints(), workspace_root=tmp_path, principal=PRINCIPAL)
 
 
 async def call_read(runtime, tmp_path: Path):
     return await runtime.pipeline.invoke(
-        ToolCall(
-            call_id="c1", name="read_file", arguments_json='{"path": "src/app.py"}'
-        ),
+        ToolCall(call_id="c1", name="read_file", arguments_json='{"path": "src/app.py"}'),
         session=runtime.session,
         turn=TurnId(1),
         step=1,

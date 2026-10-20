@@ -121,9 +121,7 @@ class LocalTempWorkspacePlugin(PluginService):
         return self
 
     # -- Workspace ---------------------------------------------------------
-    async def prepare(
-        self, repo: RepoRef, base_ref: str, session_id: SessionId
-    ) -> WorkspaceHandle:
+    async def prepare(self, repo: RepoRef, base_ref: str, session_id: SessionId) -> WorkspaceHandle:
         key = (session_id, repo.slug)
         if key in self._handles:
             return self._handles[key]
@@ -161,9 +159,7 @@ class LocalTempWorkspacePlugin(PluginService):
         current = self._snapshot(handle.root)
         baseline = self._baseline.get((handle.session_id, handle.repo.slug), {})
         names = set(current) | set(baseline)
-        return tuple(
-            sorted(name for name in names if current.get(name) != baseline.get(name))
-        )
+        return tuple(sorted(name for name in names if current.get(name) != baseline.get(name)))
 
     async def commit(
         self,
@@ -187,9 +183,7 @@ class LocalTempWorkspacePlugin(PluginService):
             "out of a repository."
         )
 
-    async def restore(
-        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
-    ) -> None:
+    async def restore(self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]) -> None:
         """Refused: a directory has no revisions to restore from.
 
         Best-effort here would be worse than failing. The caller's whole reason

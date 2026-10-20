@@ -96,9 +96,9 @@ def test_the_principal_may_open_a_pull_request_on_either_repository(patch_rows) 
 
     assert "open_pr" in principal["operations"]
     for slug in SLUGS:
-        assert any(fnmatch(slug, f"{prefix.rstrip('*')}*") for prefix in principal["repo_prefixes"]), (
-            f"no repo_prefix covers {slug}"
-        )
+        assert any(
+            fnmatch(slug, f"{prefix.rstrip('*')}*") for prefix in principal["repo_prefixes"]
+        ), f"no repo_prefix covers {slug}"
 
 
 def test_the_example_turns_the_ask_off_on_purpose(patch_rows) -> None:

@@ -45,6 +45,7 @@ def constraints_for(
         writable_paths=writable,
     )
 
+
 TURN = TurnId(1)
 
 #: The id the ``rig`` fixture opens its session under.
@@ -135,9 +136,14 @@ async def test_call_and_result_share_a_call_id(rig) -> None:
 async def test_a_guard_denial_never_reaches_the_sandbox(rig) -> None:
     rig.approval.set_answerer(lambda r: _allow())
 
-    outcome = await invoke(rig, call("run", {"command": "echo hi"}), constraints=constraints_for(
-        rig.workspace, operations=(Operation.READ_CODE,)  # no RUN_TESTS
-    ))
+    outcome = await invoke(
+        rig,
+        call("run", {"command": "echo hi"}),
+        constraints=constraints_for(
+            rig.workspace,
+            operations=(Operation.READ_CODE,),  # no RUN_TESTS
+        ),
+    )
 
     assert outcome.is_error
     assert outcome.meta["phase"] == "guards"
@@ -161,8 +167,11 @@ async def test_a_guard_registered_mid_call_does_not_apply_to_it(rig) -> None:
 
     rig.registry.register(
         ToolDefinition(
-            name="sneak", description="", parameters={},
-            effects=frozenset({ToolEffect.READ}), execute=sneak,
+            name="sneak",
+            description="",
+            parameters={},
+            effects=frozenset({ToolEffect.READ}),
+            execute=sneak,
         )
     )
 
@@ -178,7 +187,9 @@ async def test_a_repo_outside_the_allow_list_is_refused(rig) -> None:
     secret = RepoRef(host="git.corp", namespace="other", name="secret")
     rig.registry.register(
         ToolDefinition(
-            name="peek", description="", parameters={},
+            name="peek",
+            description="",
+            parameters={},
             effects=frozenset({ToolEffect.READ}),
             execute=lambda c, ctx: _ok("peeked"),
             describe_targets=lambda args: ResourceTargets(repos=(secret,)),
@@ -337,7 +348,9 @@ async def test_a_tool_is_not_granted_what_it_did_not_declare(rig) -> None:
 
     rig.registry.register(
         ToolDefinition(
-            name="liar", description="", parameters={},
+            name="liar",
+            description="",
+            parameters={},
             effects=frozenset({ToolEffect.READ}),
             execute=lambda c, ctx: _require_write(ctx),
         )
@@ -392,8 +405,11 @@ async def test_a_raising_tool_becomes_an_error_result(rig) -> None:
 
     rig.registry.register(
         ToolDefinition(
-            name="boom", description="", parameters={},
-            effects=frozenset({ToolEffect.READ}), execute=explode,
+            name="boom",
+            description="",
+            parameters={},
+            effects=frozenset({ToolEffect.READ}),
+            execute=explode,
         )
     )
 
@@ -464,7 +480,7 @@ async def _require_write(ctx):
 # never notices that its input does not make sense.
 # ---------------------------------------------------------------------------
 async def test_reading_a_directory_says_so_rather_than_raising(rig) -> None:
-    """"That is a directory, here is what is in it" beats an Errno 21 puzzle."""
+    """ "That is a directory, here is what is in it" beats an Errno 21 puzzle."""
     (rig.workspace / "src" / "sample.py").write_text("x = 1\n", encoding="utf-8")
 
     outcome = await invoke(rig, call("read_file", {"path": "src"}))

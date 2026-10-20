@@ -103,8 +103,7 @@ class MockVcsPlugin(PluginService):
         if not constraints.allows_operation(operation):
             self.denied_calls += 1
             raise PermissionError(
-                f"principal {constraints.principal_id!r} may not "
-                f"{operation.value} on {repo.slug!r}"
+                f"principal {constraints.principal_id!r} may not {operation.value} on {repo.slug!r}"
             )
 
     # -- Vcs ---------------------------------------------------------------
@@ -127,9 +126,7 @@ class MockVcsPlugin(PluginService):
         # must not create state a test did not ask for.
         return self._mirror_root / repo.host / repo.namespace / repo.name
 
-    async def push(
-        self, repo: RepoRef, branch: str, constraints: ExecutionConstraints
-    ) -> None:
+    async def push(self, repo: RepoRef, branch: str, constraints: ExecutionConstraints) -> None:
         """Publish a branch to the host.
 
         It used to refuse a branch it had not seen created — an artefact of the
@@ -141,7 +138,8 @@ class MockVcsPlugin(PluginService):
         self._authorise(repo, constraints, Operation.WRITE_CODE)
         self._pushes.append((repo, branch))
         self._branches.setdefault(
-            (repo, branch), BranchRef(repo=repo, name=branch, head=CommitRef(repo=repo, sha=self._next_sha()))
+            (repo, branch),
+            BranchRef(repo=repo, name=branch, head=CommitRef(repo=repo, sha=self._next_sha())),
         )
 
     async def open_pull_request(

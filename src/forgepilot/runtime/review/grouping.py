@@ -49,14 +49,32 @@ _DOCS = re.compile(r"\.(md|rst|txt|adoc)$|(^|/)docs?/")
 _CONFIG = re.compile(
     r"\.(ya?ml|toml|ini|cfg|conf|properties)$|(^|/)(dockerfile|makefile)$|(^|/)\.env"
 )
-_API = re.compile(r"(^|/)(api|routes?|views?|handlers?|controllers?|endpoints?)/|(^|/)__init__\.py$")
+_API = re.compile(
+    r"(^|/)(api|routes?|views?|handlers?|controllers?|endpoints?)/|(^|/)__init__\.py$"
+)
 _SCHEMA = re.compile(r"(^|/)(migrations?|schema|models|entities)/|\.sql$|(^|/)schema\.")
 
 #: Files with these suffixes are treated as code for the purpose of role
 #: assignment; anything else falls through to LOGIC.
 _CODE_SUFFIXES = (
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
-    ".rb", ".cs", ".c", ".cc", ".cpp", ".h", ".hpp", ".swift", ".php",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".rb",
+    ".cs",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".swift",
+    ".php",
 )
 
 
@@ -83,9 +101,7 @@ def assign_role(path: str, *, noise: bool = False) -> ChangeRole:
     return ChangeRole.LOGIC
 
 
-def _referenced_by(
-    path: str, other_paths: tuple[str, ...], sources: Mapping[str, str]
-) -> bool:
+def _referenced_by(path: str, other_paths: tuple[str, ...], sources: Mapping[str, str]) -> bool:
     """Whether any *other* changed file appears to reference ``path``.
 
     Text-level on purpose, and it is a heuristic. It errs toward saying "referenced"

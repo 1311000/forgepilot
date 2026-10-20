@@ -112,9 +112,7 @@ def two_trees(tmp_path: Path) -> list[tuple[RepoRef, Path]]:
     return trees
 
 
-async def test_a_merged_check_runs_in_one_tree_holding_every_repository(
-    two_trees
-) -> None:
+async def test_a_merged_check_runs_in_one_tree_holding_every_repository(two_trees) -> None:
     workspace = FakeWorkspace()
     sandbox = FakeSandbox()
     session = FakeSession()
@@ -215,9 +213,7 @@ async def test_a_workspace_that_cannot_merge_says_which_provider_can(two_trees) 
     assert "MergedCheckoutWorkspacePlugin" in result.reason
 
 
-async def test_a_failed_merged_check_fails_the_task_after_publishing(
-    task_rig, monkeypatch
-) -> None:
+async def test_a_failed_merged_check_fails_the_task_after_publishing(task_rig, monkeypatch) -> None:
     from tests.task.test_task_mode import FIXED, make_plan, run, text_turn, write_fix
 
     plan = await make_plan(task_rig)
@@ -254,7 +250,7 @@ async def test_a_failed_merged_check_fails_the_task_after_publishing(
 CHECK_COMMAND = (
     "python -c \"import sys; sys.path[:0] = ['stats', 'reporting']; "
     "import stats, windows; "
-    "assert stats.WINDOW == windows.WINDOW, (stats.WINDOW, windows.WINDOW)\""
+    'assert stats.WINDOW == windows.WINDOW, (stats.WINDOW, windows.WINDOW)"'
 )
 
 

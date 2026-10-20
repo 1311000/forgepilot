@@ -63,7 +63,9 @@ def make_diff(files: dict[str, tuple[str, str]]) -> str:
 MIGRATION_BEFORE = "CREATE TABLE accounts (id INTEGER);\n"
 MIGRATION_AFTER = "CREATE TABLE accounts (id INTEGER, retry_limit INTEGER DEFAULT 3);\n"
 
-LOGIN_BEFORE = "def retry_login(client):\n    attempts = 0\n    while True:\n        attempts += 1\n"
+LOGIN_BEFORE = (
+    "def retry_login(client):\n    attempts = 0\n    while True:\n        attempts += 1\n"
+)
 LOGIN_AFTER = "MAX = 3\n\n\ndef retry_login(client):\n    for _ in range(MAX):\n        pass\n"
 
 ROUTES_BEFORE = "def login_route(request):\n    return retry_login(request.client)\n"
@@ -129,7 +131,9 @@ def test_lockfiles_and_generated_files_are_noise() -> None:
 def test_a_whitespace_only_change_is_noise_but_is_still_present() -> None:
     """Folded, not deleted. A reformat is not interesting; its existence is."""
     diff = classify_noise(
-        parse_diff(make_diff({"src/x.py": ("def f():\n    return 1\n", "def f():\n        return 1\n")}))
+        parse_diff(
+            make_diff({"src/x.py": ("def f():\n    return 1\n", "def f():\n        return 1\n")})
+        )
     )
     hunks = diff.hunks
 
@@ -240,7 +244,11 @@ async def test_a_claim_citing_an_unchanged_file_is_rejected() -> None:
         evidence=(
             EvidenceRef(
                 kind=EvidenceKind.CODE_REF,
-                code_ref=CodeRef(repo=RepoRef(host="", namespace="", name=""), path="src/untouched.py", ref="HEAD"),
+                code_ref=CodeRef(
+                    repo=RepoRef(host="", namespace="", name=""),
+                    path="src/untouched.py",
+                    ref="HEAD",
+                ),
             ),
         ),
     )
@@ -345,7 +353,10 @@ def test_removed_symbols_are_detected_and_their_callers_found() -> None:
     after = "def caller():\n    return 1\n"
     plan = prepare_review(
         make_diff({"src/util.py": (before, after)}),
-        workspace_sources={"src/util.py": after, "src/other.py": "from util import helper\n\nhelper(2)\n"},
+        workspace_sources={
+            "src/util.py": after,
+            "src/other.py": "from util import helper\n\nhelper(2)\n",
+        },
     )
 
     names = {c.name for c in plan.blast_radius.symbols}

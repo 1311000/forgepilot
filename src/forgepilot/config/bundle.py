@@ -18,6 +18,7 @@ from forgepilot.config.patch import PatchLayer, patch_layer_from_mapping
 
 __all__ = ["bundles_dir", "resolve_plugin", "load_bundle_layer", "load_patch_file"]
 
+
 #: Where the in-tree bundles live: ``src/forgepilot/bundles/<name>/patch.yaml``.
 #: Third-party bundles are ordinary installable distributions and will resolve
 #: through entry points once subprocess plugin isolation lands; they are out of

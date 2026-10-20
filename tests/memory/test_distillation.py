@@ -115,9 +115,7 @@ async def make_session(
     call = await session.tool_call(
         TurnId(2), 1, call_id="c1", name="run", arguments_json='{"command": "pytest -q"}'
     )
-    ran = await session.tool_result(
-        TurnId(2), 1, call_id="c1", content="8 passed in 0.4s"
-    )
+    ran = await session.tool_result(TurnId(2), 1, call_id="c1", content="8 passed in 0.4s")
     check = await session.append(
         EventKind.TASK_CHECK,
         {
@@ -248,9 +246,12 @@ def test_too_many_candidates_is_refused_rather_than_truncated() -> None:
 def test_a_hint_outside_zero_to_one_is_refused() -> None:
     with pytest.raises(DistillationSchemaError, match="outside 0..1"):
         parse_candidates(json.dumps([candidate([3], model_confidence_hint=1.5)]))
-    assert parse_candidates(json.dumps([candidate([3], model_confidence_hint=0.5)]))[
-        0
-    ].model_confidence_hint == 0.5
+    assert (
+        parse_candidates(json.dumps([candidate([3], model_confidence_hint=0.5)]))[
+            0
+        ].model_confidence_hint
+        == 0.5
+    )
 
 
 def test_a_boolean_where_a_sequence_number_belongs_is_refused() -> None:
@@ -476,7 +477,9 @@ async def test_without_the_watermark_the_stretch_is_extracted_again_but_not_dupl
 
     root, fibers = await build(tmp_path)
     other = create_root()
-    fiber = await other.plugin(resolve_plugin(WATERMARK_SPEC), {"path": str(tmp_path / "fresh.jsonl")})
+    fiber = await other.plugin(
+        resolve_plugin(WATERMARK_SPEC), {"path": str(tmp_path / "fresh.jsonl")}
+    )
     try:
         session, seqs = await make_session(root)
         root.llm.script(answer(candidate([seqs["user"]])))

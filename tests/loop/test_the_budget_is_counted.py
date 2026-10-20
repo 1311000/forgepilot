@@ -132,9 +132,7 @@ def script_tool_calls(root, count: int) -> None:
 
     for index in range(count):
         root.llm.script(
-            tool_call_turn(
-                "read_file", json.dumps({"path": "src/app.py"}), call_id=f"c{index}"
-            )
+            tool_call_turn("read_file", json.dumps({"path": "src/app.py"}), call_id=f"c{index}")
         )
     root.llm.script(text_turn("done"))
 
@@ -266,9 +264,7 @@ async def test_the_loop_adds_what_the_model_charged(tmp_path: Path) -> None:
 
     root, runtime, fibers = await build(tmp_path)
     try:
-        root.llm.script(
-            text_turn("nothing to do", usage=Usage(input_tokens=1, cost_usd=0.25))
-        )
+        root.llm.script(text_turn("nothing to do", usage=Usage(input_tokens=1, cost_usd=0.25)))
 
         agent = await agent_for(root, runtime, constraints())
         await agent.run_turn(UserInput(text="hello"))

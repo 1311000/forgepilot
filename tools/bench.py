@@ -114,7 +114,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p50 = _percentile(end_to_end, 0.50)
     p95 = _percentile(end_to_end, 0.95)
-    print(f"\n{args.task}/{args.arm}: boot+turn p50 {p50:.2f}s  p95 {p95:.2f}s  (n={len(end_to_end)})")
+    print(
+        f"\n{args.task}/{args.arm}: boot+turn p50 {p50:.2f}s  p95 {p95:.2f}s  (n={len(end_to_end)})"
+    )
     if turns:
         print(
             f"harness turn:     p50 {_percentile(turns, 0.50):.2f}s  "

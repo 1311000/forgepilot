@@ -351,10 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f'    eval "$(.venv/Scripts/python.exe {seeder} --export)"')
     print()
     print("  PowerShell (no `eval`; `export` is not a verb there):")
-    print(
-        f"    .venv/Scripts/python.exe {seeder} --export --shell powershell "
-        f"| Invoke-Expression"
-    )
+    print(f"    .venv/Scripts/python.exe {seeder} --export --shell powershell | Invoke-Expression")
     print()
     print("Then the task itself (one line; `\\` continuation is bash-only):")
     print()

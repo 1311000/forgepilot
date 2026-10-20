@@ -80,7 +80,13 @@ from forgepilot.seams.memory import (
 from forgepilot.seams.refs import MemoryId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints
 
-__all__ = ["DEFAULT_FILE", "SCHEMA", "SCHEMA_VERSION", "MemorySchemaTooNew", "SqliteMemoryStorePlugin"]
+__all__ = [
+    "DEFAULT_FILE",
+    "SCHEMA",
+    "SCHEMA_VERSION",
+    "MemorySchemaTooNew",
+    "SqliteMemoryStorePlugin",
+]
 
 #: Where the file goes when the profile does not say: the same home the session store
 #: and the distillation watermark use, so one deployment has one directory to back up.
@@ -182,15 +188,14 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 
+
 #: The statuses a record can be recalled *from*. Kept as a tuple, sorted, because the
 #: same values are spliced into two SQL statements and a set's iteration order is not
 #: something to put in a query.
 _LIVE_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in RECALLABLE_STATUSES))
 #: What a resolution compares: an ACTIVE or CONFLICTED record is a belief the system
 #: holds. A PROPOSED one is a candidate (`seams/memory.py::COMPETING_STATUSES`).
-_COMPETING_STATUSES: tuple[str, ...] = tuple(
-    sorted(status.value for status in COMPETING_STATUSES)
-)
+_COMPETING_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in COMPETING_STATUSES))
 #: The statuses ``prune`` may delete — terminal ones only (`seams/memory.py::PRUNABLE_STATUSES`).
 _PRUNABLE_STATUSES: tuple[str, ...] = tuple(sorted(status.value for status in PRUNABLE_STATUSES))
 
@@ -276,9 +281,7 @@ def encode_record(record: MemoryRecord) -> str:
                 "kind": provenance.kind.value,
                 "session_id": provenance.session_id,
                 "repo": _repo_json(provenance.repo),
-                "evidence_refs": [
-                    [ref.session_id, ref.seq] for ref in provenance.evidence_refs
-                ],
+                "evidence_refs": [[ref.session_id, ref.seq] for ref in provenance.evidence_refs],
             },
         },
         ensure_ascii=False,
@@ -599,9 +602,7 @@ class SqliteMemoryStorePlugin(PluginService):
         if record is None or record.status is not MemoryStatus.ACTIVE:
             return ()
         neighbours = self._neighbours(record)
-        changed, decisions = plan_resolution(
-            record, siblings_of(neighbours, record), now=moment
-        )
+        changed, decisions = plan_resolution(record, siblings_of(neighbours, record), now=moment)
         for updated in changed:
             self._put(updated)
         current = self._load(memory_id) or record

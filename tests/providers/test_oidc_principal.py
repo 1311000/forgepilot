@@ -95,9 +95,7 @@ def token(
     return f"{signing_input}.{_b64(signature.digest())}"
 
 
-async def booted(
-    *, config: Mapping[str, Any] | None = None
-):
+async def booted(*, config: Mapping[str, Any] | None = None):
     """Load the provider the way a profile would."""
     root = create_root()
     fiber = await root.plugin(OidcPrincipalPlugin, dict(config or CONFIG))
@@ -194,9 +192,7 @@ async def test_an_unsupported_algorithm_is_refused_by_name() -> None:
     """The refusal has to say *which* algorithm, or a deployment cannot configure it."""
     root, fibers = await booted()
     with pytest.raises(AuthenticationFailed) as raised:
-        root.principal.resolve(
-            token(header={"alg": "RS256", "typ": "JWT"})
-        )
+        root.principal.resolve(token(header={"alg": "RS256", "typ": "JWT"}))
     assert "RS256" in str(raised.value)
     assert "HS256" in str(raised.value)
     await close(fibers)

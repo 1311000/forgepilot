@@ -138,9 +138,7 @@ async def test_the_prompt_lands_on_the_stream_before_the_tool_runs(live_api) -> 
                 "the file was written before the approval was answered"
             )
 
-            call_id = next(
-                f.data["data"]["callId"] for f in frames if f.event == "approval/asked"
-            )
+            call_id = next(f.data["data"]["callId"] for f in frames if f.event == "approval/asked")
             answered = await live_api.client.post(
                 f"/approvals/{call_id}-approval",
                 json={"decision": "allowed-once"},
@@ -347,9 +345,7 @@ async def test_a_malformed_cursor_is_refused_rather_than_ignored(api, session_id
 # ---------------------------------------------------------------------------
 # What survives a restart, and what must not
 # ---------------------------------------------------------------------------
-async def test_a_prompt_outlives_a_restart_but_its_answer_cannot(
-    api, session_id
-) -> None:
+async def test_a_prompt_outlives_a_restart_but_its_answer_cannot(api, session_id) -> None:
     """The log is what survives; a pending question is not.
 
     This is the case the ``approval/asked`` flush exists for. Reopen the session

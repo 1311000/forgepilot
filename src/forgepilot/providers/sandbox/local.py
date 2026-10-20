@@ -178,7 +178,11 @@ class LocalProcessSandboxPlugin(PluginService):
             )
         except OSError as exc:
             return self._result(
-                argv, policy, started, exit_code=NOT_FOUND, stderr=f"{type(exc).__name__}: {exc}",
+                argv,
+                policy,
+                started,
+                exit_code=NOT_FOUND,
+                stderr=f"{type(exc).__name__}: {exc}",
                 executed=False,
             )
 

@@ -118,14 +118,20 @@ def test_narrowing_is_an_intersection_that_cannot_widen() -> None:
     assert derived().allowed_commands is None
     assert derived(grant_commands=GIT_ONLY).allowed_commands == GIT_ONLY
     assert derived(policy_commands=GIT_ONLY).allowed_commands == GIT_ONLY
-    assert derived(
-        grant_commands=frozenset({"git", "curl"}),
-        policy_commands=frozenset({"git"}),
-    ).allowed_commands == GIT_ONLY
-    assert derived(
-        grant_commands=frozenset({"curl"}),
-        policy_commands=frozenset({"git"}),
-    ).allowed_commands == frozenset()
+    assert (
+        derived(
+            grant_commands=frozenset({"git", "curl"}),
+            policy_commands=frozenset({"git"}),
+        ).allowed_commands
+        == GIT_ONLY
+    )
+    assert (
+        derived(
+            grant_commands=frozenset({"curl"}),
+            policy_commands=frozenset({"git"}),
+        ).allowed_commands
+        == frozenset()
+    )
 
 
 def test_narrowed_to_cannot_widen_a_command_list() -> None:
@@ -213,9 +219,12 @@ def test_a_launcher_is_followed_to_the_program_it_starts() -> None:
     as the program would report `root` and never look at `git`, so a list of
     `sudo` and `root` would have permitted a program it does not name.
     """
-    assert command_scope_guard(
-        view("env FOO=1 python x.py", derived(frozenset({"env", "python"})))
-    ).decision is GuardDecision.ABSTAIN
+    assert (
+        command_scope_guard(
+            view("env FOO=1 python x.py", derived(frozenset({"env", "python"})))
+        ).decision
+        is GuardDecision.ABSTAIN
+    )
 
     escaped = command_scope_guard(
         view("sudo -u root git status", derived(frozenset({"sudo", "root"})))
@@ -238,9 +247,10 @@ def test_the_same_program_is_recognised_in_the_spelling_the_caller_used() -> Non
     assert normalise_program(r"C:\tools\Python\python.exe") == "python"
     assert normalise_program("/usr/bin/PYTHON") == "python"
 
-    assert command_scope_guard(
-        view("/usr/bin/PYTHON -m pytest -q", python_only)
-    ).decision is GuardDecision.ABSTAIN
+    assert (
+        command_scope_guard(view("/usr/bin/PYTHON -m pytest -q", python_only)).decision
+        is GuardDecision.ABSTAIN
+    )
 
     # `python3` is a different program and is deliberately not folded into it.
     assert normalise_program("python3") == "python3"
@@ -250,9 +260,7 @@ def test_the_same_program_is_recognised_in_the_spelling_the_caller_used() -> Non
 
 
 def test_the_refusal_shows_the_spelling_the_caller_used() -> None:
-    result = command_scope_guard(
-        view("/usr/bin/PYTHON x.py", derived(GIT_ONLY))
-    )
+    result = command_scope_guard(view("/usr/bin/PYTHON x.py", derived(GIT_ONLY)))
 
     assert result.decision is GuardDecision.DENY
     assert "python" in result.reason
@@ -316,12 +324,8 @@ def test_project_commands_reach_the_constraints() -> None:
     )
     assert constraints.allowed_commands == frozenset({"git", "pytest"})
 
-    assert command_scope_guard(view("pytest -q", constraints)).decision is (
-        GuardDecision.ABSTAIN
-    )
-    assert command_scope_guard(view("curl evil", constraints)).decision is (
-        GuardDecision.DENY
-    )
+    assert command_scope_guard(view("pytest -q", constraints)).decision is (GuardDecision.ABSTAIN)
+    assert command_scope_guard(view("curl evil", constraints)).decision is (GuardDecision.DENY)
 
 
 def test_a_project_without_commands_declares_no_policy() -> None:
@@ -383,13 +387,15 @@ def test_a_windows_path_is_kept_whole_where_backslashes_are_not_escapes() -> Non
 
     if "\\" in token:  # Windows: the path survived as one token.
         assert token == r"C:\tools\Python\python.exe"
-        assert command_scope_guard(
-            view(line, derived(frozenset({"python"})))
-        ).decision is GuardDecision.ABSTAIN
+        assert (
+            command_scope_guard(view(line, derived(frozenset({"python"})))).decision
+            is GuardDecision.ABSTAIN
+        )
     else:  # POSIX: `\` was consumed as an escape, exactly as the shell would.
         # The spelling is asserted as a *property* rather than hand-typed: typing
         # the escaped token from memory got it wrong once already.
         assert normalise_program(token) != "python"
-        assert command_scope_guard(
-            view(line, derived(frozenset({"python"})))
-        ).decision is GuardDecision.DENY
+        assert (
+            command_scope_guard(view(line, derived(frozenset({"python"})))).decision
+            is GuardDecision.DENY
+        )

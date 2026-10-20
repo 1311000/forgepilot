@@ -136,9 +136,7 @@ async def _next(queue: asyncio.Queue, stopping: asyncio.Event | None) -> Any | N
     getter = asyncio.ensure_future(queue.get())
     stopper = asyncio.ensure_future(stopping.wait())
     try:
-        done, _pending = await asyncio.wait(
-            {getter, stopper}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _pending = await asyncio.wait({getter, stopper}, return_when=asyncio.FIRST_COMPLETED)
     finally:
         for task in (getter, stopper):
             if not task.done():

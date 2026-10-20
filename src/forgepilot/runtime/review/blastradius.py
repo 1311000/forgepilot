@@ -143,9 +143,9 @@ def _extract_ast(source: str, path: str) -> tuple[SymbolInfo, ...]:
             if name_node is not None:
                 found.append(
                     SymbolInfo(
-                        name=source.encode("utf-8")[name_node.start_byte : name_node.end_byte].decode(
-                            "utf-8", errors="replace"
-                        ),
+                        name=source.encode("utf-8")[
+                            name_node.start_byte : name_node.end_byte
+                        ].decode("utf-8", errors="replace"),
                         kind="definition",
                         path=path,
                         line=name_node.start_point[0] + 1,
@@ -162,7 +162,9 @@ def extract_symbols(
     source: str, path: str, *, backend: AnalysisBackend | None = None
 ) -> tuple[SymbolInfo, ...]:
     chosen = backend or analysis_backend()
-    return _extract_ast(source, path) if chosen is AnalysisBackend.AST else _extract_text(source, path)
+    return (
+        _extract_ast(source, path) if chosen is AnalysisBackend.AST else _extract_text(source, path)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +195,10 @@ def _references_ast(name: str, source: str) -> tuple[int, ...]:
     lines: list[int] = []
 
     def walk(node) -> None:
-        if node.type == "identifier" and source.encode("utf-8")[node.start_byte : node.end_byte] == target:
+        if (
+            node.type == "identifier"
+            and source.encode("utf-8")[node.start_byte : node.end_byte] == target
+        ):
             lines.append(node.start_point[0] + 1)
         for child in node.children:
             walk(child)
@@ -219,7 +224,9 @@ def find_references(
         per_file: list[int] = []
         for name in names:
             per_file.extend(
-                _references_ast(name, source) if chosen is AnalysisBackend.AST else _references_text(name, source)
+                _references_ast(name, source)
+                if chosen is AnalysisBackend.AST
+                else _references_text(name, source)
             )
         for line in sorted(set(per_file)):
             if (path, line) in seen:
@@ -286,7 +293,11 @@ def analyse_blast_radius(
     # pad the report with noise.
     affected = (
         find_references(
-            searchable, candidates, repo=repo or RepoRef(host="", namespace="", name=""), ref=ref, backend=backend
+            searchable,
+            candidates,
+            repo=repo or RepoRef(host="", namespace="", name=""),
+            ref=ref,
+            backend=backend,
         )
         if candidates
         else ()

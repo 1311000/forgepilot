@@ -27,7 +27,10 @@ async def seeded(store, sid) -> Session:
     await session.turn_start(TurnId(1))
     await session.user_message(TurnId(1), "why does login retry forever?")
     await session.assistant_message(
-        TurnId(1), 1, "let me look", tool_calls=[{"callId": "c1", "name": "code_search", "arguments": "{}"}]
+        TurnId(1),
+        1,
+        "let me look",
+        tool_calls=[{"callId": "c1", "name": "code_search", "arguments": "{}"}],
     )
     await session.tool_call(TurnId(1), 1, call_id="c1", name="code_search", arguments_json="{}")
     await session.tool_result(TurnId(1), 1, call_id="c1", content="src/login.py:41 retry_forever()")
@@ -207,15 +210,11 @@ async def test_a_surface_event_with_no_renderer_is_refused(created) -> None:
     """Better to fail than to show the model less than the log claims it saw."""
     store, sid = created
     session = await Session.open(store, sid)
-    await session.append(
-        EventKind.TASK_STATE, {"state": "running"}, surface=SurfaceOp.APPEND
-    )
+    await session.append(EventKind.TASK_STATE, {"state": "running"}, surface=SurfaceOp.APPEND)
     await session.flush()
 
     with pytest.raises(ValueError, match="no rendering"):
-        await build_request(
-            session, model="m", system_sections=(), turn=TurnId(1), step=1
-        )
+        await build_request(session, model="m", system_sections=(), turn=TurnId(1), step=1)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +247,10 @@ async def two_tool_turns(store, sid) -> Session:
     for turn, call in ((TurnId(1), "c1"), (TurnId(2), "c2")):
         await session.turn_start(turn)
         await session.assistant_message(
-            turn, 1, f"looking {call}", tool_calls=[{"callId": call, "name": "read_file", "arguments": "{}"}]
+            turn,
+            1,
+            f"looking {call}",
+            tool_calls=[{"callId": call, "name": "read_file", "arguments": "{}"}],
         )
         await session.tool_call(turn, 1, call_id=call, name="read_file", arguments_json="{}")
         await session.tool_result(turn, 1, call_id=call, content=f"{call}: a very large file body")
@@ -276,7 +278,8 @@ async def test_masking_one_tool_result_keeps_it_next_to_its_call(created) -> Non
     """
     session = await two_tool_turns(*created)
     result_seq = next(
-        e.seq for e in session.committed_events
+        e.seq
+        for e in session.committed_events
         if e.kind == EventKind.TOOL_RESULT and e.data.get("callId") == "c1"
     )
     await session.append(
@@ -332,12 +335,17 @@ async def test_a_summary_over_a_masked_region_absorbs_the_placeholders(created) 
     """
     session = await two_tool_turns(*created)
     first_result = next(
-        e.seq for e in session.committed_events
+        e.seq
+        for e in session.committed_events
         if e.kind == EventKind.TOOL_RESULT and e.data.get("callId") == "c1"
     )
     await session.append(
         EventKind.TOOL_RESULT,
-        {"callId": "c1", "content": "[tool output elided]", "supersedes": [first_result, first_result]},
+        {
+            "callId": "c1",
+            "content": "[tool output elided]",
+            "supersedes": [first_result, first_result],
+        },
         surface=SurfaceOp.REPLACE,
     )
     await session.flush()

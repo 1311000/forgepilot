@@ -36,7 +36,9 @@ def layer(name: str, *rows: dict) -> PatchLayer:
 
 @pytest.fixture
 def base() -> PatchLayer:
-    return layer("bundle:base", {"id": "llm", "plugin": "pkg.llm:Base", "config": {"model": "base-1"}})
+    return layer(
+        "bundle:base", {"id": "llm", "plugin": "pkg.llm:Base", "config": {"model": "base-1"}}
+    )
 
 
 @pytest.fixture
@@ -71,7 +73,9 @@ def test_override_replaces_config_wholesale_rather_than_merging() -> None:
     This matches the reference design and keeps "what is the effective value of
     key X" answerable from a single layer instead of a fold across several.
     """
-    base = layer("bundle:base", {"id": "sandbox", "config": {"mode": "workspace-write", "network": "deny"}})
+    base = layer(
+        "bundle:base", {"id": "sandbox", "config": {"mode": "workspace-write", "network": "deny"}}
+    )
     overlay = layer("user", {"id": "sandbox", "config": {"mode": "read-only"}})
 
     row = apply_layers([base, overlay]).row("sandbox")
@@ -163,10 +167,16 @@ def test_boot_registers_exactly_the_resolved_rows(base: PatchLayer, overlay: Pat
 
 
 def test_dump_marks_disabled_rows_without_registering_them() -> None:
-    cfg = apply_layers([layer("a", {"id": "on", "plugin": "p:X"}, {"id": "off", "plugin": "p:Y", "disabled": True})])
+    cfg = apply_layers(
+        [
+            layer(
+                "a", {"id": "on", "plugin": "p:X"}, {"id": "off", "plugin": "p:Y", "disabled": True}
+            )
+        ]
+    )
     registered: list[str] = []
 
-    cfg.materialize(create_root(), resolver=lambda spec: (lambda _c, _cfg: registered.append(spec)))
+    cfg.materialize(create_root(), resolver=lambda spec: lambda _c, _cfg: registered.append(spec))
 
     assert registered == ["p:X"]
     assert "disabled: true" in cfg.dump()

@@ -65,7 +65,9 @@ def _imports(path: Path) -> list[Import]:
                 base = ".".join(parts[: max(keep, 0)])
                 target = f"{base}.{node.module}" if node.module else base
             found.append(
-                Import(target, node.lineno, f"from {'.' * node.level}{node.module or ''} import ...")
+                Import(
+                    target, node.lineno, f"from {'.' * node.level}{node.module or ''} import ..."
+                )
             )
     return found
 

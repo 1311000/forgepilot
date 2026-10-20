@@ -84,7 +84,9 @@ def _message_payload(message: ChatMessage) -> dict[str, Any]:
     return {"role": str(message.role), "content": message.content or ""}
 
 
-def to_payload(request: ChatRequest, *, stream: bool = True, include_usage: bool = True) -> dict[str, Any]:
+def to_payload(
+    request: ChatRequest, *, stream: bool = True, include_usage: bool = True
+) -> dict[str, Any]:
     """Build the ``/chat/completions`` body.
 
     System sections are joined into a single leading system message: the wire
@@ -193,9 +195,7 @@ def chunk_from_delta(event: Mapping[str, Any]) -> tuple[list[StreamChunk], Usage
     return chunks, usage
 
 
-def apply_price(
-    usage: Usage, *, price_per_1k_input: float, price_per_1k_output: float
-) -> Usage:
+def apply_price(usage: Usage, *, price_per_1k_input: float, price_per_1k_output: float) -> Usage:
     """``usage`` with its cost filled in. Pure, so the arithmetic has a test.
 
     Zero rates return the usage untouched, which is the honest answer: a

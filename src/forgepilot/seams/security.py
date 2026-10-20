@@ -234,9 +234,7 @@ class ExecutionConstraints:
         if repo in self.allowed_repos:
             return True
         slug = repo.slug
-        return any(
-            _prefix_matches(prefix, slug) for prefix in self.allowed_repo_prefixes
-        )
+        return any(_prefix_matches(prefix, slug) for prefix in self.allowed_repo_prefixes)
 
     def allows_operation(self, operation: Operation) -> bool:
         return operation in self.permitted_operations
@@ -275,8 +273,10 @@ class ExecutionConstraints:
             # a rule so that "everything here" is expressible, which `"."` — the
             # obvious spelling, and the one a project config reaches for first —
             # previously was not.
-            if allowed_norm == "" or candidate == allowed_norm or candidate.startswith(
-                allowed_norm.rstrip("/") + "/"
+            if (
+                allowed_norm == ""
+                or candidate == allowed_norm
+                or candidate.startswith(allowed_norm.rstrip("/") + "/")
             ):
                 return True
         return False
@@ -295,8 +295,7 @@ class ExecutionConstraints:
         """
         if other.principal_id != self.principal_id:
             raise ValueError(
-                "cannot narrow across principals: "
-                f"{self.principal_id!r} vs {other.principal_id!r}"
+                f"cannot narrow across principals: {self.principal_id!r} vs {other.principal_id!r}"
             )
         return ExecutionConstraints(
             principal_id=self.principal_id,
@@ -304,9 +303,7 @@ class ExecutionConstraints:
             allowed_repos=self.allowed_repos & other.allowed_repos,
             allowed_repo_prefixes=self.allowed_repo_prefixes & other.allowed_repo_prefixes,
             permitted_operations=self.permitted_operations & other.permitted_operations,
-            writable_paths=tuple(
-                p for p in self.writable_paths if other.allows_write_to(p)
-            ),
+            writable_paths=tuple(p for p in self.writable_paths if other.allows_write_to(p)),
             allowed_commands=narrow_commands(self.allowed_commands, other.allowed_commands),
             network=(
                 NetworkAccess.ALLOW
@@ -429,4 +426,3 @@ def narrow_commands(
     if policy is None:
         return grant
     return grant & policy
-

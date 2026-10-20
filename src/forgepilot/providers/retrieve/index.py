@@ -120,8 +120,7 @@ def load_index(path: Path) -> tuple[tuple[IndexedFile, ...], tuple[SymbolHit, ..
             kind = SymbolKind(str(entry["kind"]))
         except ValueError:
             raise ValueError(
-                f"{where}: {entry['kind']!r} is not one of "
-                f"{[k.value for k in SymbolKind]}"
+                f"{where}: {entry['kind']!r} is not one of {[k.value for k in SymbolKind]}"
             ) from None
         symbols.append(
             SymbolHit(
@@ -204,9 +203,7 @@ class IndexCorpus:
                 self.denied_repo_requests += 1
         return permitted
 
-    def _refs_to_serve(
-        self, permitted: set[RepoRef], requested: str
-    ) -> set[tuple[RepoRef, str]]:
+    def _refs_to_serve(self, permitted: set[RepoRef], requested: str) -> set[tuple[RepoRef, str]]:
         """The ``(repo, ref)`` pairs to search: what was asked for where it exists, else held.
 
         ⚠️ **The seam's own sentence, rather than a convenience.** It says a hit "may come from
@@ -266,9 +263,7 @@ class IndexCorpus:
                     continue
                 hits.append(
                     CodeHit(
-                        location=CodeRef(
-                            repo=indexed.repo, path=indexed.path, ref=indexed.ref
-                        ),
+                        location=CodeRef(repo=indexed.repo, path=indexed.path, ref=indexed.ref),
                         line=line_no,
                         column=match.start() + 1,
                         text=line,
@@ -343,9 +338,7 @@ class IndexCorpus:
                     truncated=end < span.end,
                 )
 
-        raise FileNotFoundError(
-            f"the index has no {location.repo.slug}:{location.path}@{ref}"
-        )
+        raise FileNotFoundError(f"the index has no {location.repo.slug}:{location.path}@{ref}")
 
 
 class CodeIndexRetrieverPlugin(PluginService):
@@ -366,9 +359,7 @@ class CodeIndexRetrieverPlugin(PluginService):
                 "and defaulting to one would be inventing a deployment's data."
             )
         self.index_path = Path(str(configured))
-        self.corpus = IndexCorpus.from_path(
-            self.index_path, max_hits=int(cfg.get("max_hits", 200))
-        )
+        self.corpus = IndexCorpus.from_path(self.index_path, max_hits=int(cfg.get("max_hits", 200)))
 
         super().__init__(ctx)
 

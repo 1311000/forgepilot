@@ -149,9 +149,7 @@ def _group_rights(name: str, raw: Any) -> GroupRights:
         repos=frozenset(
             _repo_ref(text) for text in _strings(raw.get("repos"), where=f"{where}.repos")
         ),
-        repo_prefixes=frozenset(
-            _strings(raw.get("repo_prefixes"), where=f"{where}.repo_prefixes")
-        ),
+        repo_prefixes=frozenset(_strings(raw.get("repo_prefixes"), where=f"{where}.repo_prefixes")),
         writable_paths=_strings(raw.get("writable_paths"), where=f"{where}.writable_paths"),
         commands=commands,
         network=NetworkAccess(str(raw.get("network", "deny"))),

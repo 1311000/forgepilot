@@ -159,11 +159,7 @@ def result_for(*, escaped: bool, seq: int = 2):
     """
     from forgepilot.seams.session import SessionEvent, SurfaceOp
 
-    meta = (
-        {"executed": True, "exit_code": 0}
-        if escaped
-        else {"executed": False, "exit_code": 126}
-    )
+    meta = {"executed": True, "exit_code": 0} if escaped else {"executed": False, "exit_code": 126}
     return SessionEvent(
         seq=seq,
         kind="tool/result",
@@ -207,9 +203,10 @@ def test_a_contained_row_cannot_escape_by_reaching_outside() -> None:
     otherwise — so a command that ran under it reached a mask.
     """
     events = [run_call(f'ls -la "{FORGE}"'), result_for(escaped=True)]
-    assert H.escaped_workspace(
-        events, scratch=SCRATCH, interpreter=INTERPRETER, reads_confined=True
-    ) == ()
+    assert (
+        H.escaped_workspace(events, scratch=SCRATCH, interpreter=INTERPRETER, reads_confined=True)
+        == ()
+    )
     # The attempt is still recorded — it is the interesting number for this task.
     assert H.tool_calls_that_left_the_workspace(
         events, scratch=SCRATCH, interpreter=INTERPRETER, reads_confined=True

@@ -98,7 +98,9 @@ class PolicyServicePlugin(PluginService):
                 f"model, it is not a permission and must not be treated as one."
             )
         if resource is not None and not isinstance(resource, ResourceRef):
-            raise TypeError(f"decide() requires a ResourceRef or None, got {type(resource).__name__}")
+            raise TypeError(
+                f"decide() requires a ResourceRef or None, got {type(resource).__name__}"
+            )
 
         if operation in self._ask_operations:
             return PolicyDecision.ASK

@@ -74,7 +74,11 @@ def assemble_system_sections(
     project_lines = [f"Project: {project.name}"]
     if project.default_branch:
         project_lines.append(f"Default branch: {project.default_branch}")
-    for label, commands in (("Build", project.build), ("Test", project.test), ("Lint", project.lint)):
+    for label, commands in (
+        ("Build", project.build),
+        ("Test", project.test),
+        ("Lint", project.lint),
+    ):
         if commands:
             project_lines.append(f"{label}: " + " && ".join(commands))
     if project.notes:
@@ -94,9 +98,7 @@ def assemble_system_sections(
     else:
         scope_lines.append("Permitted operations: none")
     if constraints.allowed_repo_prefixes:
-        scope_lines.append(
-            "Repositories: " + ", ".join(sorted(constraints.allowed_repo_prefixes))
-        )
+        scope_lines.append("Repositories: " + ", ".join(sorted(constraints.allowed_repo_prefixes)))
     if constraints.writable_paths:
         scope_lines.append("Writable paths: " + ", ".join(constraints.writable_paths))
     else:
@@ -246,9 +248,7 @@ def compose_task_brief(
     missing = getattr(preprocessed, "missing", ())
     if missing:
         lines.append("")
-        lines.append(
-            "## Missing before this can proceed: " + ", ".join(str(m) for m in missing)
-        )
+        lines.append("## Missing before this can proceed: " + ", ".join(str(m) for m in missing))
 
     if understanding is not None:
         lines.append("")

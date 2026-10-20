@@ -307,9 +307,7 @@ async def distill(
         # this boundary, and both must leave the log with a reason rather than a
         # traceback in the middle of a maintenance pass. The message may quote a
         # remote response; the redaction gate is what keeps a credential out of it.
-        return await _fail(
-            session, attempt, "llm", f"{type(exc).__name__}: {exc}"
-        )
+        return await _fail(session, attempt, "llm", f"{type(exc).__name__}: {exc}")
 
     usage = response.usage
     attempt = replace(
@@ -378,9 +376,7 @@ async def distill(
             )
             continue
 
-        witness = witness_for(
-            events, candidate.evidence_seqs, session_id=session_id, repo=repo
-        )
+        witness = witness_for(events, candidate.evidence_seqs, session_id=session_id, repo=repo)
         memory_candidate = MemoryCandidate(
             text=candidate.text,
             scope=MemoryScope.REPO,
@@ -418,9 +414,7 @@ async def distill(
                 memory_id = str(await memory.write(memory_candidate, provenance))
                 written.append(memory_id)
             else:
-                memory_id = str(
-                    await memory.admit_provisional(memory_candidate, provenance)
-                )
+                memory_id = str(await memory.admit_provisional(memory_candidate, provenance))
                 proposed.append(memory_id)
         except ForgePilotError as exc:
             # The store's own rules refused it. One refused claim must not abort a
@@ -560,17 +554,16 @@ def _digest_line(event: SessionEvent) -> str | None:
     if kind == EventKind.USER_MESSAGE:
         return f"{event.seq} user: {_clip(str(event.data.get('text', '')))}"
     if kind == EventKind.TASK_CHECK:
-        status = "COULD NOT RUN" if event.data.get("couldNotRun") else (
-            "passed" if event.data.get("passed") else "failed"
+        status = (
+            "COULD NOT RUN"
+            if event.data.get("couldNotRun")
+            else ("passed" if event.data.get("passed") else "failed")
         )
         command = _clip(str(event.data.get("command", "")) or "a check", limit=120)
         return f"{event.seq} check [{status}]: {command}"
     if kind == EventKind.TOOL_RESULT:
         failed = " ERROR" if event.data.get("isError") else ""
-        return (
-            f"{event.seq} tool result{failed}: "
-            f"{_clip(str(event.data.get('content', '')))}"
-        )
+        return f"{event.seq} tool result{failed}: {_clip(str(event.data.get('content', '')))}"
     if kind == EventKind.TASK_STATE:
         return (
             f"{event.seq} task state: "
@@ -612,9 +605,7 @@ async def _fail(
     session: Session, report: DistillationReport, code: str, detail: str
 ) -> DistillationReport:
     """Record a run-level failure and close the run."""
-    failed = replace(
-        report, failed=code, detail=detail, finished_at=datetime.now(UTC)
-    )
+    failed = replace(report, failed=code, detail=detail, finished_at=datetime.now(UTC))
     await session.append(
         EventKind.DISTILLATION_FAILED,
         {"session": report.session_id, "code": code, "detail": detail},

@@ -49,7 +49,9 @@ class TaskState(StrEnum):
 
 
 ALLOWED_TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = {
-    TaskState.QUEUED: frozenset({TaskState.RUNNING, TaskState.AWAITING_INFO, TaskState.CANCELLED, TaskState.FAILED}),
+    TaskState.QUEUED: frozenset(
+        {TaskState.RUNNING, TaskState.AWAITING_INFO, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     TaskState.AWAITING_INFO: frozenset({TaskState.RUNNING, TaskState.CANCELLED, TaskState.FAILED}),
     TaskState.RUNNING: frozenset(
         {

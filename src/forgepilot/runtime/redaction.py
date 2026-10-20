@@ -598,7 +598,9 @@ class Redactor:
                 # Already redacted. Redacting a placeholder again would turn a
                 # stable, auditable marker into a fingerprint of the marker.
                 return match.group(0)
-            replacement = rule.rewrite(match) if rule.rewrite is not None else _placeholder(rule.name)
+            replacement = (
+                rule.rewrite(match) if rule.rewrite is not None else _placeholder(rule.name)
+            )
             if replacement == match.group(0):
                 return replacement
             marks.setdefault(rule.name, []).append(self.fingerprint(value))

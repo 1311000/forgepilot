@@ -267,8 +267,6 @@ def test_the_extraction_gets_its_own_answer(task, bootable) -> None:
     _script_the_extraction(root)
 
     assert root.llm.remaining == 1, "the loop's leftovers are still in front of it"
-    reply = asyncio.run(
-        root.llm.complete(ChatRequest(model="replay-1", system=(), messages=()))
-    )
+    reply = asyncio.run(root.llm.complete(ChatRequest(model="replay-1", system=(), messages=())))
     assert reply.message.content == "[]", "the honest scripted answer is 'nothing'"
     assert root.llm.remaining == 0

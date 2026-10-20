@@ -79,9 +79,7 @@ async def workspace(origin: Path, tmp_path: Path):
 
     root = create_root()
     fiber = await root.plugin(
-        resolve_plugin(
-            "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"
-        ),
+        resolve_plugin("forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"),
         {"repos": {SLUG: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
     )
     try:
@@ -166,9 +164,7 @@ async def test_one_session_two_repositories_gets_two_worktrees_and_two_branches(
 
     root = create_root()
     fiber = await root.plugin(
-        resolve_plugin(
-            "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"
-        ),
+        resolve_plugin("forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"),
         {
             "repos": {SLUG: str(origin), other_repo.slug: str(other)},
             "worktree_root": str(tmp_path / "worktrees"),
@@ -335,8 +331,16 @@ async def test_a_change_the_agent_committed_itself_is_still_delivered(workspace)
 
     handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
     (handle.root / "src" / "app.py").write_text("def main():\n    return 7\n", encoding="utf-8")
-    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
-        "commit", "-am", "fix: done by the tool", cwd=handle.root)
+    git(
+        "-c",
+        "user.name=the agent",
+        "-c",
+        "user.email=agent@example.test",
+        "commit",
+        "-am",
+        "fix: done by the tool",
+        cwd=handle.root,
+    )
     theirs = git("rev-parse", "HEAD", cwd=handle.root).strip()
 
     ref = await workspace.commit(
@@ -363,11 +367,27 @@ async def test_a_commit_that_changes_nothing_back_is_still_refused(workspace) ->
     handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
     original = (handle.root / "src" / "app.py").read_text(encoding="utf-8")
     (handle.root / "src" / "app.py").write_text("def main():\n    return 7\n", encoding="utf-8")
-    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
-        "commit", "-am", "fix: attempt", cwd=handle.root)
+    git(
+        "-c",
+        "user.name=the agent",
+        "-c",
+        "user.email=agent@example.test",
+        "commit",
+        "-am",
+        "fix: attempt",
+        cwd=handle.root,
+    )
     (handle.root / "src" / "app.py").write_text(original, encoding="utf-8")
-    git("-c", "user.name=the agent", "-c", "user.email=agent@example.test",
-        "commit", "-am", "revert: undo it", cwd=handle.root)
+    git(
+        "-c",
+        "user.name=the agent",
+        "-c",
+        "user.email=agent@example.test",
+        "commit",
+        "-am",
+        "revert: undo it",
+        cwd=handle.root,
+    )
 
     with pytest.raises(NothingToCommit):
         await workspace.commit(
@@ -401,9 +421,7 @@ async def test_commit_refuses_when_the_caller_may_not_write_code(workspace) -> N
     (handle.root / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
 
     with pytest.raises(PermissionError, match="write_code"):
-        await workspace.commit(
-            handle, "sneaky", CommitAuthor(name="x", email="x@y.z"), read_only
-        )
+        await workspace.commit(handle, "sneaky", CommitAuthor(name="x", email="x@y.z"), read_only)
 
     assert git("log", "--format=%s", cwd=handle.root).strip() == "initial", (
         "a commit was written despite the refusal"
@@ -431,9 +449,7 @@ async def test_commit_refuses_a_repository_the_caller_cannot_reach(workspace) ->
     handle = await workspace.prepare(REPO, "main", SessionId("s-1"))
 
     with pytest.raises(PermissionError, match="not permitted"):
-        await workspace.commit(
-            handle, "x", CommitAuthor(name="x", email="x@y.z"), elsewhere
-        )
+        await workspace.commit(handle, "x", CommitAuthor(name="x", email="x@y.z"), elsewhere)
 
 
 async def test_a_branch_left_by_an_earlier_run_is_reused_not_fatal(
@@ -484,9 +500,7 @@ async def fresh_workspace(origin: Path, tmp_path: Path):
 
     root = create_root()
     await root.plugin(
-        resolve_plugin(
-            "forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"
-        ),
+        resolve_plugin("forgepilot.providers.workspace.git_worktree:GitWorktreeWorkspacePlugin"),
         {"repos": {SLUG: str(origin)}, "worktree_root": str(tmp_path / "worktrees")},
     )
     return root.workspace
@@ -502,7 +516,9 @@ async def test_restore_puts_a_modified_file_back_to_the_ref(workspace) -> None:
     thing. Restoring is what turns that from a green run into a red one.
     """
     handle = await workspace.prepare(REPO, "main", SessionId("s-restore"))
-    (handle.root / "src" / "app.py").write_text("def main():\n    return 'weakened'\n", encoding="utf-8")
+    (handle.root / "src" / "app.py").write_text(
+        "def main():\n    return 'weakened'\n", encoding="utf-8"
+    )
 
     await workspace.restore(handle, "main", ["src/app.py"])
 
@@ -534,7 +550,9 @@ async def test_restore_leaves_paths_it_was_not_asked_about_alone(workspace) -> N
     code that does not contain the fix."""
     handle = await workspace.prepare(REPO, "main", SessionId("s-scoped"))
     (handle.root / "src" / "app.py").write_text("the fix\n", encoding="utf-8")
-    (handle.root / "src" / "test_other.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    (handle.root / "src" / "test_other.py").write_text(
+        "def test_x():\n    pass\n", encoding="utf-8"
+    )
 
     await workspace.restore(handle, "main", ["src/test_other.py"])
 

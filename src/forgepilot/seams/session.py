@@ -89,6 +89,7 @@ class LossyEventPayload(ForgePilotError):
     which is the state the *model-visible means logged* invariant forbids.
     """
 
+
 SERVICE_NAME = "sessionPersistence"
 
 #: Bumped when the on-disk event shape changes incompatibly. Stored in the

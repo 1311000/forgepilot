@@ -88,9 +88,7 @@ def test_a_sandbox_that_cannot_run_what_it_reports_is_a_failure(
 # ---------------------------------------------------------------------------
 # The passing path — pinned on any host, so a regression is not mistaken for a machine
 # ---------------------------------------------------------------------------
-def test_a_host_that_can_contain_passes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_a_host_that_can_contain_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``exit 0`` is the whole contract, and this is the only way to pin it here."""
     patch = a_sandbox_patch(
         tmp_path,

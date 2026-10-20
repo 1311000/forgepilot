@@ -37,6 +37,7 @@ def the_example_env(tmp_path: Path) -> None:
     failure but not the one under test."""
     H.export_environment(FORGE, tmp_path / "worktrees")
 
+
 TASK_ROW = {
     "id": "retriever",
     "plugin": "forgepilot.providers.retrieve.index:CodeIndexRetrieverPlugin",

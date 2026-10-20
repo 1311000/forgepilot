@@ -88,9 +88,7 @@ def ev(seq: int, session: SessionId = SESSION) -> EventRef:
     return EventRef(session_id=session, seq=seq)
 
 
-def constraints(
-    tenant: TenantId = ACME_TENANT, *repos: RepoRef
-) -> ExecutionConstraints:
+def constraints(tenant: TenantId = ACME_TENANT, *repos: RepoRef) -> ExecutionConstraints:
     principal = Principal(principal_id=PrincipalId("alice"), tenant_id=tenant)
     return ExecutionConstraints.for_principal(
         principal,
@@ -154,7 +152,9 @@ async def test_confidence_is_computed_from_the_evidence_not_from_the_model(conta
     """
     memory = container.memory
 
-    one_effect = await memory.write(candidate(text="the suite runs on pytest"), provenance(ProvenanceKind.TOOL_OBSERVED, ev(1)))
+    one_effect = await memory.write(
+        candidate(text="the suite runs on pytest"), provenance(ProvenanceKind.TOOL_OBSERVED, ev(1))
+    )
     two_effects = await memory.write(
         candidate(text="the suite runs with pytest-xdist", subject="suite runner"),
         provenance(ProvenanceKind.TOOL_OBSERVED, ev(2), ev(3)),
@@ -170,7 +170,9 @@ async def test_confidence_is_computed_from_the_evidence_not_from_the_model(conta
 
     by_id = {record.id: record for record in memory.records}
     assert by_id[one_effect].confidence is Confidence.MEDIUM
-    assert by_id[two_effects].confidence is Confidence.HIGH, "a second independent event is more belief"
+    assert by_id[two_effects].confidence is Confidence.HIGH, (
+        "a second independent event is more belief"
+    )
     assert by_id[guessed].confidence is Confidence.LOW, "0.99 self-reported is still a guess"
     assert by_id[guessed].candidate.model_confidence_hint == 0.99, "kept, just not trusted"
     # The same event cited twice is one event, not two.
@@ -187,7 +189,9 @@ async def test_a_single_event_never_produces_high_for_a_tool_observation(contain
 async def test_only_human_or_test_evidence_is_stated_as_fact(container) -> None:
     """``is_verified`` is what a renderer must read before asserting anything."""
     memory = container.memory
-    seen = await memory.write(candidate(text="build needs Node 22"), provenance(ProvenanceKind.TOOL_OBSERVED, ev(4)))
+    seen = await memory.write(
+        candidate(text="build needs Node 22"), provenance(ProvenanceKind.TOOL_OBSERVED, ev(4))
+    )
     proven = await memory.write(
         candidate(text="the gate is tools/check.py", subject="the gate"),
         provenance(ProvenanceKind.TEST_VERIFIED, ev(5)),
@@ -287,7 +291,9 @@ async def test_content_hash_separates_what_it_must_and_ignores_what_it_must_not(
     assert content_hash_of(candidate(tenant_id=OTHER_TENANT)) != content_hash_of(base)
     assert content_hash_of(candidate(type=MemoryType.CONVENTION)) != content_hash_of(base)
     assert content_hash_of(candidate(text="something else entirely")) != content_hash_of(base)
-    assert content_hash_of(candidate(scope_ref=RepoRef(host="git.corp", namespace="team", name="svc-b").slug)) != content_hash_of(base)
+    assert content_hash_of(
+        candidate(scope_ref=RepoRef(host="git.corp", namespace="team", name="svc-b").slug)
+    ) != content_hash_of(base)
 
 
 async def test_a_write_over_a_proposal_promotes_it_in_place(container) -> None:
@@ -373,9 +379,12 @@ async def test_revoked_and_superseded_records_are_history(container) -> None:
     await memory.revoke(admitted)
 
     assert memory.records[0].status is MemoryStatus.REVOKED
-    assert await memory.recall(
-        RecallQuery(text="", scope=MemoryScope.REPO, scope_ref=ACME.slug), constraints()
-    ) == ()
+    assert (
+        await memory.recall(
+            RecallQuery(text="", scope=MemoryScope.REPO, scope_ref=ACME.slug), constraints()
+        )
+        == ()
+    )
     # Revoking is a status, not a deletion: the record is still there to be audited.
     assert len(memory.records) == 1
     # And the claim may be made again, because nothing live holds that content.
@@ -422,7 +431,11 @@ async def test_a_memory_past_its_deadline_is_not_recalled_and_is_marked_expired(
         provenance(ProvenanceKind.HUMAN_VERIFIED, ev(18)),
     )
     fresh = await memory.write(
-        candidate(text="only kernel/ imports cordis_port", subject="cordis_port import", type=MemoryType.CONVENTION),
+        candidate(
+            text="only kernel/ imports cordis_port",
+            subject="cordis_port import",
+            type=MemoryType.CONVENTION,
+        ),
         provenance(ProvenanceKind.TEST_VERIFIED, ev(19)),
     )
 
@@ -743,9 +756,11 @@ def test_siblings_are_the_records_under_one_key() -> None:
     )
 
     assert conflict_key(here) == conflict_key(same)
-    assert {record.id for record in siblings_of((here, same, other_subject, other_tenant), here)} == {
-        MemoryId("mem-2")
-    }, "a subject means nothing across a tenant, a scope, a type or another subject"
+    assert {
+        record.id for record in siblings_of((here, same, other_subject, other_tenant), here)
+    } == {MemoryId("mem-2")}, (
+        "a subject means nothing across a tenant, a scope, a type or another subject"
+    )
 
 
 async def test_forgetting_keeps_the_record_and_purging_does_not(container) -> None:

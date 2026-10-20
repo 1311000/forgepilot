@@ -82,6 +82,7 @@ def expand_env(
         return [expand_env(v, environ, where=f"{where}[{i}]") for i, v in enumerate(value)]
     return value
 
+
 #: Trust tiers for plugins. Third-party plugins are denied the privileged phase
 #: of the tool pipeline (see the design doc); the tier is declared here, is
 #: visible in ``--dump-config``, and is asserted at boot.
@@ -297,9 +298,7 @@ def apply_layers(
                 config=dict(entry.config),
                 inject=tuple(entry.inject) if entry.inject is not None else previous.inject,
                 tier=entry.tier if entry.tier is not None else previous.tier,
-                disabled=(
-                    entry.disabled if entry.disabled is not None else previous.disabled
-                ),
+                disabled=(entry.disabled if entry.disabled is not None else previous.disabled),
                 sources=previous.sources + (layer.name,),
             )
 

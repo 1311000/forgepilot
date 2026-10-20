@@ -68,8 +68,7 @@ def test_no_tool_is_unreachable() -> None:
     # `permitted_tools` reports as `unknown`, and a typo there is a silently
     # smaller tool set rather than an error.
     assert not (set(offered) - built), (
-        "these tool sets name tools that no provider builds: "
-        f"{sorted(set(offered) - built)}"
+        f"these tool sets name tools that no provider builds: {sorted(set(offered) - built)}"
     )
     unoffered = sorted(built - set(offered))
     assert not unoffered, (

@@ -226,9 +226,7 @@ async def _load(config: dict):
         await dispose_fiber(fiber)
 
 
-def a_launcher(
-    tmp_path: Path, *, exit_code: int, stdout: str = "", stderr: str = ""
-) -> list[str]:
+def a_launcher(tmp_path: Path, *, exit_code: int, stdout: str = "", stderr: str = "") -> list[str]:
     """A stand-in for `unshare`, so the probe can be observed without patching.
 
     `enter` is a command line, not a binary name, precisely so this is possible:
@@ -431,9 +429,7 @@ def test_the_root_is_remounted_rather_than_rebound() -> None:
     assert root.read_only is True
     assert root.kind is MountKind.REMOUNT
 
-    argv = build_argv(
-        ["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE
-    )
+    argv = build_argv(["true"], policy=policy(SandboxMode.WORKSPACE_WRITE), cwd=WORKSPACE)
     script = argv[argv.index("-c") + 1]
 
     assert "mount --bind / /" not in script
@@ -839,7 +835,9 @@ class WslTransport(Transport):
     """This Windows box reaching the WSL kernel: manual, and documented as such."""
 
     def prepare(self) -> None:
-        subprocess.run([*self.enter[:-1], "--", "mkdir", "-p", self.workspace.as_posix()], check=True)
+        subprocess.run(
+            [*self.enter[:-1], "--", "mkdir", "-p", self.workspace.as_posix()], check=True
+        )
 
     def cleanup(self) -> None:
         subprocess.run([*self.enter[:-1], "--", "rm", "-rf", self.workspace.as_posix()], check=True)
@@ -859,7 +857,9 @@ def transport() -> Transport:
             name="wsl", enter=wsl_enter(), workspace=Path("/root/forgepilot-sandbox-workspace")
         )
     if name != "unshare":
-        raise AssertionError(f"unknown FORGEPILOT_SANDBOX_TRANSPORT {name!r}: expected unshare or wsl")
+        raise AssertionError(
+            f"unknown FORGEPILOT_SANDBOX_TRANSPORT {name!r}: expected unshare or wsl"
+        )
     return NativeTransport(
         name="unshare",
         enter=["unshare"],
@@ -948,8 +948,7 @@ async def test_a_write_outside_the_workspace_is_refused() -> None:
                 f"no namespace boundary through the {transport_.name!r} transport "
                 f"on this host: probe={outcome.enforcement.value} "
                 f"cause={outcome.cause.value if outcome.cause else 'none'} "
-                f"mechanism={mechanism}"
-                + (f"; {outcome.observed}" if outcome.observed else "")
+                f"mechanism={mechanism}" + (f"; {outcome.observed}" if outcome.observed else "")
             )
 
         # Only now — on a host that just proved it can build the boundary. Preparing
@@ -1074,9 +1073,9 @@ def test_a_host_read_claim_generates_no_masks() -> None:
     from forgepilot.providers.sandbox.namespace import mount_rules
 
     for mode in (SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE):
-        assert not any(
-            rule.kind.name == "MASK_UNNAMED" for rule in mount_rules(policy(mode))
-        ), f"{mode} grew a mask without a read claim"
+        assert not any(rule.kind.name == "MASK_UNNAMED" for rule in mount_rules(policy(mode))), (
+            f"{mode} grew a mask without a read claim"
+        )
 
 
 def test_a_workspace_read_claim_masks_before_it_binds_the_workspace() -> None:
@@ -1181,8 +1180,6 @@ def test_danger_full_access_is_not_masked() -> None:
     dressing it in masks would make `probe()`'s answer about a different thing."""
     from forgepilot.providers.sandbox.namespace import MountKind, mount_rules
 
-    rules = mount_rules(
-        policy(SandboxMode.DANGER_FULL_ACCESS), read_scope=ReadScope.WORKSPACE
-    )
+    rules = mount_rules(policy(SandboxMode.DANGER_FULL_ACCESS), read_scope=ReadScope.WORKSPACE)
 
     assert not any(rule.kind is MountKind.MASK_UNNAMED for rule in rules)

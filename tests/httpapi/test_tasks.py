@@ -60,8 +60,7 @@ def _write_ticket(path: Path, ticket_id: str, *, description: str) -> None:
         f"id: {ticket_id}\n"
         f"title: move the window one place\n"
         f"priority: high\n"
-        f"description: |\n"
-        + "".join(f"  {line}\n" for line in description.splitlines()),
+        f"description: |\n" + "".join(f"  {line}\n" for line in description.splitlines()),
         encoding="utf-8",
     )
 
@@ -268,9 +267,7 @@ async def test_an_unknown_ticket_is_a_404_and_creates_nothing(tmp_path: Path, si
         await booted.close()
 
 
-async def test_task_mode_refuses_when_no_project_is_configured(
-    tmp_path: Path, signing_env
-) -> None:
+async def test_task_mode_refuses_when_no_project_is_configured(tmp_path: Path, signing_env) -> None:
     """Chat can fall back to an open policy; a task cannot, because it delivers."""
     booted = await _boot(tmp_path, with_project=False)
     try:
@@ -387,9 +384,7 @@ async def test_a_task_read_after_a_restart_keeps_its_state_and_its_owner(
             assert view["repositories"][0]["commit"] == "a" * 40
             assert view["repositories"][0]["changed"] == ["src/app.py"]
 
-            half_view = (
-                await client.get("/tasks/task-that-stopped", headers=booted.auth())
-            ).json()
+            half_view = (await client.get("/tasks/task-that-stopped", headers=booted.auth())).json()
             assert half_view["state"] == "running"
             assert half_view["interrupted"] is True, "nobody is running it, and it says running"
 

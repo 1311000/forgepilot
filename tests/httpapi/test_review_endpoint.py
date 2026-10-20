@@ -31,9 +31,7 @@ async def test_review_returns_the_same_json_the_runtime_renders(api) -> None:
     from forgepilot.orchestration.modes.review import build_review
 
     diff = a_diff()
-    expected = render_json(
-        await build_review(diff, title="fix: bounded retry", use_model=False)
-    )
+    expected = render_json(await build_review(diff, title="fix: bounded retry", use_model=False))
 
     response = await api.client.post(
         "/review",

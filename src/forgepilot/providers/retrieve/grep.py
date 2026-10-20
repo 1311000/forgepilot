@@ -318,9 +318,7 @@ class GrepRetrieverPlugin(PluginService):
         prefix = text.encode("utf-8")[:byte_offset]
         return len(prefix.decode("utf-8", errors="replace")) + 1
 
-    async def symbols(
-        self, query: SymbolQuery, constraints: ExecutionConstraints
-    ) -> Sequence[Any]:
+    async def symbols(self, query: SymbolQuery, constraints: ExecutionConstraints) -> Sequence[Any]:
         """Not supported, and ``capabilities()`` says so.
 
         A regex pretending to find definitions would produce hits that look
@@ -343,9 +341,7 @@ class GrepRetrieverPlugin(PluginService):
         ref = self._ref(root, location.ref)
         target = (root / location.path).resolve()
         if root not in target.parents and target != root:
-            raise PermissionError(
-                f"{location.path!r} resolves outside {root}; refusing to read it"
-            )
+            raise PermissionError(f"{location.path!r} resolves outside {root}; refusing to read it")
 
         try:
             lines = target.read_text(encoding="utf-8", errors="replace").splitlines()

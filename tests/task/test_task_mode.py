@@ -46,6 +46,7 @@ def _delivery(outcome):
     assert len(outcome.deliveries) == 1, f"expected one delivery, got {outcome.deliveries}"
     return outcome.deliveries[0]
 
+
 BUGGY = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    attempts = 0\n    while True:\n        try:\n            return client.login(credentials)\n        except AuthError:\n            attempts += 1\n"
 
 FIXED = "MAX_ATTEMPTS = 3\n\n\ndef retry_login(client, credentials):\n    for _ in range(MAX_ATTEMPTS):\n        try:\n            return client.login(credentials)\n        except AuthError:\n            continue\n    raise RuntimeError('login failed after retries')\n"
@@ -66,9 +67,7 @@ def a_ticket() -> Ticket:
     return Ticket(
         id=TicketId("T-1"),
         title="登录无限重试",
-        description_md=(
-            "复现步骤：\n1. 输错密码\n\n预期结果：提示密码错误\n实际结果：无限重试"
-        ),
+        description_md=("复现步骤：\n1. 输错密码\n\n预期结果：提示密码错误\n实际结果：无限重试"),
         priority=TicketPriority.HIGH,
     )
 
@@ -80,7 +79,9 @@ async def make_plan(rig, constraints=None):
         constraints=constraints or rig.constraints,
         registry=rig.registry,
         classifier=ClassifierGateway(
-            FixedClassifier(TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95))
+            FixedClassifier(
+                TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95)
+            )
         ),
     )
 
@@ -186,9 +187,9 @@ async def test_the_session_records_the_full_task_trace(task_rig) -> None:
 async def test_a_failing_check_sends_the_model_back_to_fix_it(task_rig) -> None:
     plan = await make_plan(task_rig)
     task_rig.llm.script(
-        write_fix(BUGGY),          # a fix that does not work
+        write_fix(BUGGY),  # a fix that does not work
         text_turn("tried"),
-        write_fix(FIXED),          # the real fix
+        write_fix(FIXED),  # the real fix
         text_turn("done"),
     )
     task_rig.sandbox.script(
@@ -247,7 +248,9 @@ async def test_task_mode_honours_the_configured_step_ceiling(task_rig) -> None:
     assert steps == 4, f"{steps} step(s) ran against a ceiling of 4"
 
 
-async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(task_rig, constraints_factory) -> None:
+async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(
+    task_rig, constraints_factory
+) -> None:
     """Reporting success for checks nobody ran would claim verification that
     did not happen."""
     # Write is needed to create the branch; run_tests is the one withheld, so
@@ -265,7 +268,9 @@ async def test_a_check_that_cannot_run_is_never_reported_as_a_pass(task_rig, con
     assert task_rig.vcs.pull_requests == ()
 
 
-async def test_no_pull_request_is_opened_when_a_check_could_not_run(task_rig, constraints_factory) -> None:
+async def test_no_pull_request_is_opened_when_a_check_could_not_run(
+    task_rig, constraints_factory
+) -> None:
     read_only = constraints_factory(Operation.READ_CODE, Operation.WRITE_CODE, repos=(REPO,))
     plan = await make_plan(task_rig, constraints=read_only)
     task_rig.llm.script(write_fix(FIXED), text_turn("done"))
@@ -343,8 +348,7 @@ async def test_the_model_is_never_given_a_tool_that_opens_pull_requests(task_rig
 
     assert "open_pr" not in offered
     assert task_rig.registry.get("open_pr") is None, (
-        "no pull-request tool is registered at all; the harness opens the PR once "
-        "the checks pass"
+        "no pull-request tool is registered at all; the harness opens the PR once the checks pass"
     )
 
 
@@ -390,8 +394,10 @@ def _orphan_tool_messages(messages) -> list[str]:
 async def test_the_conversation_stays_well_formed_across_the_whole_task(task_rig) -> None:
     plan = await make_plan(task_rig)
     task_rig.llm.script(
-        write_fix(BUGGY), text_turn("tried"),
-        write_fix(FIXED), text_turn("done"),
+        write_fix(BUGGY),
+        text_turn("tried"),
+        write_fix(FIXED),
+        text_turn("done"),
     )
     task_rig.sandbox.script(
         ScriptedResult(exit_code=1, stdout="failing"),
@@ -461,8 +467,7 @@ class NoHostVcs:
     async def open_pull_request(self, draft, constraints):
         self.opened.append(draft)
         raise AssertionError(
-            "open_pull_request was called on a provider that declares it cannot "
-            "publish"
+            "open_pull_request was called on a provider that declares it cannot publish"
         )
 
 
@@ -482,7 +487,7 @@ async def test_without_a_repo_host_the_change_stops_as_a_ready_draft(task_rig) -
     vcs = NoHostVcs(task_rig.vcs)
     task_rig.vcs = vcs
     plan = await make_plan(task_rig)
-    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
 
     outcome = await run(task_rig, plan)
 
@@ -492,7 +497,7 @@ async def test_without_a_repo_host_the_change_stops_as_a_ready_draft(task_rig) -
         "nothing was published, so claiming delivery is the same lie the mock refused to tell"
     )
     assert _delivery(outcome).pull_request is None
-    assert _delivery(outcome).draft is not None, 'the draft is the deliverable here'
+    assert _delivery(outcome).draft is not None, "the draft is the deliverable here"
     assert _delivery(outcome).draft.source_branch == _delivery(outcome).branch
     assert _delivery(outcome).draft.title.startswith("fix:")
     assert "repo host" in outcome.reason, outcome.reason
@@ -505,12 +510,12 @@ async def test_the_draft_carries_the_evidence_the_run_produced(task_rig) -> None
     vcs = NoHostVcs(task_rig.vcs)
     task_rig.vcs = vcs
     plan = await make_plan(task_rig)
-    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
 
     outcome = await run(task_rig, plan)
 
-    assert "T-1" in _delivery(outcome).draft.body_md, 'not traceable to the ticket'
-    assert _delivery(outcome).draft.body_md.strip(), 'an empty PR body is not reviewable'
+    assert "T-1" in _delivery(outcome).draft.body_md, "not traceable to the ticket"
+    assert _delivery(outcome).draft.body_md.strip(), "an empty PR body is not reviewable"
 
 
 async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
@@ -519,7 +524,7 @@ async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
 
     task_rig.vcs = NoHostVcs(task_rig.vcs)
     plan = await make_plan(task_rig)
-    task_rig.llm.script(write_fix(FIXED), text_turn('done'))
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
 
     # Deliberately not bound: this test asserts from the **log**, which is the
     # principle — a returned value is the runner's own bookkeeping. The call still
@@ -528,11 +533,11 @@ async def test_the_trace_says_the_change_was_not_published(task_rig) -> None:
 
     states = [e for e in task_rig.session.events if e.kind == EventKind.TASK_STATE]
     delivery = next(e.data for e in states if e.data.get("repo"))
-    assert delivery['state'] == TaskState.READY.value
-    assert not delivery.get('pullRequest'), 'a PR was reported that was never opened'
-    assert delivery['changed'], 'a READY delivery still names the files it changed'
-    assert states[-1].data['state'] == TaskState.READY.value, (
-        'the task\'s own verdict is in the log too'
+    assert delivery["state"] == TaskState.READY.value
+    assert not delivery.get("pullRequest"), "a PR was reported that was never opened"
+    assert delivery["changed"], "a READY delivery still names the files it changed"
+    assert states[-1].data["state"] == TaskState.READY.value, (
+        "the task's own verdict is in the log too"
     )
 
 
@@ -575,7 +580,9 @@ async def test_publishing_that_needs_a_human_and_gets_none_stops_at_ready(task_r
     from forgepilot.seams.approval import ApprovalOutcome
 
     task_rig.llm.script(
-        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"),
+        tool_call_turn(
+            "write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"
+        ),
         text_turn("修好了"),
     )
     task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
@@ -583,9 +590,7 @@ async def test_publishing_that_needs_a_human_and_gets_none_stops_at_ready(task_r
     plan = await make_plan(task_rig)
     task_rig.approval.set_answerer(lambda request: ApprovalOutcome.UNAVAILABLE)
 
-    outcome = await run(
-        task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal
-    )
+    outcome = await run(task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal)
 
     from forgepilot.orchestration.task_state import TaskState
 
@@ -605,7 +610,9 @@ async def test_publishing_proceeds_once_a_human_allows_it(task_rig) -> None:
     from forgepilot.seams.approval import ApprovalOutcome
 
     task_rig.llm.script(
-        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"),
+        tool_call_turn(
+            "write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c1"
+        ),
         text_turn("修好了"),
     )
     task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
@@ -619,9 +626,7 @@ async def test_publishing_proceeds_once_a_human_allows_it(task_rig) -> None:
 
     task_rig.approval.set_answerer(answer)
 
-    outcome = await run(
-        task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal
-    )
+    outcome = await run(task_rig, plan, policy=AsksForPublishing(), principal=task_rig.principal)
 
     assert outcome.delivered, outcome.reason
     assert asked == ["harness:open_pr"], "the human was not asked, or was asked something else"
@@ -685,7 +690,12 @@ async def test_changed_tests_are_checked_against_both_trees(task_rig) -> None:
     task_rig.llm.script(
         tool_call_turn(
             "write_file",
-            json.dumps({"path": "tests/test_login.py", "content": "def test_retry_is_bounded():\n    pass\n"}),
+            json.dumps(
+                {
+                    "path": "tests/test_login.py",
+                    "content": "def test_retry_is_bounded():\n    pass\n",
+                }
+            ),
             call_id="c1",
         ),
         text_turn("改了测试"),

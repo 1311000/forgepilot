@@ -173,9 +173,7 @@ def command_scope_guard(view: GuardView) -> GuardResult:
                 # rewrites it makes the caller hunt for a difference that is not
                 # there.
                 subject = (
-                    f"{name!r}"
-                    if name == program
-                    else f"{name!r} (the line spells it {program!r})"
+                    f"{name!r}" if name == program else f"{name!r} (the line spells it {program!r})"
                 )
                 return GuardResult(
                     decision=GuardDecision.DENY,

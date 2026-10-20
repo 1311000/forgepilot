@@ -158,19 +158,14 @@ def test_the_agent_cannot_read_the_arm_off_its_own_path(task) -> None:
         assert name not in str(directory), f"the arm name {name!r} is in {directory}"
         for word in name.split("-"):
             assert word not in directory.name, (
-                f"{directory.name} contains {word!r}, which is part of the arm name "
-                f"{name!r}"
+                f"{directory.name} contains {word!r}, which is part of the arm name {name!r}"
             )
 
 
 def test_each_attempt_still_gets_its_own_directory(task) -> None:
     """Opaque is not the same as shared: two arms must not overwrite each other's
     checkout, or a run measures the previous one."""
-    seen = {
-        H.scratch_dir(task, arm, rep)
-        for arm in arm_module.ARMS
-        for rep in (1, 2, 3)
-    }
+    seen = {H.scratch_dir(task, arm, rep) for arm in arm_module.ARMS for rep in (1, 2, 3)}
     assert len(seen) == len(arm_module.ARMS) * 3
 
 
@@ -201,9 +196,7 @@ def test_the_configuration_written_for_a_run_carries_the_arm(task, tmp_path, mon
     monkeypatch.setenv("FORGEPILOT_PYTHON", sys.executable)
 
     plain = H.write_project(task, tmp_path / "plain")
-    ablated = H.write_project(
-        task, tmp_path / "ablated", arm=arm_module.arm("no-repair")
-    )
+    ablated = H.write_project(task, tmp_path / "ablated", arm=arm_module.arm("no-repair"))
 
     assert plain.retry.max_attempts != 0
     assert ablated.retry.max_attempts == 0

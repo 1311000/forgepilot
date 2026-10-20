@@ -230,9 +230,7 @@ def test_a_permissive_policy_does_not_strip_a_specific_grant() -> None:
     Enforcing the wrong answer is worse than enforcing none, because it looks like
     it worked.
     """
-    grant = Grant(
-        operations=frozenset(Operation), repo_prefixes=frozenset({"git.corp/team/*"})
-    )
+    grant = Grant(operations=frozenset(Operation), repo_prefixes=frozenset({"git.corp/team/*"}))
     open_policy = ProjectPolicy.open_project(prefixes=frozenset({"*"}))
 
     constraints = derive(principal_of("alice", "acme"), grant, open_policy, key=KEY)
@@ -248,8 +246,7 @@ def test_a_policy_narrows_a_broader_grant() -> None:
     constraints = derive(principal_of("alice", "acme"), grant, policy, key=KEY)
 
     assert constraints.allowed_repo_prefixes == frozenset(), (
-        "the grant's broader prefix is not inside the policy's narrower one, so it "
-        "does not survive"
+        "the grant's broader prefix is not inside the policy's narrower one, so it does not survive"
     )
 
 
@@ -268,9 +265,7 @@ def test_a_narrower_grant_survives_a_broader_policy() -> None:
 def test_writable_paths_are_narrowed_by_prefix_not_equality() -> None:
     """A grant of ``src/sub`` is permitted by a policy of ``src``."""
     grant = Grant(operations=frozenset(Operation), writable_paths=("src/sub", "docs"))
-    policy = ProjectPolicy(
-        allowed_operations=frozenset(Operation), writable_paths=("src",)
-    )
+    policy = ProjectPolicy(allowed_operations=frozenset(Operation), writable_paths=("src",))
 
     constraints = derive(principal_of("alice", "acme"), grant, policy, key=KEY)
 
@@ -309,12 +304,16 @@ async def test_a_plugin_needing_constraints_cannot_load_outside_a_scope() -> Non
     assert at_root.get_state().name == "PENDING"
     assert loaded == [], "the plugin body must not have run"
 
-    scope = open_request_scope(root, derive(
-        principal_of("alice", "acme"),
-        Grant(operations=frozenset(Operation), repo_prefixes=frozenset({"*"})),
-        ProjectPolicy.open_project(),
+    scope = open_request_scope(
+        root,
+        derive(
+            principal_of("alice", "acme"),
+            Grant(operations=frozenset(Operation), repo_prefixes=frozenset({"*"})),
+            ProjectPolicy.open_project(),
+            key=KEY,
+        ),
         key=KEY,
-    ), key=KEY)
+    )
 
     in_scope = await scope.ctx.plugin({"inject": ["constraints"], "apply": apply})
 
@@ -471,17 +470,19 @@ async def test_credentials_load_from_the_environment(monkeypatch) -> None:
 
     monkeypatch.setenv(
         "TEST_TOKENS",
-        _json.dumps([
-            {
-                "token": "dev-token",
-                "principal_id": "alice",
-                "tenant_id": "acme",
-                "teams": ["team-a"],
-                "operations": ["read_code", "write_code"],
-                "repo_prefixes": ["git.corp/team/*"],
-                "writable_paths": ["src"],
-            }
-        ]),
+        _json.dumps(
+            [
+                {
+                    "token": "dev-token",
+                    "principal_id": "alice",
+                    "tenant_id": "acme",
+                    "teams": ["team-a"],
+                    "operations": ["read_code", "write_code"],
+                    "repo_prefixes": ["git.corp/team/*"],
+                    "writable_paths": ["src"],
+                }
+            ]
+        ),
     )
     root = create_root()
     fiber = await root.plugin(PrincipalServicePlugin, {"tokens_env": "TEST_TOKENS"})
@@ -490,9 +491,7 @@ async def test_credentials_load_from_the_environment(monkeypatch) -> None:
 
         assert record.principal.principal_id == PrincipalId("alice")
         assert record.principal.team_ids == frozenset({"team-a"})
-        assert record.grant.operations == frozenset(
-            {Operation.READ_CODE, Operation.WRITE_CODE}
-        )
+        assert record.grant.operations == frozenset({Operation.READ_CODE, Operation.WRITE_CODE})
         assert record.grant.repo_prefixes == frozenset({"git.corp/team/*"})
         assert record.grant.writable_paths == ("src",)
         # Network defaults to deny when the entry does not say otherwise.

@@ -825,8 +825,7 @@ class NamespaceSandboxPlugin(PluginService):
             # No canary, no evidence — and no evidence must never read as FULL.
             return (
                 SandboxEnforcement.PARTIAL,
-                "no canary could be placed outside the workspace, so the claim was "
-                "never tested",
+                "no canary could be placed outside the workspace, so the claim was never tested",
             )
         try:
             canary = scratch / "canary"

@@ -45,6 +45,7 @@ class Mode(StrEnum):
     TASK = "task"
     REVIEW = "review"
 
+
 # Identifiers are distinct types so that passing a TicketId where a SessionId is
 # expected is a type error rather than a silent mix-up.
 PrincipalId = NewType("PrincipalId", str)

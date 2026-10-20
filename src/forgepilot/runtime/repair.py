@@ -214,7 +214,11 @@ async def run_checks(
                 "timed_out": timed_out,
                 # Which command stopped the chain, when one did.
                 "failedIndex": next(
-                    (i for i, s in enumerate(sections, start=1) if i == len(sections) and exit_code != 0),
+                    (
+                        i
+                        for i, s in enumerate(sections, start=1)
+                        if i == len(sections) and exit_code != 0
+                    ),
                     None,
                 ),
             },
@@ -323,9 +327,9 @@ def combine_checks(named: Sequence[tuple[str, CheckResult]]) -> CheckResult:
         commands=first.commands,
         command=first.command,
         output="\n\n".join(sections),
-        exit_code=0 if passed else next(
-            (c.exit_code for _, c in named if not c.passed and c.exit_code), 1
-        ),
+        exit_code=0
+        if passed
+        else next((c.exit_code for _, c in named if not c.passed and c.exit_code), 1),
         could_not_run=could_not_run,
         reason=reason,
         meta={

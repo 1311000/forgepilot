@@ -98,9 +98,7 @@ def _git(*args: str, cwd: Path) -> str:
         check=False,
     )
     if completed.returncode != 0:
-        raise SystemExit(
-            f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr.strip()}"
-        )
+        raise SystemExit(f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr.strip()}")
     return completed.stdout
 
 
@@ -223,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--export",
         action="store_true",
-        help="print only `export` lines, for `eval \"$(... --export)\"`",
+        help='print only `export` lines, for `eval "$(... --export)"`',
     )
     parser.add_argument(
         "--shell",
@@ -303,10 +301,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("run the example with:\n")
     print("  Git Bash:")
-    print(
-        '    eval "$(.venv/Scripts/python.exe examples/stat-fix/prepare_repo.py '
-        '--export)"'
-    )
+    print('    eval "$(.venv/Scripts/python.exe examples/stat-fix/prepare_repo.py --export)"')
     print()
     print("  PowerShell (no `eval`; `export` is not a verb there):")
     print(

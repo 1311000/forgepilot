@@ -72,9 +72,7 @@ def check(rows: Iterable[dict[str, Any]]) -> list[str]:
     """Every way the rows disagree with the recorded table, as printable lines."""
     problems: list[str] = []
     seen: dict[tuple[str, str], dict[str, Any]] = {}
-    expected_cells = {
-        (task, name) for name in EXPECTED_FAILURES for task in H.available_tasks()
-    }
+    expected_cells = {(task, name) for name in EXPECTED_FAILURES for task in H.available_tasks()}
 
     for row in rows:
         key = (str(row.get("task")), str(row.get("arm")))

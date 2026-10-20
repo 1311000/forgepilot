@@ -35,7 +35,9 @@ def row(task, arm, rep, *, passed, failures=(), variant=None):
 
 
 def test_a_moved_rate_is_flagged(capsys) -> None:
-    before = [row("t", "arm", n, passed=False, failures=("checks did not pass",)) for n in (1, 2, 3)]
+    before = [
+        row("t", "arm", n, passed=False, failures=("checks did not pass",)) for n in (1, 2, 3)
+    ]
     after = [row("t", "arm", n, passed=True) for n in (1, 2, 3)]
 
     report._print_comparison(before, after, "old", "new")

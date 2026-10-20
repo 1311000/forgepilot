@@ -49,9 +49,7 @@ async def workspace(tmp_path: Path):
 
     root = create_root()
     fiber = await root.plugin(
-        resolve_plugin(
-            "forgepilot.providers.workspace.merged:MergedCheckoutWorkspacePlugin"
-        ),
+        resolve_plugin("forgepilot.providers.workspace.merged:MergedCheckoutWorkspacePlugin"),
         {"repos": {}, "worktree_root": str(tmp_path / "worktrees")},
     )
     try:

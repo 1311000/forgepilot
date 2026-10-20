@@ -19,9 +19,7 @@ from forgepilot.cli.main import main
 FORGE = Path(__file__).resolve().parents[2]
 CONFIGS = str(FORGE / "configs")
 BUNDLE = str(FORGE / "src/forgepilot/bundles/memory_sqlite/patch.yaml")
-TOKENS = json.dumps(
-    [{"token": "demo-token", "principal_id": "alice", "tenant_id": "default"}]
-)
+TOKENS = json.dumps([{"token": "demo-token", "principal_id": "alice", "tenant_id": "default"}])
 
 
 def seed(state: Path) -> None:
@@ -107,9 +105,7 @@ def test_prune_deletes_history_and_names_the_count(tmp_path, monkeypatch, capsys
     assert rows(state) == 0
 
 
-def test_a_dry_run_reports_the_same_number_and_deletes_nothing(
-    tmp_path, monkeypatch, capsys
-):
+def test_a_dry_run_reports_the_same_number_and_deletes_nothing(tmp_path, monkeypatch, capsys):
     state = tmp_path / "state"
     state.mkdir()
     seed(state)
@@ -142,8 +138,7 @@ def test_the_prune_is_in_the_log(tmp_path, monkeypatch):
     # the path is found rather than composed: the layout is the store's business, and
     # pinning it here would make a storage change look like a prune defect.
     (maintenance,) = [
-        path
-        for path in (state / "sessions").rglob("memory-maintenance-default.jsonl")
+        path for path in (state / "sessions").rglob("memory-maintenance-default.jsonl")
     ]
     kinds = [
         json.loads(line)["kind"]

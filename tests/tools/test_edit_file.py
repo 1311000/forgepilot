@@ -106,7 +106,9 @@ async def test_a_unique_search_text_is_replaced(tree: Path) -> None:
 async def test_an_empty_replacement_deletes_the_text(tree: Path) -> None:
     """Deleting a line is an edit, not a missing argument."""
     outcome = await _edit(
-        tree, path="src/login.py", old_string="        except AuthError:\n            continue\n",
+        tree,
+        path="src/login.py",
+        old_string="        except AuthError:\n            continue\n",
         new_string="",
     )
 
@@ -123,9 +125,7 @@ async def test_the_rest_of_the_file_is_untouched_byte_for_byte(tree: Path) -> No
 
     after = _read(tree).splitlines()
     assert len(before) == len(after)
-    assert [a for a, b in zip(before, after, strict=True) if a != b] == [
-        "    for _ in range(3):"
-    ]
+    assert [a for a, b in zip(before, after, strict=True) if a != b] == ["    for _ in range(3):"]
 
 
 async def test_replacing_every_occurrence_is_opt_in(tree: Path) -> None:
@@ -282,9 +282,7 @@ async def test_an_exact_crlf_match_is_not_reported_as_normalised(tree: Path) -> 
     crlf = tree / "src" / "crlf.py"
     crlf.write_bytes(b"alpha\r\nbeta\r\n")
 
-    outcome = await _edit(
-        tree, path="src/crlf.py", old_string="beta\r\n", new_string="BETA\r\n"
-    )
+    outcome = await _edit(tree, path="src/crlf.py", old_string="beta\r\n", new_string="BETA\r\n")
 
     assert outcome.meta["newlineNormalised"] is False
     assert crlf.read_bytes() == b"alpha\r\nBETA\r\n"
@@ -325,7 +323,9 @@ def test_the_shipped_project_offers_it_to_the_model() -> None:
     """
     from forgepilot.config.project import load_project
 
-    project = load_project(Path(__file__).resolve().parents[2] / "configs" / "projects" / "example" / "project.yaml")
+    project = load_project(
+        Path(__file__).resolve().parents[2] / "configs" / "projects" / "example" / "project.yaml"
+    )
 
     writable = [name for name, tools in project.tool_sets.items() if "write_file" in tools]
     assert writable, "the fixture drifted: no tool set writes files at all"

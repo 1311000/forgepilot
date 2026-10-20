@@ -235,8 +235,7 @@ def _print_arms(rows: list[dict[str, Any]]) -> None:
         return
 
     print(
-        f"\n{'arm':<16}{'n':>4}{'aside':>7}{'pass rate':>12}"
-        f"{'median calls':>14}{'median secs':>13}"
+        f"\n{'arm':<16}{'n':>4}{'aside':>7}{'pass rate':>12}{'median calls':>14}{'median secs':>13}"
     )
     print("-" * 68)
     base = [r for r in arms.get("full", []) if not _aside(r)]
@@ -384,9 +383,7 @@ def _print_matrix(rows: list[dict[str, Any]]) -> None:
         print(f"{task:<16}" + "".join(cells))
 
     if any(
-        arm != "full" and len(counts.get((task, arm), []))
-        for task in tasks
-        for arm in arms
+        arm != "full" and len(counts.get((task, arm), [])) for task in tasks for arm in arms
     ) or any(_aside(r) for r in rows):
         print("\n* = fewer passes than `full` on that task — the cell to read")
         print("! = fewer passes, and every one of them a crash — the arm is not why")
@@ -493,9 +490,7 @@ def _print_probes(rows: list[dict[str, Any]]) -> None:
     and not merely a task the model could not do.
     """
     probed = [
-        row
-        for row in rows
-        if row.get("left_the_workspace") and not row.get("escaped_workspace")
+        row for row in rows if row.get("left_the_workspace") and not row.get("escaped_workspace")
     ]
     if not probed:
         return
@@ -508,8 +503,12 @@ def _print_probes(rows: list[dict[str, Any]]) -> None:
     )
 
 
-def _print_comparison(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]],
-                      before_name: str, after_name: str) -> None:
+def _print_comparison(
+    before_rows: list[dict[str, Any]],
+    after_rows: list[dict[str, Any]],
+    before_name: str,
+    after_name: str,
+) -> None:
     """The same cells, before and after — which is what a re-run is *for*.
 
     ⚠️ **A retry cannot be read on its own.** `--retry-failed` produces a file
@@ -526,6 +525,7 @@ def _print_comparison(before_rows: list[dict[str, Any]], after_rows: list[dict[s
     a cell can hold its rate and change its *behaviour* — same 2/3, a different
     sentence every time — and that is a different finding from a stable one.
     """
+
     def index(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
         out: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
@@ -573,11 +573,7 @@ def _print_comparison(before_rows: list[dict[str, Any]], after_rows: list[dict[s
 
     # The reasons, for every cell where either side failed — a cell that kept its
     # rate but changed what went wrong is the case this section exists for.
-    moved = [
-        key
-        for key in comparable
-        if _reasons_of(before[key]) != _reasons_of(after[key])
-    ]
+    moved = [key for key in comparable if _reasons_of(before[key]) != _reasons_of(after[key])]
     if moved:
         print("\nWhat changed, cell by cell")
         for key in moved:
@@ -692,9 +688,7 @@ def main(argv: list[str] | None = None) -> int:
         if not older:
             print(f"\n{args.compare}: nothing to compare against.", file=sys.stderr)
         else:
-            _print_comparison(
-                older, rows, Path(args.compare).stem, "this run"
-            )
+            _print_comparison(older, rows, Path(args.compare).stem, "this run")
     if args.agent_text:
         _print_agent_text(rows)
 

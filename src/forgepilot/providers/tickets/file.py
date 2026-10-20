@@ -89,9 +89,7 @@ class FileTicketSourcePlugin(PluginService):
         if root.is_file():
             return (root,)
         if not root.is_dir():
-            raise ConfigError(
-                f"tickets/dir: {root} is neither a file nor a directory"
-            )
+            raise ConfigError(f"tickets/dir: {root} is neither a file nor a directory")
         return tuple(sorted(p for p in root.rglob("*") if p.suffix.lower() in _SUFFIXES))
 
     def _read(self, path: Path) -> Any:
@@ -110,8 +108,7 @@ class FileTicketSourcePlugin(PluginService):
             raw = self._read(path)
             if not isinstance(raw, Mapping):
                 raise ConfigError(
-                    f"{path} must contain a mapping of ticket fields, got "
-                    f"{type(raw).__name__}"
+                    f"{path} must contain a mapping of ticket fields, got {type(raw).__name__}"
                 )
             ticket = _ticket_from(raw, fallback_id=path.stem, source=path)
             if ticket.id in self._tickets:
@@ -221,9 +218,7 @@ def _enum(enum_type: Any, value: Any, default: Any, field: str, source: Path) ->
         return enum_type(str(value))
     except ValueError as exc:
         allowed = ", ".join(sorted(member.value for member in enum_type))
-        raise ConfigError(
-            f"{source}: unknown {field} {value!r}. One of: {allowed}"
-        ) from exc
+        raise ConfigError(f"{source}: unknown {field} {value!r}. One of: {allowed}") from exc
 
 
 def _person(value: Any) -> PrincipalId | None:
@@ -241,7 +236,5 @@ def _comments(entries: Sequence[Any], source: Path) -> tuple[Comment, ...]:
             # A bare string is the shape a hand-written fixture wants; there is no
             # author to invent, so it is named rather than guessed at.
             body, author, comment_id = str(entry), "unknown", f"c{index}"
-        out.append(
-            Comment(id=comment_id, author=PrincipalId(author), body_md=str(body))
-        )
+        out.append(Comment(id=comment_id, author=PrincipalId(author), body_md=str(body)))
     return tuple(out)

@@ -319,13 +319,15 @@ class GitHubVcsPlugin(PluginService):
         if not constraints.allows_operation(operation):
             self.denied_calls += 1
             raise PermissionError(
-                f"principal {constraints.principal_id!r} may not {operation.value} on "
-                f"{repo.slug!r}"
+                f"principal {constraints.principal_id!r} may not {operation.value} on {repo.slug!r}"
             )
 
     # -- git ---------------------------------------------------------------
     def _run_git(
-        self, *args: str, cwd: Path | None = None, token: str | None = None,
+        self,
+        *args: str,
+        cwd: Path | None = None,
+        token: str | None = None,
         ok: tuple[int, ...] = (0,),
     ) -> str:
         """Run git, and make sure nothing it says can carry the credential out.
@@ -458,9 +460,7 @@ class GitHubVcsPlugin(PluginService):
             )
 
         refspec = f"refs/heads/{branch}:refs/heads/{branch}"
-        self._run_git(
-            "push", remote_url(self._remote_base, repo), refspec, cwd=path, token=token
-        )
+        self._run_git("push", remote_url(self._remote_base, repo), refspec, cwd=path, token=token)
 
     async def open_pull_request(
         self, draft: PullRequestDraft, constraints: ExecutionConstraints
@@ -519,9 +519,7 @@ class GitHubVcsPlugin(PluginService):
         return DiffBundle(
             base_ref=base,
             head_ref=head,
-            unified_diff=self._run_git(
-                "diff", base, head, cwd=self._mirror_path(repo)
-            ),
+            unified_diff=self._run_git("diff", base, head, cwd=self._mirror_path(repo)),
         )
 
     async def changed_files(
@@ -566,9 +564,7 @@ class GitHubVcsPlugin(PluginService):
     async def _post(self, url: str, payload: Any, token: str) -> tuple[int, Any]:
         return await self._request("POST", url, payload, token)
 
-    async def _request(
-        self, method: str, url: str, payload: Any, token: str
-    ) -> tuple[int, Any]:
+    async def _request(self, method: str, url: str, payload: Any, token: str) -> tuple[int, Any]:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",

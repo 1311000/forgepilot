@@ -56,7 +56,9 @@ def request_with(messages, *, system=(), tools=()) -> ChatRequest:
 # Translation: ours -> theirs
 # ---------------------------------------------------------------------------
 def test_system_sections_become_one_leading_system_message() -> None:
-    payload = to_payload(request_with([ChatMessage(role=Role.USER, content="hi")], system=("a", "b")))
+    payload = to_payload(
+        request_with([ChatMessage(role=Role.USER, content="hi")], system=("a", "b"))
+    )
 
     assert payload["messages"][0] == {"role": "system", "content": "a\n\nb"}
     assert payload["messages"][1] == {"role": "user", "content": "hi"}
@@ -65,9 +67,7 @@ def test_system_sections_become_one_leading_system_message() -> None:
 def test_a_tool_message_carries_its_call_id() -> None:
     """Omitting it is a 400 on most endpoints, and looks like a prompt bug."""
     payload = to_payload(
-        request_with(
-            [ChatMessage(role=Role.TOOL, content="ok", tool_call_id="call-1")]
-        )
+        request_with([ChatMessage(role=Role.TOOL, content="ok", tool_call_id="call-1")])
     )
 
     assert payload["messages"][0] == {
@@ -85,7 +85,9 @@ def test_an_assistant_message_with_tool_calls_is_shaped_correctly() -> None:
                     role=Role.ASSISTANT,
                     content=None,
                     tool_calls=(
-                        ToolCallRequest(call_id="c1", name="read_file", arguments_json='{"path":"a"}'),
+                        ToolCallRequest(
+                            call_id="c1", name="read_file", arguments_json='{"path":"a"}'
+                        ),
                     ),
                 )
             ]
@@ -173,15 +175,35 @@ def test_a_split_tool_call_reassembles_across_events() -> None:
     """The common shape: id and name first, argument fragments after."""
     chunks = chunks_from_events(
         [
-            {"choices": [{"delta": {"tool_calls": [
-                {"index": 0, "id": "c1", "function": {"name": "read_file", "arguments": ""}}
-            ]}}]},
-            {"choices": [{"delta": {"tool_calls": [
-                {"index": 0, "function": {"arguments": '{"path":'}}
-            ]}}]},
-            {"choices": [{"delta": {"tool_calls": [
-                {"index": 0, "function": {"arguments": '"src/a.py"}'}}
-            ]}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "function": {"name": "read_file", "arguments": ""},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"path":'}}]}}
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '"src/a.py"}'}}]
+                        }
+                    }
+                ]
+            },
         ]
     )
 
@@ -333,9 +355,7 @@ async def test_the_provider_streams_a_reply_over_a_real_socket(provider, endpoin
         {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 3}},
     ]
 
-    response = await provider.complete(
-        request_with([ChatMessage(role=Role.USER, content="q")])
-    )
+    response = await provider.complete(request_with([ChatMessage(role=Role.USER, content="q")]))
 
     assert response.message.content == "the answer is 42"
     assert response.usage == Usage(input_tokens=5, output_tokens=3)
@@ -355,12 +375,32 @@ async def test_the_provider_sends_a_bearer_token_and_the_expected_path(provider,
 
 async def test_a_tool_call_survives_the_wire(provider, endpoint) -> None:
     endpoint.events = [
-        {"choices": [{"delta": {"tool_calls": [
-            {"index": 0, "id": "c1", "function": {"name": "read_file", "arguments": ""}}
-        ]}}]},
-        {"choices": [{"delta": {"tool_calls": [
-            {"index": 0, "function": {"arguments": '{"path":"src/a.py"}'}}
-        ]}}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "read_file", "arguments": ""},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"path":"src/a.py"}'}}
+                        ]
+                    }
+                }
+            ]
+        },
     ]
 
     response = await provider.complete(request_with([ChatMessage(role=Role.USER, content="q")]))

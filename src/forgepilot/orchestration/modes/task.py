@@ -87,11 +87,7 @@ class TaskPlan:
         """
         if self.selection is None:
             return ()
-        return tuple(
-            schema
-            for schema in registry.schemas()
-            if schema.name in self.selection.tools
-        )
+        return tuple(schema for schema in registry.schemas() if schema.name in self.selection.tools)
 
     def describe(self) -> str:
         """A short human-readable summary. Used by tests and by the CLI."""
@@ -207,9 +203,10 @@ async def plan_task(
     if understanding.needs_human:
         # A classifier that is unsure, or that noticed something missing, sends
         # the task to a person. It never fills the gap with a guess.
-        reason = (
-            f"classifier confidence {understanding.confidence:.2f}"
-            + (f"; could not determine: {', '.join(understanding.missing)}" if understanding.missing else "")
+        reason = f"classifier confidence {understanding.confidence:.2f}" + (
+            f"; could not determine: {', '.join(understanding.missing)}"
+            if understanding.missing
+            else ""
         )
         machine.to(TaskState.AWAITING_INFO, reason)
         return TaskPlan(
@@ -540,8 +537,7 @@ async def run_task(
         # inside the loop — so the reason has to say both things: the code has pull
         # requests, and together they do not work.
         published_note = (
-            "the repositories were published before this check ran, so their pull "
-            "requests exist"
+            "the repositories were published before this check ran, so their pull requests exist"
             if any(d.delivered for d in deliveries)
             else "nothing was published"
         )
@@ -577,6 +573,7 @@ async def run_task(
         merged_check=merged,
         transitions=tuple(machine.history),
     )
+
 
 async def _deliver_repository(
     *,
@@ -894,9 +891,7 @@ async def _deliver_repository(
                 f"publish {len(changed)} changed file(s) on {repo.slug} as branch "
                 f"{branch!r} and open a draft pull request against "
                 f"{project.default_branch!r}. Checks: "
-                + "; ".join(
-                    f"{c.command} -> {'passed' if c.passed else 'FAILED'}" for c in checks
-                )
+                + "; ".join(f"{c.command} -> {'passed' if c.passed else 'FAILED'}" for c in checks)
             ),
         )
         if not authorisation.allowed:

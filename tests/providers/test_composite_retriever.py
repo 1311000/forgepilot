@@ -84,7 +84,16 @@ def constraints_for(*repos: RepoRef) -> ExecutionConstraints:
 def commit(root: Path, message: str) -> None:
     subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
     subprocess.run(
-        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@test", "commit", "-m", message],
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@test",
+            "commit",
+            "-m",
+            message,
+        ],
         cwd=root,
         check=True,
         capture_output=True,
@@ -263,9 +272,7 @@ async def test_a_composite_without_an_index_is_a_configuration_error(tmp_path: P
     root = create_root()
     with pytest.raises(ValueError) as caught:
         await root.plugin(
-            resolve_plugin(
-                "forgepilot.providers.retrieve.composite:CompositeRetrieverPlugin"
-            ),
+            resolve_plugin("forgepilot.providers.retrieve.composite:CompositeRetrieverPlugin"),
             {"roots": {}},
         )
 

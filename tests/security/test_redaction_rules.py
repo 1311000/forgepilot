@@ -51,9 +51,15 @@ SAMPLES = {
         "eyJhbGciOiJIUzI1NiJ9",
     ),
     "assigned-secret": ("API_TOKEN=abcdefghijklmnop", "abcdefghijklmnop"),
-    "auth-header": ("authorization: Bearer abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+    "auth-header": (
+        "authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        "abcdefghijklmnopqrstuvwxyz",
+    ),
     "url-userinfo": ("https://svc:s3cr3t-passw0rd@git.example.com/repo.git", "s3cr3t-passw0rd"),
-    "internal-url": ("see http://nexus/repository/internal for the artifact", "repository/internal"),
+    "internal-url": (
+        "see http://nexus/repository/internal for the artifact",
+        "repository/internal",
+    ),
 }
 
 #: Text a rule must leave alone. Each line is here because a plausible detector
@@ -112,7 +118,9 @@ def test_the_fingerprint_is_salted_and_stable() -> None:
 
 
 def test_two_occurrences_share_a_fingerprint_and_one_mark() -> None:
-    text, report = Redactor(salt=b"pepper").redact_text(f"{SAMPLES['token'][0]} / {SAMPLES['token'][0]}")
+    text, report = Redactor(salt=b"pepper").redact_text(
+        f"{SAMPLES['token'][0]} / {SAMPLES['token'][0]}"
+    )
 
     assert len(report.marks) == 1
     mark = report.marks[0]
@@ -224,7 +232,13 @@ def test_the_walk_redacts_values_in_structures_and_leaves_other_types_alone() ->
     assert redacted["API_KEY"] == f"{PLACEHOLDER_PREFIX}assigned-secret»"
     assert redacted["nested"]["password"] == f"{PLACEHOLDER_PREFIX}assigned-secret»"
     # nothing sensitive survives anywhere in the structure
-    for needle in ("abcd1234efgh", "hunter2xyz", "abcdefghijklmnopqrst", "MIIB", "abcdefghijklmnop"):
+    for needle in (
+        "abcd1234efgh",
+        "hunter2xyz",
+        "abcdefghijklmnopqrst",
+        "MIIB",
+        "abcdefghijklmnop",
+    ):
         assert needle not in dumped, needle
     assert report.applied
     assert {mark.kind for mark in report.marks} == {

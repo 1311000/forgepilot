@@ -71,9 +71,7 @@ def render_markdown(narrative: ChangeNarrative) -> str:
     if narrative.evidence:
         header_bits.append(f"{len(narrative.evidence)} 条证据")
     backend = narrative.blast_radius
-    header_bits.append(
-        f"影响面分析: {'AST' if backend.is_ast else '文本匹配'}"
-    )
+    header_bits.append(f"影响面分析: {'AST' if backend.is_ast else '文本匹配'}")
     if header_bits:
         out.append("")
         out.append("> " + " · ".join(header_bits))
@@ -107,7 +105,9 @@ def render_markdown(narrative: ChangeNarrative) -> str:
             paths = group.paths
             first = " ← 从这里开始" if index == 1 else ""
             out.append("")
-            out.append(f"### {index}｜{group.title} · {', '.join(f'`{p}`' for p in paths[:3])}{first}")
+            out.append(
+                f"### {index}｜{group.title} · {', '.join(f'`{p}`' for p in paths[:3])}{first}"
+            )
             out.append("")
             out.append(f"> {group.rationale.text}{_cite(group.rationale)}")
             if group.position_reason:
@@ -129,10 +129,7 @@ def render_markdown(narrative: ChangeNarrative) -> str:
         for path in paths[:12]:
             out.append(f"- `{path}`")
         out.append("")
-        out.append(
-            "默认折叠，但它们没有被删掉——改了锁定文件本身可能就是个信号"
-            "（依赖动了）。"
-        )
+        out.append("默认折叠，但它们没有被删掉——改了锁定文件本身可能就是个信号（依赖动了）。")
         out.append("</details>")
 
     # -- blast radius ------------------------------------------------------
@@ -165,10 +162,7 @@ def render_markdown(narrative: ChangeNarrative) -> str:
     )
     if coverage.unexamined_hunks:
         out.append("")
-        out.append(
-            f"⚠ 有 {coverage.unexamined_hunks} 个块**没有任何论断**，"
-            f"工具没有看过它们："
-        )
+        out.append(f"⚠ 有 {coverage.unexamined_hunks} 个块**没有任何论断**，工具没有看过它们：")
         for path in coverage.unexamined[:10]:
             out.append(f"- `{path}`")
         out.append("")

@@ -199,6 +199,7 @@ def test_no_document_is_unnamed() -> None:
         f"reader would look, or delete them."
     )
 
+
 def test_the_path_check_notices_a_missing_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the counterfactual: a guard that has only ever been green is a guess.
 

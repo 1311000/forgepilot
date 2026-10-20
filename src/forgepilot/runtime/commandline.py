@@ -59,8 +59,7 @@ def split_command(command: str) -> list[str]:
     if os.name == "nt":
         parts = shlex.split(command, posix=False)
         return [
-            part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part
-            for part in parts
+            part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part for part in parts
         ]
     return shlex.split(command, posix=True)
 
@@ -137,7 +136,9 @@ _LAUNCHERS: dict[str, frozenset[str]] = {
 }
 
 #: Programs that run a line of their own when handed a `-c`-style flag.
-_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh"})
+_SHELLS = frozenset(
+    {"sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh"}
+)
 
 #: The flags that make a shell run a nested line rather than start interactively.
 _SHELL_EXEC_FLAGS = frozenset({"-c", "/c", "-command", "--command"})
@@ -286,9 +287,7 @@ def _programs_in_segment(tokens: list[str], command: str) -> list[str]:
                 break
             index = index + 1 + target
             continue
-        if name in _SHELLS and any(
-            token.casefold() in _SHELL_EXEC_FLAGS for token in rest
-        ):
+        if name in _SHELLS and any(token.casefold() in _SHELL_EXEC_FLAGS for token in rest):
             raise UnparsableCommand(
                 f"{command!r} hands a line of its own to {program!r}; that line is "
                 f"not the line this check can see"
@@ -320,4 +319,3 @@ def programs(command: str) -> tuple[str, ...]:
             f"{command!r} names no program that can be checked against a command list"
         )
     return tuple(found)
-

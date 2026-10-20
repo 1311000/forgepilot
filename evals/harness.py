@@ -289,9 +289,7 @@ def scratch_dir(task: EvalTask, arm: str, rep: int) -> Path:
     traceable by anyone reading the results rather than by the model reading its
     own `pwd`.
     """
-    digest = hashlib.blake2s(
-        f"{task.name}|{arm}|{rep}".encode(), digest_size=6
-    ).hexdigest()
+    digest = hashlib.blake2s(f"{task.name}|{arm}|{rep}".encode(), digest_size=6).hexdigest()
     return scratch_root() / f"run-{digest}"
 
 
@@ -313,9 +311,7 @@ def memory_dir(task: EvalTask, arm: str) -> Path:
     Two arms never share a directory — `full` learning from `no-memory`'s runs would
     make the pair a sequence rather than a comparison.
     """
-    digest = hashlib.blake2s(
-        f"memory|{task.name}|{arm}".encode(), digest_size=6
-    ).hexdigest()
+    digest = hashlib.blake2s(f"memory|{task.name}|{arm}".encode(), digest_size=6).hexdigest()
     # ⚠️ **`store-`, not `memory-`.** The guard that keeps an arm's name out of its own
     # path (`tests/evals/test_arms_are_applied.py`) checks every `-`-split word of the
     # arm name, and `no-memory` has `memory` in it — so a directory called `memory-<hex>`
@@ -368,8 +364,13 @@ def memory_rows(task: EvalTask, arm: str) -> list[dict[str, Any]]:
 
 def _git(*args: str, cwd: Path) -> None:
     completed = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", check=False,
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if completed.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr}")
@@ -403,8 +404,14 @@ def prepare_repo(
     _git("init", "-b", "main", cwd=into)
     _git("add", "-A", cwd=into)
     _git(
-        "-c", "user.name=ForgePilot Eval", "-c", "user.email=eval@localhost",
-        "commit", "-m", f"eval fixture: {label or task.name}", cwd=into,
+        "-c",
+        "user.name=ForgePilot Eval",
+        "-c",
+        "user.email=eval@localhost",
+        "commit",
+        "-m",
+        f"eval fixture: {label or task.name}",
+        cwd=into,
     )
     return into
 
@@ -634,9 +641,7 @@ def run_layers(
     os.environ["FORGEPILOT_EVAL_TASK_DIR"] = str(task.directory)
 
     profile = load_profile(FORGE / "configs", "default")
-    layers = list(
-        compose_layers(profile, [FORGE / "examples" / "stat-fix" / "patch.yaml"])
-    )
+    layers = list(compose_layers(profile, [FORGE / "examples" / "stat-fix" / "patch.yaml"]))
 
     if task.patches:
         layers.append(patch_layer_from_mapping(f"--task:{task.name}", list(task.patches)))
@@ -815,7 +820,9 @@ def working_tree(repo: Path) -> Path:
     )
 
 
-def run_probes(repo: Path, task: EvalTask, *, interpreter: str | None = None) -> list[dict[str, Any]]:
+def run_probes(
+    repo: Path, task: EvalTask, *, interpreter: str | None = None
+) -> list[dict[str, Any]]:
     """Run the task's **held-out** probes against the agent's finished tree.
 
     ⚠️ **Why this exists.** Oracle pinning stops an agent weakening the tests, and
@@ -941,9 +948,7 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
         record = row.get("deliveries") or []
         if isinstance(wanted_deliveries, int):
             if len(record) != wanted_deliveries:
-                failures.append(
-                    f"{len(record)} deliveries recorded, expected {wanted_deliveries}"
-                )
+                failures.append(f"{len(record)} deliveries recorded, expected {wanted_deliveries}")
         else:
             have = {str(entry.get("repo", "")) for entry in record}
             missing = [slug for slug in wanted_deliveries if slug not in have]
@@ -989,9 +994,7 @@ def score(row: dict[str, Any], task: EvalTask) -> list[str]:
     # "Changed" rather than "added", because extending an existing test file is
     # as valid as creating one and the `feature` fixture has a test file already.
     if expect.get("changes_tests") and not row.get("changed_tests"):
-        failures.append(
-            "no test changed, so nothing in the checks describes the feature"
-        )
+        failures.append("no test changed, so nothing in the checks describes the feature")
 
     # **Did the agent tell you?** For a ticket that asks for something outside
     # the writable set, the failure to guard against is not the agent breaking
@@ -1068,8 +1071,13 @@ def base_paths(repo: Path) -> frozenset[str]:
     alone.
     """
     completed = subprocess.run(
-        ["git", "ls-files"], cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", check=False,
+        ["git", "ls-files"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     return frozenset(line for line in (completed.stdout or "").splitlines() if line)
 
@@ -1254,9 +1262,7 @@ def calls_outside_the_workspace(
         if event.kind != EventKind.TOOL_CALL or str(event.data.get("name")) != "run":
             continue
         try:
-            command = str(
-                json.loads(event.data.get("arguments") or "{}").get("command") or ""
-            )
+            command = str(json.loads(event.data.get("arguments") or "{}").get("command") or "")
         except (json.JSONDecodeError, AttributeError, TypeError):
             continue
         if not command:
@@ -1339,9 +1345,7 @@ def summarise_session(session: Any) -> dict[str, Any]:
             if e.kind == EventKind.TOOL_RESULT and (e.data.get("meta") or {}).get("refused")
         ),
         "shadowed": sum(
-            int(e.data.get("shadowed", 0))
-            for e in events
-            if e.kind == EventKind.COMPACTION_END
+            int(e.data.get("shadowed", 0)) for e in events if e.kind == EventKind.COMPACTION_END
         ),
         # ⚠️ **The only place a recall can be seen, and it is why this is read from the
         # log.** An arm with recall switched off and an arm whose store happened to be
@@ -1355,9 +1359,7 @@ def summarise_session(session: Any) -> dict[str, Any]:
         # that asked and matched nothing writes no event at all — so this is the only
         # number that says the warm run actually received something.
         "memories_served": sum(
-            int(e.data.get("count", 0))
-            for e in events
-            if e.kind == EventKind.MEMORY_RECALLED
+            int(e.data.get("count", 0)) for e in events if e.kind == EventKind.MEMORY_RECALLED
         ),
         "memory_writes": sum(1 for e in events if e.kind == EventKind.MEMORY_WRITE),
     }

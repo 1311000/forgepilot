@@ -60,7 +60,9 @@ class EvidenceUniverse:
         self.check_events = frozenset(check_events)
 
     @classmethod
-    def from_session(cls, session: object, *, changed_paths=(), hunk_ids=(), kinds=None) -> EvidenceUniverse:
+    def from_session(
+        cls, session: object, *, changed_paths=(), hunk_ids=(), kinds=None
+    ) -> EvidenceUniverse:
         """Build from a live session object."""
         from forgepilot.seams.session import EventKind
 
@@ -125,9 +127,7 @@ def validate_claim(claim: Claim, universe: EvidenceUniverse) -> Claim:
     return replace(claim, verified=True, unverified_reason="")
 
 
-def validate_narrative(
-    narrative: ChangeNarrative, universe: EvidenceUniverse
-) -> ChangeNarrative:
+def validate_narrative(narrative: ChangeNarrative, universe: EvidenceUniverse) -> ChangeNarrative:
     """Validate every claim, moving the failures to ``unverified``.
 
     Groups are validated too: a group whose rationale cannot be evidenced keeps
@@ -179,7 +179,9 @@ def _collect_evidence(
 
     for ref in narrative.blast_radius.affected_callers:
         key = (str(EvidenceKind.CODE_REF), None, None, ref.path)
-        seen.setdefault(key, EvidenceRef(kind=EvidenceKind.CODE_REF, code_ref=ref, detail="call site"))
+        seen.setdefault(
+            key, EvidenceRef(kind=EvidenceKind.CODE_REF, code_ref=ref, detail="call site")
+        )
 
     return tuple(seen.values())
 

@@ -84,7 +84,9 @@ def prepare_review(
 
     groups = group_hunks(parsed, sources=sources)
 
-    removed = [line.text for hunk in parsed.hunks for line in hunk.lines if line.kind.value == "remove"]
+    removed = [
+        line.text for hunk in parsed.hunks for line in hunk.lines if line.kind.value == "remove"
+    ]
     changed_sources = {p: sources[p] for p in parsed.paths if p in sources}
     blast_radius = analyse_blast_radius(
         changed_sources=changed_sources,

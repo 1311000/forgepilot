@@ -255,9 +255,7 @@ async def test_nothing_was_spawned_when_a_policy_is_refused(sandbox, tmp_path) -
 # ---------------------------------------------------------------------------
 async def test_a_hung_command_is_killed_and_reported_as_timed_out(sandbox, tmp_path) -> None:
     """'It hung' and 'it passed' must never be the same result."""
-    result = await run(
-        sandbox, python("import time; time.sleep(30)"), tmp_path, timeout_s=0.5
-    )
+    result = await run(sandbox, python("import time; time.sleep(30)"), tmp_path, timeout_s=0.5)
 
     assert result.timed_out is True
     assert result.executed is True, "it did run — it just did not finish"

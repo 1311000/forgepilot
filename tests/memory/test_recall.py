@@ -234,9 +234,7 @@ async def test_the_rendering_says_what_backs_each_line(tmp_path: Any) -> None:
             )
         )
         order = {str(record.id): record for record in records}
-        body = render_recalled(
-            [order[str(stored)], order[str(observed)], order[str(guessed)]]
-        )
+        body = render_recalled([order[str(stored)], order[str(observed)], order[str(guessed)]])
 
         assert body.startswith(RECALL_HEADING)
         assert "**not** part of" in body

@@ -89,7 +89,9 @@ class MockRetrieverPlugin(PluginService):
         )
         return self
 
-    def _permitted(self, repos: Sequence[RepoRef], constraints: ExecutionConstraints) -> list[RepoRef]:
+    def _permitted(
+        self, repos: Sequence[RepoRef], constraints: ExecutionConstraints
+    ) -> list[RepoRef]:
         permitted: list[RepoRef] = []
         for repo in repos:
             if constraints.allows_repo(repo):
@@ -154,9 +156,7 @@ class MockRetrieverPlugin(PluginService):
         for entry in self._files:
             if entry.repo not in permitted or (entry.repo, entry.ref) not in served:
                 continue
-            if query.globs and not any(
-                entry.path.endswith(g.lstrip("*")) for g in query.globs
-            ):
+            if query.globs and not any(entry.path.endswith(g.lstrip("*")) for g in query.globs):
                 continue
             for line_no, line in enumerate(entry.text.splitlines(), start=1):
                 match = matcher.search(line)

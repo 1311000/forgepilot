@@ -941,9 +941,7 @@ def conflict_key(record: MemoryRecord) -> tuple[str, str, str, str, str]:
     )
 
 
-def siblings_of(
-    records: Sequence[MemoryRecord], record: MemoryRecord
-) -> tuple[MemoryRecord, ...]:
+def siblings_of(records: Sequence[MemoryRecord], record: MemoryRecord) -> tuple[MemoryRecord, ...]:
     """The records that share this one's key — the only ones worth comparing."""
     key = conflict_key(record)
     return tuple(other for other in records if other.id != record.id and conflict_key(other) == key)
@@ -1181,7 +1179,9 @@ def may_recall(query: RecallQuery, constraints: ExecutionConstraints) -> bool:
 #: deliberately not an English stop-word list: this codebase's memories and
 #: questions are English today, but a list like this is a language decision, and
 #: the short one is the one that can be defended.
-_QUERY_NOISE = frozenset({"a", "an", "and", "are", "for", "how", "is", "it", "of", "on", "the", "to", "what", "why"})
+_QUERY_NOISE = frozenset(
+    {"a", "an", "and", "are", "for", "how", "is", "it", "of", "on", "the", "to", "what", "why"}
+)
 
 
 def text_tokens(text: str) -> tuple[str, ...]:
@@ -1375,7 +1375,9 @@ class MemoryStore(Protocol):
         """
         ...
 
-    async def reconcile(self, memory_id: MemoryId, *, now: datetime | None = None) -> tuple[Resolution, ...]:
+    async def reconcile(
+        self, memory_id: MemoryId, *, now: datetime | None = None
+    ) -> tuple[Resolution, ...]:
         """Compare a record with the ones already on its subject, and act on the answer.
 
         Called right after an admission, and returns what each comparison decided —
@@ -1401,7 +1403,12 @@ class MemoryStore(Protocol):
         ...
 
     async def purge(
-        self, memory_id: MemoryId, *, approved_by: str, reason: str = "", now: datetime | None = None
+        self,
+        memory_id: MemoryId,
+        *,
+        approved_by: str,
+        reason: str = "",
+        now: datetime | None = None,
     ) -> PurgeTombstone:
         """Delete a memory's content, keeping only proof that it existed.
 
@@ -1445,4 +1452,3 @@ class MemoryStore(Protocol):
         the same reason :meth:`reconcile` returns its resolutions.
         """
         ...
-

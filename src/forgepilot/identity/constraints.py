@@ -153,9 +153,7 @@ def _prefix_covers(policy_pattern: str, grant_pattern: str) -> bool:
     return grant_value == policy_value or grant_value.startswith(policy_value + "/")
 
 
-def _narrowed_prefixes(
-    grant: frozenset[str], policy: frozenset[str]
-) -> frozenset[str]:
+def _narrowed_prefixes(grant: frozenset[str], policy: frozenset[str]) -> frozenset[str]:
     if not policy:
         return frozenset()
     return frozenset(g for g in grant if any(_prefix_covers(p, g) for p in policy))

@@ -154,9 +154,7 @@ class GitWorktreeWorkspacePlugin(PluginService):
         return (self._worktree_root / self._safe(str(session_id)) / self._safe(repo.slug)).resolve()
 
     # -- Workspace ---------------------------------------------------------
-    async def prepare(
-        self, repo: RepoRef, base_ref: str, session_id: SessionId
-    ) -> WorkspaceHandle:
+    async def prepare(self, repo: RepoRef, base_ref: str, session_id: SessionId) -> WorkspaceHandle:
         key = (session_id, repo.slug)
         existing = self._handles.get(key)
         if existing is not None:
@@ -318,7 +316,9 @@ class GitWorktreeWorkspacePlugin(PluginService):
             message,
             cwd=handle.root,
         )
-        return CommitRef(repo=handle.repo, sha=self._git("rev-parse", "HEAD", cwd=handle.root).strip())
+        return CommitRef(
+            repo=handle.repo, sha=self._git("rev-parse", "HEAD", cwd=handle.root).strip()
+        )
 
     def _in_ref(self, ref: str, path: str, cwd: Path) -> bool:
         completed = subprocess.run(
@@ -330,9 +330,7 @@ class GitWorktreeWorkspacePlugin(PluginService):
         )
         return completed.returncode == 0
 
-    async def restore(
-        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
-    ) -> None:
+    async def restore(self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]) -> None:
         """Put ``paths`` back to ``ref``, deleting the ones ``ref`` never had.
 
         The two halves are both needed and they are not symmetric. ``checkout``

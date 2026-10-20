@@ -83,9 +83,14 @@ async def make_session(root: Any, *, turns: int = 4, brief: str = "fix the bug")
         call = f"c{turn}"
         await session.turn_start(TurnId(turn))
         await session.assistant_message(
-            TurnId(turn), 1, "", tool_calls=[{"callId": call, "name": "read_file", "arguments": "{}"}]
+            TurnId(turn),
+            1,
+            "",
+            tool_calls=[{"callId": call, "name": "read_file", "arguments": "{}"}],
         )
-        await session.tool_call(TurnId(turn), 1, call_id=call, name="read_file", arguments_json="{}")
+        await session.tool_call(
+            TurnId(turn), 1, call_id=call, name="read_file", arguments_json="{}"
+        )
         await session.tool_result(TurnId(turn), 1, call_id=call, content=f"src/f{turn}.py\n{BIG}")
         await session.turn_end(TurnId(turn), "completed")
     await session.flush()
@@ -242,11 +247,7 @@ async def test_masking_never_breaks_a_call_from_its_result() -> None:
         assert_no_orphan_tool_calls(derive_messages(session.events))
         placeholders = result_seqs(session, SurfaceOp.REPLACE)
         assert placeholders, "no placeholder reached the log"
-        assert all(
-            e.data.get("masked")
-            for e in session.committed_events
-            if e.seq in placeholders
-        )
+        assert all(e.data.get("masked") for e in session.committed_events if e.seq in placeholders)
     finally:
         await close(fibers)
 
@@ -461,9 +462,7 @@ async def test_a_summary_is_never_summarised_again() -> None:
         first = await compact(root, session, window=200)
         assert first.performed, first.detail
 
-        summaries = [
-            e for e in session.committed_events if e.kind == EventKind.COMPACTION_SUMMARY
-        ]
+        summaries = [e for e in session.committed_events if e.kind == EventKind.COMPACTION_SUMMARY]
         assert len(summaries) == 1
         barrier = summaries[0].seq
 
@@ -543,8 +542,7 @@ async def test_nothing_to_do_is_not_a_failure_and_does_not_open_the_breaker() ->
         failures = [(await compact(root, session, window=200)).failure for _ in range(3)]
 
         assert failures == [FAILURE_NO_REGION] * 3, (
-            f"a pass with nothing to do was counted as a fault and opened the "
-            f"breaker: {failures}"
+            f"a pass with nothing to do was counted as a fault and opened the breaker: {failures}"
         )
     finally:
         await close(fibers)
@@ -605,7 +603,9 @@ def test_consecutive_failures_counts_from_the_log() -> None:
 
     def ev(seq, kind, code=None):
         data = {"code": code} if code else {}
-        return SessionEvent(seq=seq, event_id=f"e{seq}", kind=kind, data=data, surface=SurfaceOp.LOG_ONLY)
+        return SessionEvent(
+            seq=seq, event_id=f"e{seq}", kind=kind, data=data, surface=SurfaceOp.LOG_ONLY
+        )
 
     def broke(seq):
         return ev(seq, EventKind.COMPACTION_FAILED, FAILURE_EMPTY)

@@ -92,5 +92,8 @@ def test_an_arm_that_claims_to_change_nothing_and_did(matrix: Any) -> None:
 
 
 def test_a_cell_the_table_does_not_name_is_reported(matrix: Any) -> None:
-    rows = [*rows_for(matrix), {"task": "bug-fix", "arm": "an-arm-that-was-renamed", "passed": True}]
+    rows = [
+        *rows_for(matrix),
+        {"task": "bug-fix", "arm": "an-arm-that-was-renamed", "passed": True},
+    ]
     assert any("a cell the table does not name" in problem for problem in matrix.check(rows))

@@ -46,7 +46,9 @@ async def scripted_rig(tmp_path):
         fibers.append(fiber)
 
     await load("forgepilot.providers.session_store.memory:InMemorySessionStorePlugin")
-    await load("forgepilot.providers.sandbox.scripted:ScriptedSandboxPlugin", {"enforcement": "full"})
+    await load(
+        "forgepilot.providers.sandbox.scripted:ScriptedSandboxPlugin", {"enforcement": "full"}
+    )
     await load("forgepilot.runtime.tools.registry:ToolRegistryPlugin")
     await load("forgepilot.runtime.approval:ApprovalServicePlugin", {"policy": "never"})
     await load("forgepilot.runtime.tools.builtin:BuiltinToolsPlugin")
@@ -77,8 +79,14 @@ async def scripted_rig(tmp_path):
 
     try:
         yield type(
-            "Rig", (), {"root": root, "sandbox": root.sandbox, "pipeline": pipeline,
-                        "session": await Session.open(root.sessionPersistence, sid)}
+            "Rig",
+            (),
+            {
+                "root": root,
+                "sandbox": root.sandbox,
+                "pipeline": pipeline,
+                "session": await Session.open(root.sessionPersistence, sid),
+            },
         )
     finally:
         for fiber in reversed(fibers):

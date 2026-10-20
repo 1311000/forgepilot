@@ -83,9 +83,7 @@ class ToolRegistryPlugin(PluginService):
 
     def schemas(self) -> tuple[ToolSchema, ...]:
         return tuple(
-            ToolSchema(
-                name=d.name, description=d.description, parameters=dict(d.parameters)
-            )
+            ToolSchema(name=d.name, description=d.description, parameters=dict(d.parameters))
             for d in self.definitions()
         )
 

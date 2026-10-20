@@ -154,7 +154,9 @@ async def echoing_rig(tmp_path):
 
     sid = SessionId("echoing")
     await root.sessionPersistence.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice")
+        SessionHeader(
+            session_id=sid, created_at=datetime.now(UTC), tenant="acme", principal="alice"
+        )
     )
 
     try:

@@ -86,8 +86,11 @@ def _a_token(monkeypatch: pytest.MonkeyPatch) -> None:
 def write_cassette(path: Path, *, responses: dict[str, Any]) -> Path:
     path.write_text(
         json.dumps(
-            {"recorded_at": "2026-10-18T00:00:00+08:00", "workspace_id": WORKSPACE,
-             "responses": responses},
+            {
+                "recorded_at": "2026-10-18T00:00:00+08:00",
+                "workspace_id": WORKSPACE,
+                "responses": responses,
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -101,15 +104,14 @@ async def close(fibers: tuple[Any, ...]) -> None:
         await dispose_fiber(fiber)
 
 
-async def make_source(
-    *, config: dict[str, Any], transport: httpx.BaseTransport | None = None
-):
+async def make_source(*, config: dict[str, Any], transport: httpx.BaseTransport | None = None):
     """Boot the way a profile would; a transport makes the HTTP layer observable."""
     root = create_root()
 
     if transport is None:
         fiber = await root.plugin(TapdTicketSourcePlugin, config)
     else:
+
         def with_transport(ctx: Any, cfg: Any) -> None:
             TapdTicketSourcePlugin(ctx, cfg, transport=transport)  # type: ignore[arg-type]
 

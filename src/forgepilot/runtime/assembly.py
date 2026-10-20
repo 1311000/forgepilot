@@ -51,9 +51,7 @@ def new_session_id() -> SessionId:
     eval runs of 0.2s each left **two** session files, and eighteen `awaiting_info` rows
     inside a 4.5-second window left **four**.
     """
-    return SessionId(
-        f"session-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
-    )
+    return SessionId(f"session-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}")
 
 
 @dataclass

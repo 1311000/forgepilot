@@ -84,13 +84,19 @@ async def deliver_a_fix(rig):
         constraints=rig.constraints,
         registry=rig.registry,
         classifier=ClassifierGateway(
-            FixedClassifier(TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95))
+            FixedClassifier(
+                TicketUnderstanding(category="bug", symptom="无限重试", confidence=0.95)
+            )
         ),
     )
     rig.llm.script(
-        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": BUGGY}), call_id="c1"),
+        tool_call_turn(
+            "write_file", json.dumps({"path": "src/login.py", "content": BUGGY}), call_id="c1"
+        ),
         text_turn("试了一版没有上限的修复"),
-        tool_call_turn("write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c2"),
+        tool_call_turn(
+            "write_file", json.dumps({"path": "src/login.py", "content": FIXED}), call_id="c2"
+        ),
         text_turn("给重试循环加了上限，超限后抛错"),
     )
     rig.sandbox.script(
@@ -166,7 +172,10 @@ async def test_the_narrative_names_the_check_that_actually_ran(task_rig) -> None
 async def test_the_rendered_document_shows_order_coverage_and_what_is_unverified(task_rig) -> None:
     outcome = await deliver_a_fix(task_rig)
     narrative = await build_review(
-        _delivery(outcome).diff, title="fix: 登录无限重试", session=task_rig.session, use_model=False
+        _delivery(outcome).diff,
+        title="fix: 登录无限重试",
+        session=task_rig.session,
+        use_model=False,
     )
 
     markdown = render_markdown(narrative)
@@ -238,7 +247,10 @@ async def test_a_model_authored_claim_citing_an_invented_hunk_is_demoted(task_ri
                         "cites": [{"kind": "diff_hunk", "hunk_id": "src/imaginary.py#999"}],
                     },
                     "approach": [
-                        {"text": "引入了分布式锁。", "cites": [{"kind": "session_event", "session_seq": 999999}]},
+                        {
+                            "text": "引入了分布式锁。",
+                            "cites": [{"kind": "session_event", "session_seq": 999999}],
+                        },
                         {"text": "性能提升三倍。"},  # no citation at all
                     ],
                     "risks": [],
@@ -248,7 +260,11 @@ async def test_a_model_authored_claim_citing_an_invented_hunk_is_demoted(task_ri
     )
 
     narrative = await build_review(
-        _delivery(outcome).diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
+        _delivery(outcome).diff,
+        title="t",
+        session=task_rig.session,
+        llm=task_rig.llm,
+        model="replay-1",
     )
 
     assert not narrative.intent.verified
@@ -260,13 +276,19 @@ async def test_a_model_authored_claim_citing_an_invented_hunk_is_demoted(task_ri
     assert "原因：" in markdown, "each demoted claim says why"
 
 
-async def test_a_model_that_returns_garbage_degrades_to_the_deterministic_narrative(task_rig) -> None:
+async def test_a_model_that_returns_garbage_degrades_to_the_deterministic_narrative(
+    task_rig,
+) -> None:
     """A model failure must not fail the review — the deterministic floor holds."""
     outcome = await deliver_a_fix(task_rig)
     task_rig.llm.script(text_turn("I'm afraid I can't do that."))
 
     narrative = await build_review(
-        _delivery(outcome).diff, title="t", session=task_rig.session, llm=task_rig.llm, model="replay-1"
+        _delivery(outcome).diff,
+        title="t",
+        session=task_rig.session,
+        llm=task_rig.llm,
+        model="replay-1",
     )
 
     assert narrative.meta["generator"] == "deterministic"

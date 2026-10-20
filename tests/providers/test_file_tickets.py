@@ -72,9 +72,7 @@ async def test_a_ticket_file_becomes_the_seams_own_ticket(tmp_path: Path) -> Non
 
 
 async def test_the_file_name_is_the_id_when_the_file_does_not_say(tmp_path: Path) -> None:
-    root, fiber = await make_source(
-        tmp_path, {"T-42.yaml": "title: something\n"}
-    )
+    root, fiber = await make_source(tmp_path, {"T-42.yaml": "title: something\n"})
     try:
         assert (await root.tickets.fetch(TicketId("T-42"))).title == "something"
     finally:

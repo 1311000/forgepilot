@@ -122,9 +122,7 @@ class Session:
         principal: str = "",
         redactor: Redactor | None = None,
     ) -> Session:
-        header = await store.fork(
-            source, boundary=boundary, tenant=tenant, principal=principal
-        )
+        header = await store.fork(source, boundary=boundary, tenant=tenant, principal=principal)
         committed = [event async for event in store.read(header.session_id)]
         return cls(store, header, committed, redactor=redactor)
 
@@ -374,9 +372,7 @@ class Session:
         reconstructed from the log alone — so it must be written *before*
         dispatch, not after.
         """
-        return await self.append(
-            EventKind.REQUEST_HEADER, dict(header), turn=turn, step=step
-        )
+        return await self.append(EventKind.REQUEST_HEADER, dict(header), turn=turn, step=step)
 
     async def constraint_snapshot(self, constraints: ExecutionConstraints) -> SessionEvent:
         """Record the authority in force, so a resumed session cannot escalate.

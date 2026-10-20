@@ -144,9 +144,7 @@ class TapdTicketSourcePlugin(PluginService):
         self._token_env = str(cfg.get("token_env") or "FORGEPILOT_TAPD_TOKEN")
         self._auth = str(cfg.get("auth") or "token")
         if self._auth not in {"token", "basic"}:
-            raise ConfigError(
-                f"tickets/tapd: unknown `auth` {self._auth!r}. One of: basic, token."
-            )
+            raise ConfigError(f"tickets/tapd: unknown `auth` {self._auth!r}. One of: basic, token.")
         self._timeout = float(cfg.get("timeout") or 30.0)
         self._transport = transport
         self._priorities = _enum_map(
@@ -166,9 +164,7 @@ class TapdTicketSourcePlugin(PluginService):
         if not mode:
             mode = "replay" if self._cassette_path else "live"
         if mode not in {"replay", "live"}:
-            raise ConfigError(
-                f"tickets/tapd: unknown `mode` {mode!r}. One of: live, replay."
-            )
+            raise ConfigError(f"tickets/tapd: unknown `mode` {mode!r}. One of: live, replay.")
         self._mode = mode
         if self._mode == "replay" and self._cassette_path is None:
             raise ConfigError(
@@ -194,12 +190,9 @@ class TapdTicketSourcePlugin(PluginService):
             ) from exc
         except json.JSONDecodeError as exc:
             raise ConfigError(f"tickets/tapd: {path} is not valid JSON: {exc}") from exc
-        if not isinstance(payload, Mapping) or not isinstance(
-            payload.get("responses"), Mapping
-        ):
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("responses"), Mapping):
             raise ConfigError(
-                f"tickets/tapd: {path} must hold a `responses` mapping of "
-                f"request-key -> payload."
+                f"tickets/tapd: {path} must hold a `responses` mapping of request-key -> payload."
             )
         for key in payload["responses"]:
             if " " not in str(key) or "?" not in str(key):
@@ -265,9 +258,7 @@ class TapdTicketSourcePlugin(PluginService):
             self._write_cassette()
         return payload
 
-    async def _request(
-        self, method: str, path: str, params: Mapping[str, str], body: Any
-    ) -> Any:
+    async def _request(self, method: str, path: str, params: Mapping[str, str], body: Any) -> Any:
         token = self._token()
         query = dict(params)
         auth: Any = None
@@ -283,9 +274,7 @@ class TapdTicketSourcePlugin(PluginService):
             auth = (user, secret)
 
         url = f"{self._api_base}{path}"
-        async with httpx.AsyncClient(
-            timeout=self._timeout, transport=self._transport
-        ) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
             try:
                 if method == "GET":
                     answered = await client.get(url, params=query, auth=auth)
@@ -483,16 +472,12 @@ def _ticket_from(
         title=title,
         description_md=str(bug.get("description") or ""),
         status=_mapped(statuses, status_text, TicketStatus.NEW, "status", ticket_id),
-        priority=_mapped(
-            priorities, priority_text, TicketPriority.MEDIUM, "priority", ticket_id
-        ),
+        priority=_mapped(priorities, priority_text, TicketPriority.MEDIUM, "priority", ticket_id),
         reporter=_person(bug.get("reporter")),
         assignee=_person(bug.get("owner")),
         comments=comments,
         custom_fields={
-            key: value
-            for key, value in bug.items()
-            if str(key).startswith("custom_field_")
+            key: value for key, value in bug.items() if str(key).startswith("custom_field_")
         },
         raw=dict(bug),
     )

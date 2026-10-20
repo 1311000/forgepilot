@@ -201,7 +201,10 @@ async def test_ticket_source_round_trips_and_preserves_raw_payload(container) ->
     assert isinstance(tickets, TicketSource)
 
     tickets.add_ticket_simple(
-        "T-1", "Login retries forever", "steps...", priority=TicketPriority.HIGH,
+        "T-1",
+        "Login retries forever",
+        "steps...",
+        priority=TicketPriority.HIGH,
         raw={"id": "T-1", "workspace_id": "w", "custom_field_17": "keep me"},
     )
 
@@ -259,8 +262,12 @@ async def test_vcs_opens_pull_request_with_the_operation(container) -> None:
 
     ref = await vcs.open_pull_request(
         PullRequestDraft(
-            repo=ACME, source_branch="fix/T-1", target_branch="main",
-            title="fix", body_md="body", ticket_id="T-1",
+            repo=ACME,
+            source_branch="fix/T-1",
+            target_branch="main",
+            title="fix",
+            body_md="body",
+            ticket_id="T-1",
         ),
         constraints_for(ACME),
     )
@@ -278,8 +285,11 @@ async def test_vcs_refuses_to_open_a_pull_request_without_the_operation(containe
     with pytest.raises(PermissionError, match="open_pr"):
         await vcs.open_pull_request(
             PullRequestDraft(
-                repo=ACME, source_branch="fix/T-1", target_branch="main",
-                title="fix", body_md="body",
+                repo=ACME,
+                source_branch="fix/T-1",
+                target_branch="main",
+                title="fix",
+                body_md="body",
             ),
             no_open_pr,
         )
@@ -533,7 +543,9 @@ async def test_approval_fails_closed_when_there_is_no_answer(container) -> None:
     from forgepilot.seams.approval import ApprovalRequest
 
     request = ApprovalRequest(
-        request_id="a-1", session_id=SessionId("s-1"), tool_name="shell",
+        request_id="a-1",
+        session_id=SessionId("s-1"),
+        tool_name="shell",
         arguments_json='{"cmd": "rm -rf /"}',
     )
 
@@ -548,7 +560,9 @@ async def test_approval_is_one_shot(container) -> None:
     approval.script(ApprovalOutcome.ALLOWED_ONCE)
 
     request = ApprovalRequest(
-        request_id="a-1", session_id=SessionId("s-1"), tool_name="shell",
+        request_id="a-1",
+        session_id=SessionId("s-1"),
+        tool_name="shell",
         arguments_json="{}",
     )
 

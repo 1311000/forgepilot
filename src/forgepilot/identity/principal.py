@@ -107,9 +107,7 @@ class PrincipalServicePlugin(PluginService):
         try:
             entries = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise AuthenticationFailed(
-                f"{self.tokens_env} is not valid JSON: {exc}"
-            ) from exc
+            raise AuthenticationFailed(f"{self.tokens_env} is not valid JSON: {exc}") from exc
         if not isinstance(entries, list):
             raise AuthenticationFailed(
                 f"{self.tokens_env} must be a JSON array of credential objects"
@@ -118,9 +116,7 @@ class PrincipalServicePlugin(PluginService):
         added = 0
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
-                raise AuthenticationFailed(
-                    f"{self.tokens_env}[{index}] must be an object"
-                )
+                raise AuthenticationFailed(f"{self.tokens_env}[{index}] must be an object")
             self.add_token_from_mapping(entry)
             added += 1
         return added
@@ -140,9 +136,7 @@ class PrincipalServicePlugin(PluginService):
         grant = Grant(
             operations=frozenset(Operation(str(op)) for op in entry.get("operations") or ()),
             repos=frozenset(
-                RepoRef(
-                    host=str(r["host"]), namespace=str(r["namespace"]), name=str(r["name"])
-                )
+                RepoRef(host=str(r["host"]), namespace=str(r["namespace"]), name=str(r["name"]))
                 for r in entry.get("repos") or ()
             ),
             repo_prefixes=frozenset(str(p) for p in entry.get("repo_prefixes") or ()),

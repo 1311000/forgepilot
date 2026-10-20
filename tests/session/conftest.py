@@ -35,7 +35,5 @@ async def store(request, tmp_path: Path):
 async def created(store):
     """A store plus a session id that already exists in it."""
     sid = SessionId("s-under-test")
-    await store.create(
-        SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme")
-    )
+    await store.create(SessionHeader(session_id=sid, created_at=datetime.now(UTC), tenant="acme"))
     return store, sid

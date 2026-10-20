@@ -46,6 +46,7 @@ class UnknownRepository(ForgePilotError):
     whole codebase.
     """
 
+
 __all__ = [
     "SERVICE_NAME",
     "NotARepository",
@@ -106,9 +107,7 @@ class Workspace(Protocol):
         """
         ...
 
-    async def restore(
-        self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]
-    ) -> None:
+    async def restore(self, handle: WorkspaceHandle, ref: str, paths: Sequence[str]) -> None:
         """Make ``paths`` in the working tree match ``ref``.
 
         A path ``ref`` does not contain is **removed**, not skipped: "the agent

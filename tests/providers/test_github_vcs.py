@@ -55,9 +55,7 @@ def tmp_path_of(mirror: Path) -> Path:
     return mirror.parent / "_wt"
 
 
-def branch_with_a_commit(
-    mirror: Path, branch: str, scratch: Path, files: dict[str, str]
-) -> None:
+def branch_with_a_commit(mirror: Path, branch: str, scratch: Path, files: dict[str, str]) -> None:
     """Put a real commit on ``branch``, the way `workspace.prepare` plus a model would.
 
     A **bare** repository has no working tree, so `git checkout -b` refuses with
@@ -127,9 +125,7 @@ def remote(remote_base: str, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def vcs(
-    tmp_path: Path, remote: Path, remote_base: str, monkeypatch: pytest.MonkeyPatch
-):
+async def vcs(tmp_path: Path, remote: Path, remote_base: str, monkeypatch: pytest.MonkeyPatch):
     """The provider, pointed at the local stand-in host."""
     from forgepilot.config import resolve_plugin
     from forgepilot.kernel import create_root, dispose_fiber
@@ -430,10 +426,14 @@ class Recorder:
 
     def __init__(self, status: int = 201, payload: object | None = None) -> None:
         self.status = status
-        self.payload = payload if payload is not None else {
-            "number": 7,
-            "html_url": f"https://github.com/{REPO.namespace}/{REPO.name}/pull/7",
-        }
+        self.payload = (
+            payload
+            if payload is not None
+            else {
+                "number": 7,
+                "html_url": f"https://github.com/{REPO.namespace}/{REPO.name}/pull/7",
+            }
+        )
         self.requests: list[tuple[str, str, bytes, dict[str, str]]] = []
 
     def handler(self, request):  # noqa: ANN001 - httpx.Request
@@ -495,9 +495,7 @@ async def test_the_token_is_sent_as_a_bearer_credential(vcs) -> None:
     vcs.transport_factory = client_factory(recorder)
 
     await vcs.open_pull_request(
-        PullRequestDraft(
-            repo=REPO, source_branch="b", target_branch="main", title="t", body_md=""
-        ),
+        PullRequestDraft(repo=REPO, source_branch="b", target_branch="main", title="t", body_md=""),
         constraints_for(),
     )
 
@@ -525,7 +523,9 @@ async def test_the_body_of_an_open_pull_request_can_be_replaced(vcs) -> None:
     method, url, body, _ = recorder.requests[0]
     assert method == "PATCH"
     assert url == f"https://api.github.com/repos/{REPO.namespace}/{REPO.name}/pulls/7"
-    assert json.loads(body) == {"body": "Fixes BUG-2.\n\n- `github.com/1311000/test-reporting` — #8\n"}
+    assert json.loads(body) == {
+        "body": "Fixes BUG-2.\n\n- `github.com/1311000/test-reporting` — #8\n"
+    }
 
 
 async def test_rewriting_a_body_refuses_without_the_operation(vcs) -> None:

@@ -140,4 +140,3 @@ async def test_readiness_names_a_missing_session_store() -> None:
     assert status == 503
     assert "session store" in body["reason"]
     assert readiness(stopping=False, store=object()) == (200, {"status": "ready"})
-

@@ -164,9 +164,7 @@ class JsonlSessionStorePlugin(PluginService):
                     "tenant": header.tenant,
                     "principal": header.principal,
                     "cwd": header.cwd,
-                    "parent_session": str(header.parent_session)
-                    if header.parent_session
-                    else None,
+                    "parent_session": str(header.parent_session) if header.parent_session else None,
                     "seed_boundary": header.seed_boundary,
                 },
             )

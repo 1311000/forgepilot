@@ -148,9 +148,7 @@ def drain_stream(chunks: Sequence[StreamChunk]) -> ChatResponse:
         if chunk.kind == "text":
             text_parts.append(chunk.text)
         elif chunk.kind == "tool_call_delta":
-            slot = tool_calls.setdefault(
-                chunk.tool_index or 0, {"id": "", "name": "", "args": ""}
-            )
+            slot = tool_calls.setdefault(chunk.tool_index or 0, {"id": "", "name": "", "args": ""})
             if chunk.tool_call_id:
                 slot["id"] = chunk.tool_call_id
             if chunk.tool_name:

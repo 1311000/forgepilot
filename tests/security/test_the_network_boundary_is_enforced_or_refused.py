@@ -120,9 +120,7 @@ async def test_the_scope_section_and_the_sandbox_get_the_same_network_decision(
     this test was written in response to.
     """
     constraints = _constraints(network)
-    project = ProjectConfig(
-        name="svc-a", repos=(REPO,), repo_prefixes=("git.corp/team/*",)
-    )
+    project = ProjectConfig(name="svc-a", repos=(REPO,), repo_prefixes=("git.corp/team/*",))
 
     scope = next(
         section
@@ -131,9 +129,7 @@ async def test_the_scope_section_and_the_sandbox_get_the_same_network_decision(
         )
         if section.name == "scope"
     )
-    claimed = [
-        line for line in scope.render().splitlines() if line.startswith("Network:")
-    ]
+    claimed = [line for line in scope.render().splitlines() if line.startswith("Network:")]
     assert claimed == [f"Network: {network.value}"], (
         "the model was told something about the network that is not what it was given"
     )

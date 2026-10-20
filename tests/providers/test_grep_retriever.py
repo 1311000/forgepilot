@@ -179,9 +179,7 @@ async def test_open_returns_the_lines_it_actually_read(retriever) -> None:
     )
     location = hits[0].location
 
-    slice_ = await retriever.open(
-        location, LineSpan(start=1, end=4), constraints_for(REPO)
-    )
+    slice_ = await retriever.open(location, LineSpan(start=1, end=4), constraints_for(REPO))
 
     assert "MAX_ATTEMPTS = 3" in slice_.text
     assert slice_.location.ref == location.ref, "the slice must report the ref it read"
@@ -217,9 +215,7 @@ async def test_open_refuses_a_repository_the_caller_cannot_reach(retriever) -> N
 # ---------------------------------------------------------------------------
 # The ref a hit carries is resolved, not echoed
 # ---------------------------------------------------------------------------
-async def test_the_ref_is_read_from_the_checkout_not_copied_from_the_query(
-    roots, tmp_path
-) -> None:
+async def test_the_ref_is_read_from_the_checkout_not_copied_from_the_query(roots, tmp_path) -> None:
     """Asking for `main` and reporting `main` proves nothing.
 
     The seam's rule is that a hit names the revision it *came from*. A provider
@@ -237,7 +233,9 @@ async def test_the_ref_is_read_from_the_checkout_not_copied_from_the_query(
     subprocess.run(["git", "add", "-A"], cwd=root_path, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"],
-        cwd=root_path, capture_output=True, check=True,
+        cwd=root_path,
+        capture_output=True,
+        check=True,
     )
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root_path, capture_output=True, text=True, check=True
@@ -270,9 +268,7 @@ async def test_the_ref_is_read_from_the_checkout_not_copied_from_the_query(
         await dispose_fiber(fiber)
 
 
-async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(
-    retriever, roots
-) -> None:
+async def test_a_directory_that_is_not_a_repository_says_so_in_its_ref(retriever, roots) -> None:
     """No revision is invented — and a revision that *does* exist is named.
 
     ⚠️ **Both branches are asserted rather than one, because which of them runs is
@@ -365,9 +361,7 @@ async def test_a_search_can_be_pointed_at_the_callers_working_tree(
     assert hits[0].location.repo == REPO
 
 
-async def test_the_working_tree_does_not_widen_the_grant(
-    retriever, roots, tmp_path: Path
-) -> None:
+async def test_the_working_tree_does_not_widen_the_grant(retriever, roots, tmp_path: Path) -> None:
     """An override changes which copy is read, never which repositories may be.
 
     Otherwise pointing `root` at a directory would be a way past the permission
@@ -444,18 +438,14 @@ async def test_open_reads_the_copy_the_search_saw(retriever, roots, tmp_path: Pa
     location = hits[0].location
     assert location.root == str(worktree), "the hit did not carry where it came from"
 
-    slice_ = await retriever.open(
-        location, LineSpan(start=1, end=2), constraints_for(REPO)
-    )
+    slice_ = await retriever.open(location, LineSpan(start=1, end=2), constraints_for(REPO))
 
     assert "edited in this session" in slice_.text
     assert slice_.location.ref == location.ref, "the slice must report the ref it read"
     assert slice_.location.root == str(worktree)
 
 
-async def test_open_without_a_root_still_reads_the_configured_checkout(
-    retriever, roots
-) -> None:
+async def test_open_without_a_root_still_reads_the_configured_checkout(retriever, roots) -> None:
     """``None`` is not a fallback — it is the honest answer for an index.
 
     A search that named no working tree produces a location with no root, and
@@ -473,9 +463,7 @@ async def test_open_without_a_root_still_reads_the_configured_checkout(
 
     assert location.root == str(Path(roots[REPO.slug]))
 
-    slice_ = await retriever.open(
-        location, LineSpan(start=1, end=1), constraints_for(REPO)
-    )
+    slice_ = await retriever.open(location, LineSpan(start=1, end=1), constraints_for(REPO))
 
     assert slice_.text == "MAX_ATTEMPTS = 3"
     assert slice_.location.root == str(Path(roots[REPO.slug]))

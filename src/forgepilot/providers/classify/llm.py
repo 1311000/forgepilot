@@ -139,9 +139,7 @@ class LLMClassifierPlugin(PluginService):
             )
             response = await guarded_complete(session, self.ctx.llm, built)
         except Exception:  # noqa: BLE001 - an endpoint that breaks is not a guess
-            return TicketUnderstanding(
-                notes="the model could not be reached; a human must decide"
-            )
+            return TicketUnderstanding(notes="the model could not be reached; a human must decide")
 
         return self._parse(response.message.content)
 

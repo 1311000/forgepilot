@@ -18,9 +18,7 @@ def test_a_test_command_keeps_its_declared_form_beside_the_expanded_one(
 ) -> None:
     monkeypatch.setenv("FORGEPILOT_PYTHON", r"D:\somewhere\.venv\Scripts\python.exe")
     (tmp_path / "project.yaml").write_text(
-        "name: svc\n"
-        "test: ['${FORGEPILOT_PYTHON} -m pytest -q']\n"
-        "test_paths: ['tests']\n",
+        "name: svc\ntest: ['${FORGEPILOT_PYTHON} -m pytest -q']\ntest_paths: ['tests']\n",
         encoding="utf-8",
     )
 

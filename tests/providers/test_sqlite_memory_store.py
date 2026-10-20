@@ -196,9 +196,7 @@ async def test_two_tenants_share_one_file_without_seeing_each_other(
         assert mine != theirs
         assert len(store.records) == 2
         assert [hit.tenant_id for hit in await recall(store)] == [TENANT]
-        assert [hit.tenant_id for hit in await recall(store, tenant=OTHER_TENANT)] == [
-            OTHER_TENANT
-        ]
+        assert [hit.tenant_id for hit in await recall(store, tenant=OTHER_TENANT)] == [OTHER_TENANT]
 
 
 async def test_a_memory_learned_in_another_repository_is_not_served_here(
@@ -216,14 +214,10 @@ async def test_a_memory_learned_in_another_repository_is_not_served_here(
         # A caller who may read the other repository does get it, and only then.
         assert [
             hit.text
-            for hit in await recall(
-                store, scope_ref=OTHER_REPO.slug, allowed=(OTHER_REPO,)
-            )
+            for hit in await recall(store, scope_ref=OTHER_REPO.slug, allowed=(OTHER_REPO,))
         ] == [TEXT]
         # Asking for it by name is not the same as being allowed to read it.
-        assert (
-            await recall(store, scope_ref=OTHER_REPO.slug, allowed=(REPO,))
-        ) == ()
+        assert (await recall(store, scope_ref=OTHER_REPO.slug, allowed=(REPO,))) == ()
 
 
 async def test_the_same_claim_written_twice_in_two_processes_is_one_row(
@@ -423,6 +417,7 @@ def test_the_bundle_points_the_memory_row_at_the_durable_store() -> None:
     assert memory.sources == ("bundle:base", "bundle:memory_sqlite")
     assert memory.tier == "trusted"
 
+
 # ---------------------------------------------------------------------------
 # M27: the file has a version, and an older row still decodes
 # ---------------------------------------------------------------------------
@@ -488,9 +483,7 @@ async def test_a_row_that_predates_a_field_still_decodes(tmp_path: Path) -> None
         # The two fields a later release added, removed the way an older row has them.
         blob.pop("confidence", None)
         blob["candidate"].pop("model_confidence_hint", None)
-        conn.execute(
-            "UPDATE memories SET record_json = ?", (json.dumps(blob, ensure_ascii=False),)
-        )
+        conn.execute("UPDATE memories SET record_json = ?", (json.dumps(blob, ensure_ascii=False),))
         conn.commit()
 
     async with store_at(path) as store:

@@ -240,8 +240,11 @@ async def run_one(
         row["classifier_calls"] = gateway.calls
         if not plan.ready:
             row.update(
-                state=str(plan.state), delivered=False, checks_passed=False,
-                changed=[], wall_s=round(time.monotonic() - started, 2),
+                state=str(plan.state),
+                delivered=False,
+                checks_passed=False,
+                changed=[],
+                wall_s=round(time.monotonic() - started, 2),
                 # Empty rather than absent: a plan that never became ready made no
                 # attempt at the check, and `any([])` is False — the honest reading.
                 # A *missing* key means an old results file, and the report says so.
@@ -249,9 +252,8 @@ async def run_one(
                 # No tree was worked on, so no held-out input can say anything.
                 # `score` only looks at probes when the checks passed, so this is
                 # never the reason a refused plan failed — its state is.
-                probes=[], **{
-                    k: 0 for k in ("steps", "turns", "tool_calls", "compactions", "shadowed")
-                },
+                probes=[],
+                **{k: 0 for k in ("steps", "turns", "tool_calls", "compactions", "shadowed")},
             )
             row["failures"] = H.score(row, task)
             # Set here as well as on the full path. It was not, and a *correct*
@@ -379,9 +381,7 @@ async def run_one(
         if arm.distill:
             if scripted:
                 _script_the_extraction(root)
-            written, failed = await _learn(
-                root, runtime.session, project, constraints, record
-            )
+            written, failed = await _learn(root, runtime.session, project, constraints, record)
             row["distilled"] = written
             row["distill_failed"] = failed
         row.update(
@@ -553,7 +553,9 @@ async def main_async(args: argparse.Namespace) -> int:
     tasks_by_name = {name: H.load_task(name) for name, _, _ in cells}
 
     RESULTS.mkdir(parents=True, exist_ok=True)
-    run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{'scripted' if args.scripted else 'live'}"
+    run_id = (
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{'scripted' if args.scripted else 'live'}"
+    )
     out = RESULTS / f"{run_id}.jsonl"
 
     total = len(cells) * args.reps

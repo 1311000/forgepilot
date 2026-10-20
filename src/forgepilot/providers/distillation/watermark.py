@@ -42,9 +42,7 @@ class JsonlWatermarkPlugin(PluginService):
             self.path = Path(str(raw)).expanduser()
         else:
             home = os.environ.get("FORGEPILOT_HOME")
-            self.path = (Path(home) if home else Path.home() / ".forgepilot") / (
-                "watermarks.jsonl"
-            )
+            self.path = (Path(home) if home else Path.home() / ".forgepilot") / ("watermarks.jsonl")
         # The directory is created on the first `set`, not here: loading a profile
         # must not have filesystem side effects, and a deployment that distils
         # nothing should leave no trace of having booted.

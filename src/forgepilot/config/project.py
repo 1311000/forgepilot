@@ -75,9 +75,7 @@ def matches_test_path(path: str, pattern: str) -> bool:
         directory = pattern.rstrip("/")
         return directory in cleaned.split("/")[:-1]
 
-    return fnmatch.fnmatch(cleaned.rsplit("/", 1)[-1], pattern) or fnmatch.fnmatch(
-        cleaned, pattern
-    )
+    return fnmatch.fnmatch(cleaned.rsplit("/", 1)[-1], pattern) or fnmatch.fnmatch(cleaned, pattern)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,9 +192,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         if isinstance(entry, str):
             parts = entry.split("/")
             if len(parts) != 3:
-                raise ConfigError(
-                    f"repo {entry!r} must be 'host/namespace/name'"
-                )
+                raise ConfigError(f"repo {entry!r} must be 'host/namespace/name'")
             repos.append(RepoRef(host=parts[0], namespace=parts[1], name=parts[2]))
         elif isinstance(entry, Mapping):
             repos.append(
@@ -255,9 +251,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         if isinstance(value, str):
             return (value,)
         if not isinstance(value, (list, tuple)):
-            raise ConfigError(
-                f"'commands' must be a list of program names, not {value!r}"
-            )
+            raise ConfigError(f"'commands' must be a list of program names, not {value!r}")
         return tuple(str(v) for v in value)
 
     return ProjectConfig(
@@ -279,9 +273,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
         budget=Budget(
             max_tokens=int(budget_raw.get("max_tokens", Budget().max_tokens)),
             max_tool_calls=int(budget_raw.get("max_tool_calls", Budget().max_tool_calls)),
-            max_wall_seconds=float(
-                budget_raw.get("max_wall_seconds", Budget().max_wall_seconds)
-            ),
+            max_wall_seconds=float(budget_raw.get("max_wall_seconds", Budget().max_wall_seconds)),
             max_cost_usd=float(budget_raw.get("max_cost_usd", Budget().max_cost_usd)),
         ),
         tool_sets=_string_tuple_map("tool_sets"),
@@ -328,9 +320,7 @@ def load_project(path: Path) -> ProjectConfig:
     #
     # The declared lines are kept before expanding, for the pull request body:
     # expansion is how the check runs, not how the project described itself.
-    declared = {
-        key: _declared_commands(raw.get(key)) for key in ("build", "test", "lint")
-    }
+    declared = {key: _declared_commands(raw.get(key)) for key in ("build", "test", "lint")}
     raw = expand_env(raw, where=str(path))
 
     return replace(

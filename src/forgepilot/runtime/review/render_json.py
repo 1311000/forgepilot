@@ -39,10 +39,7 @@ def _hunk(hunk: ChangedHunk) -> dict[str, Any]:
         "removed": len(hunk.removed),
         "noise": str(hunk.noise) if hunk.noise else None,
         "renamedFrom": hunk.renamed_from,
-        "lines": [
-            {"kind": str(line.kind), "text": line.text}
-            for line in hunk.lines
-        ],
+        "lines": [{"kind": str(line.kind), "text": line.text} for line in hunk.lines],
     }
 
 

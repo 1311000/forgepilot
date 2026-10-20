@@ -142,7 +142,9 @@ def render_recalled(records: Sequence[MemoryRecord]) -> str:
 
     verified = [record for record in records if record.is_verified]
     observed = [
-        record for record in records if record.status is MemoryStatus.ACTIVE and not record.is_verified
+        record
+        for record in records
+        if record.status is MemoryStatus.ACTIVE and not record.is_verified
     ]
     unconfirmed = [record for record in records if record.status is not MemoryStatus.ACTIVE]
 
@@ -196,7 +198,11 @@ async def recall_for_turn(
         limit=recaller.limit,
     )
     found = await recaller.memory.recall(query, constraints)
-    wanted = tuple(record for record in found if recaller.mode in MEMORY_TYPE_MODES.get(record.type, frozenset()))
+    wanted = tuple(
+        record
+        for record in found
+        if recaller.mode in MEMORY_TYPE_MODES.get(record.type, frozenset())
+    )
     if not wanted:
         return ()
 

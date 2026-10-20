@@ -168,16 +168,10 @@ def mask_placeholder(name: str, content: str) -> str:
         return body
     head = body[:_HEAD].replace("\n", " ")
     tail = body[-_TAIL:].replace("\n", " ")
-    return (
-        f"[tool output elided: {name}, {len(body)} bytes]\n"
-        f"  head: {head}\n"
-        f"  tail: {tail}"
-    )
+    return f"[tool output elided: {name}, {len(body)} bytes]\n  head: {head}\n  tail: {tail}"
 
 
-def select_mask_targets(
-    events: Sequence[Any], policy: CompactionPolicy
-) -> tuple[int, ...]:
+def select_mask_targets(events: Sequence[Any], policy: CompactionPolicy) -> tuple[int, ...]:
     """Which tool results to mask, oldest first.
 
     ⚠️ **`surface is APPEND` is not enough, and that was the defect.** The
@@ -334,9 +328,7 @@ class TieredCompactionPlugin(PluginService):
         known = set(CompactionPolicy.__dataclass_fields__)
         unknown = sorted(set(cfg) - known)
         if unknown:
-            raise ValueError(
-                f"unknown compaction config key(s) {unknown}. Known: {sorted(known)}"
-            )
+            raise ValueError(f"unknown compaction config key(s) {unknown}. Known: {sorted(known)}")
 
         kwargs: dict[str, Any] = {k: v for k, v in cfg.items() if k != "tiers"}
         if cfg.get("tiers") is not None:
@@ -361,9 +353,7 @@ class TieredCompactionPlugin(PluginService):
             or estimated >= window * policy.trigger_fraction
         )
 
-    def _nothing(
-        self, estimated: int, *, failure: str = "", detail: str = ""
-    ) -> CompactionOutcome:
+    def _nothing(self, estimated: int, *, failure: str = "", detail: str = "") -> CompactionOutcome:
         return CompactionOutcome(
             performed=False,
             estimated_before=estimated,
@@ -406,7 +396,12 @@ class TieredCompactionPlugin(PluginService):
         # two compactions over one session would interleave their replacements.
         await session.append(
             EventKind.COMPACTION_START,
-            {"turn": int(turn), "step": step, "estimated": estimated_tokens, "window": window_tokens},
+            {
+                "turn": int(turn),
+                "step": step,
+                "estimated": estimated_tokens,
+                "window": window_tokens,
+            },
             turn=turn,
             step=step,
         )
@@ -498,7 +493,9 @@ class TieredCompactionPlugin(PluginService):
                 turn=turn,
                 step=step,
             )
-            masked.append({"seq": seq, "bytes": len(original), "saved": len(original) - len(placeholder)})
+            masked.append(
+                {"seq": seq, "bytes": len(original), "saved": len(original) - len(placeholder)}
+            )
 
         if not masked:
             return 0
@@ -638,9 +635,7 @@ class TieredCompactionPlugin(PluginService):
         )
         await session.flush()
 
-    async def _failed(
-        self, session: Any, turn: Any, step: int, code: str, detail: str
-    ) -> None:
+    async def _failed(self, session: Any, turn: Any, step: int, code: str, detail: str) -> None:
         """Record a failed pass, then close it.
 
         **Failures are recorded, not raised.** A compaction that could not act is

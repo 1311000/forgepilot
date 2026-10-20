@@ -139,9 +139,7 @@ def test_the_example_patch_resolves_into_a_loadable_profile(
     monkeypatch.setenv("FORGEPILOT_LLM_MODEL", "some-model")
 
     profile = load_profile(CONFIGS, "default")
-    resolved = apply_layers(
-        compose_layers(profile, [EXAMPLE / "patch.yaml"]), profile=profile.name
-    )
+    resolved = apply_layers(compose_layers(profile, [EXAMPLE / "patch.yaml"]), profile=profile.name)
 
     rows = {row.id: row for row in resolved.enabled_rows()}
     assert rows["tickets"].plugin.endswith("tickets.file:FileTicketSourcePlugin")

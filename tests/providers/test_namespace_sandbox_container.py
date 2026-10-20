@@ -198,10 +198,16 @@ def _verdict(completed: subprocess.CompletedProcess[str]) -> dict[str, str]:
 def run_in_container(script: Path) -> dict[str, str]:
     completed = subprocess.run(
         [
-            "docker", "run", "--rm", "--privileged",
-            "-v", f"{script}:/g.sh:ro",
+            "docker",
+            "run",
+            "--rm",
+            "--privileged",
+            "-v",
+            f"{script}:/g.sh:ro",
             IMAGE,
-            "sh", "-c", "apk add -q --no-cache util-linux 2>/dev/null; sh /g.sh",
+            "sh",
+            "-c",
+            "apk add -q --no-cache util-linux 2>/dev/null; sh /g.sh",
         ],
         capture_output=True,
         text=True,
@@ -239,14 +245,21 @@ def run_argv_as_nobody(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """
     return subprocess.run(
         [
-            "docker", "run", "--rm",
-            "--user", "1000:1000",
-            "--security-opt", "seccomp=unconfined",
-            "--tmpfs", "/ws:mode=1777",
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "1000:1000",
+            "--security-opt",
+            "seccomp=unconfined",
+            "--tmpfs",
+            "/ws:mode=1777",
             IMAGE,
-            "sh", "-c",
+            "sh",
+            "-c",
             'mkdir -p /ws/.git /ws/src; echo seed > /ws/keep.txt; exec "$@"',
-            "sh", *argv,
+            "sh",
+            *argv,
         ],
         capture_output=True,
         text=True,
@@ -349,7 +362,10 @@ def _mount_namespace_was_refused(completed: subprocess.CompletedProcess[str]) ->
     there a skip fails the build by design. This module runs `ubuntu:24.04` *inside*
     a 22.04 host, which is not the shape a deployment runs in.
     """
-    if completed.returncode == 0 or "cannot change root filesystem propagation" not in completed.stderr:
+    if (
+        completed.returncode == 0
+        or "cannot change root filesystem propagation" not in completed.stderr
+    ):
         return None
     return completed.stderr.strip()
 

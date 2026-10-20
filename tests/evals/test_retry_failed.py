@@ -26,9 +26,7 @@ import run as run_module  # noqa: E402
 
 def write(tmp_path: Path, rows: list[dict]) -> Path:
     path = tmp_path / "results.jsonl"
-    path.write_text(
-        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
-    )
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     return path
 
 
@@ -84,15 +82,11 @@ def test_a_variant_is_part_of_the_cell(tmp_path) -> None:
         ],
     )
 
-    assert run_module.failed_cells(path) == [
-        ("bug-fix", "no-pinning", "weakens-the-test")
-    ]
+    assert run_module.failed_cells(path) == [("bug-fix", "no-pinning", "weakens-the-test")]
 
 
 def test_each_cell_appears_once(tmp_path) -> None:
-    path = write(
-        tmp_path, [row("a", "arm", n, passed=False) for n in (1, 2, 3)]
-    )
+    path = write(tmp_path, [row("a", "arm", n, passed=False) for n in (1, 2, 3)])
 
     assert run_module.failed_cells(path) == [("a", "arm", None)]
 

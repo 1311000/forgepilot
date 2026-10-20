@@ -38,9 +38,7 @@ def test_a_reachable_binding_says_what_it_exposes(host: str, capsys) -> None:
     _warn_if_the_binding_is_not_loopback(host, 8000)
 
     captured = capsys.readouterr()
-    assert captured.out == "", (
-        "a warning on stdout is a warning in a pipe nobody reads"
-    )
+    assert captured.out == "", "a warning on stdout is a warning in a pipe nobody reads"
     assert "not loopback" in captured.err
     assert "bearer token" in captured.err
     assert "TLS" in captured.err

@@ -434,16 +434,22 @@ async def test_a_resolution_changes_what_the_next_turn_recalls() -> None:
 
         recaller = Recaller(memory=root.memory, scope_ref=REPO.slug)
         recalled_now = await recall_for_turn(
-            session, recaller=recaller, text="what is the retry cap", constraints=constraints(), turn=None
+            session,
+            recaller=recaller,
+            text="what is the retry cap",
+            constraints=constraints(),
+            turn=None,
         )
 
         assert [record.id for record in recalled_now] == [checked]
         body = render_recalled(recalled_now)
         assert "the cap is five" in body
         assert "the cap is three" not in body, "the retired claim is not put in front of a model"
-        assert [event.data["kind"] for event in session.events if event.kind == EventKind.MEMORY_RESOLVED] == [
-            "superseded"
-        ]
+        assert [
+            event.data["kind"]
+            for event in session.events
+            if event.kind == EventKind.MEMORY_RESOLVED
+        ] == ["superseded"]
         by_id = {record.id: record for record in root.memory.records}
         assert by_id[seen].status is MemoryStatus.SUPERSEDED
         assert by_id[seen].superseded_by == checked
@@ -458,9 +464,7 @@ async def test_a_witness_is_not_a_status() -> None:
     about whether a record is the current belief. Phase F's decisions are all in the
     store, keyed on records — a witness has no status and cannot be reconciled.
     """
-    witness = Witness(
-        kind=ProvenanceKind.TEST_VERIFIED, evidence=(), reason="a check passed"
-    )
+    witness = Witness(kind=ProvenanceKind.TEST_VERIFIED, evidence=(), reason="a check passed")
 
     assert not hasattr(witness, "status")
     assert not hasattr(witness, "reconcile")
@@ -566,7 +570,9 @@ async def test_distilling_a_contradiction_resolves_it_and_says_so_in_the_log(tmp
         assert by_id[first].candidate.text == RULE_A, "history keeps what was claimed"
 
         resolved = [
-            dict(event.data) for event in session_b.events if event.kind == EventKind.MEMORY_RESOLVED
+            dict(event.data)
+            for event in session_b.events
+            if event.kind == EventKind.MEMORY_RESOLVED
         ]
         assert len(resolved) == 1, "one comparison, one decision, one line of audit"
         assert resolved[0]["kind"] == "supersedes"

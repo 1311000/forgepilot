@@ -149,9 +149,7 @@ def preprocess(
 
     repos = tuple(r for r in known_repos if r.slug in signals["mentioned_repos"])
 
-    reason = (
-        f"ticket is missing: {', '.join(missing)}" if missing else "ticket is complete"
-    )
+    reason = f"ticket is missing: {', '.join(missing)}" if missing else "ticket is complete"
 
     return PreprocessResult(
         ticket=ticket,

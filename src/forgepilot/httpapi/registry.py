@@ -170,9 +170,7 @@ class SessionRegistry:
         task = asyncio.create_task(factory())
         live.task = task
         if self.metrics is not None:
-            self.metrics.counter(
-                "forgepilot_turns_started_total", "Turns started, chat and task."
-            )
+            self.metrics.counter("forgepilot_turns_started_total", "Turns started, chat and task.")
         # Retrieve the exception. The loop already closed the turn in the log —
         # this is about the *process*: an unretrieved task exception is reported
         # as a warning at collection time, or not at all, and a background turn
@@ -248,9 +246,7 @@ class SessionRegistry:
         return True
 
     def pending_approvals(self, session_id: SessionId) -> tuple[PendingApproval, ...]:
-        return tuple(
-            p for p in self.approvals.values() if p.request.session_id == session_id
-        )
+        return tuple(p for p in self.approvals.values() if p.request.session_id == session_id)
 
     def install(self) -> None:
         """Become the approval service's answerer.

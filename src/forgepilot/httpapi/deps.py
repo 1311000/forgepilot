@@ -100,9 +100,7 @@ def authenticate(
 ) -> RequestContext:
     """Authenticate, derive authority, and open a scope for one request."""
     cred = resolve_credential(root, credential, project=project, key=key)
-    scope = open_request_scope(
-        root, cred.constraints, key=key, verify_signature=verify_signature
-    )
+    scope = open_request_scope(root, cred.constraints, key=key, verify_signature=verify_signature)
     return RequestContext(principal=cred.principal, scope=scope, project=cred.project)
 
 

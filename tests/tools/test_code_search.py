@@ -138,9 +138,7 @@ async def test_a_result_cap_is_reported_rather_than_silently_applied(rig, checko
     outcome = await search(rig, pattern="login", output_mode="content", max_results=1)
 
     assert outcome.meta.get("truncated") is True
-    assert "truncated" in outcome.content.lower(), (
-        "a silent cap reads as 'that is all there is'"
-    )
+    assert "truncated" in outcome.content.lower(), "a silent cap reads as 'that is all there is'"
 
 
 async def test_no_matches_is_an_empty_answer_not_an_error(rig, checkout) -> None:

@@ -79,9 +79,7 @@ class UnreachableClassifier:
         return frozenset()
 
     async def classify(self, request, *, session=None):  # noqa: ANN001
-        raise AssertionError(
-            "the classifier was invoked on a path that must not use the model"
-        )
+        raise AssertionError("the classifier was invoked on a path that must not use the model")
 
 
 class FakeRegistry:
@@ -93,8 +91,7 @@ class FakeRegistry:
 
     def schemas(self):
         return tuple(
-            type("S", (), {"name": n, "description": "", "parameters": {}})()
-            for n in self._by_name
+            type("S", (), {"name": n, "description": "", "parameters": {}})() for n in self._by_name
         )
 
 
@@ -207,9 +204,7 @@ async def test_a_ticket_naming_two_repositories_plans_both_of_them() -> None:
     gateway = ClassifierGateway(ScriptedClassifier(CONFIDENT_BUG))
 
     plan = await plan_task(
-        ticket=a_ticket(
-            COMPLETE + f"\n\n调用方在 {REPO_A.slug}，实现落在 {REPO_B.slug}。\n"
-        ),
+        ticket=a_ticket(COMPLETE + f"\n\n调用方在 {REPO_A.slug}，实现落在 {REPO_B.slug}。\n"),
         project=a_project(repos=(REPO_A, REPO_B)),
         constraints=constraints_with(
             Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS
@@ -262,7 +257,9 @@ async def test_a_complete_ticket_reaches_the_classifier_exactly_once() -> None:
     plan = await plan_task(
         ticket=a_ticket(),
         project=a_project(),
-        constraints=constraints_with(Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS),
+        constraints=constraints_with(
+            Operation.READ_CODE, Operation.WRITE_CODE, Operation.RUN_TESTS
+        ),
         registry=REGISTRY,
         classifier=gateway,
     )
@@ -305,9 +302,7 @@ async def test_an_unsure_classifier_asks_a_human_rather_than_guessing() -> None:
 
 
 async def test_a_classifier_reporting_missing_fields_asks_a_human() -> None:
-    partial = TicketUnderstanding(
-        category="bug", confidence=0.95, missing=("which environment",)
-    )
+    partial = TicketUnderstanding(category="bug", confidence=0.95, missing=("which environment",))
     gateway = ClassifierGateway(ScriptedClassifier(partial))
 
     plan = await plan_task(
@@ -506,9 +501,7 @@ def test_rules_extract_structured_signals_without_a_model() -> None:
 def test_only_known_repositories_are_recognised_in_ticket_text() -> None:
     """Extracting an arbitrary `owner/repo` would let a ticket name a repository
     nobody authorised — and the router would think it was in scope."""
-    ticket = a_ticket(
-        COMPLETE + "\nsee git.corp/other/secret and git.corp/team/svc-a\n"
-    )
+    ticket = a_ticket(COMPLETE + "\nsee git.corp/other/secret and git.corp/team/svc-a\n")
     result = preprocess(ticket, known_repos=(REPO_A,))
 
     assert [r.slug for r in result.repos] == [REPO_A.slug]

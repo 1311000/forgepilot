@@ -244,8 +244,14 @@ class ForgePilotAgentFactory:
 
     key = "forgepilot"
 
-    def __init__(self, *, max_steps: int = DEFAULT_MAX_STEPS, max_tokens: int = 4096,
-                 temperature: float = 0.0, workspace_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_steps: int = DEFAULT_MAX_STEPS,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        workspace_root: Path | None = None,
+    ) -> None:
         self._max_steps = max_steps
         self._max_tokens = max_tokens
         self._temperature = temperature
