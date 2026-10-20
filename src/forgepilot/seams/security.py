@@ -48,6 +48,11 @@ class Operation(StrEnum):
     READ_TICKET = "read_ticket"
     COMMENT_TICKET = "comment_ticket"
     SPAWN_SUBAGENT = "spawn_subagent"
+    #: Reaching a host outside this deployment. It is its own operation rather than
+    #: part of ``READ_CODE`` because the two have different blast radii: a repository
+    #: read stays inside a boundary the deployment owns, and a URL leaves it. A
+    #: deployment that never grants this cannot be made to fetch by a prompt.
+    FETCH_URL = "fetch_url"
     #: Forgetting: stop returning a memory, keep it and its evidence in the audit.
     #: Separate from :attr:`PURGE_MEMORY` because they are different decisions with
     #: different costs, and a policy that can only say yes to both is not a policy.

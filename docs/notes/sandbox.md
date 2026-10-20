@@ -419,3 +419,43 @@ seeded test does not look for made the repair loop request a *third* turn and ru
 the script dry, which is the evidence that the verdict drives the loop rather than
 merely being recorded beside it.
 
+## P5-4 — `web_fetch`, and the four holes it closes
+
+`runtime/tools/web.py` is the first tool in this repository whose effect **leaves**
+the deployment, so it is opt-in twice over: the plugin is registered only by
+`bundles/web_fetch/`, which is in no shipped profile, and its `allow:` list ships
+**empty**. Loading the bundle therefore grants nothing; a deployment writes the
+hosts it may read.
+
+Four checks, in the order the tool makes them, each closing a different hole:
+
+1. **Nothing leaves unless a host was named.** An empty list refuses everything and
+   says that empty is the default. A named host is matched exactly, or by a `*.`
+   suffix whose **label boundary** is respected — `*.example.com` covers
+   `docs.example.com` and not `notexample.com`, because a suffix match that forgets
+   the dot turns an allow-list into a suggestion.
+2. **The address, not just the name.** Every resolved address must be globally
+   routable. `localhost`, `*.internal`, and a public name whose A record is
+   `10.0.0.7` are the same hole, so the check resolves first and connects to
+   nothing before it answers — measured by `test_a_name_that_resolves_inward_is_refused_before_connecting`,
+   which asserts the transport was never reached. `169.254.169.254` (the metadata
+   service) is covered by the same rule.
+3. **One request, no redirects.** A redirect is a *second* URL chosen by the server,
+   which is exactly the party the allow-list exists to disbelieve. The refusal
+   reports the `Location` so the model can ask for it directly, where it is checked
+   again.
+4. **Text, bounded.** A non-text body is refused rather than decoded — decoding a
+   PDF produces replacement characters that read like corruption — and the body is
+   truncated at `max_bytes` with the truncation in the header, because a silently
+   clipped document is a wrong answer that looks complete.
+
+Two permissions, and they are different questions: `Capabilities.network` is
+whether *this invocation* may touch the network at all (it raises
+`CapabilityNotGranted`, the same as a pure `pre-execute` hook), while
+`Operation.FETCH_URL` is whether the *principal* may fetch (it is a refusal the
+model reads). A deployment can grant one without the other, and both refusals say
+which one failed.
+
+The tool's own limit: it does not inspect what it fetched. A prompt-injected page
+is text the model reads, and no allow-list changes that; the boundary this file
+documents is about *which hosts* are reachable, not about trusting their content.

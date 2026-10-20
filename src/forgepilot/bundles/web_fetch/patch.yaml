@@ -1,0 +1,18 @@
+# `web_fetch` — opt-in, because the default has to be "nothing leaves".
+#
+# This bundle is in **no** shipped profile. Adding it registers one tool, and that
+# tool refuses every URL until `allow` names a host:
+#
+#     allow:
+#       - docs.python.org
+#       - "*.readthedocs.io"
+#
+# The list is configuration on purpose: it is the deployment's statement about which
+# hosts its code may read, and a prompt cannot widen it.
+- id: toolsWeb
+  plugin: forgepilot.runtime.tools.web:WebFetchToolPlugin
+  config:
+    allow: []
+    max_bytes: 200000
+    timeout_s: 15
+  tier: trusted

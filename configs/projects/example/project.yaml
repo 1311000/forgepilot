@@ -72,6 +72,13 @@ tool_sets:
     # later turn reads it back through the projection like any other result.
     - todo_write
     - run
+  # `web_fetch` is deliberately in its own set and in no category: reading a host
+  # outside this deployment is a different permission from reading the workspace,
+  # and the tool is only registered by `bundles/web_fetch`, whose allow-list is
+  # empty until a deployment writes one. Map a category to this set only after both
+  # are true.
+  web:
+    - web_fetch
 category_tool_sets:
   bug: bugfix
   question: default

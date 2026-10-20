@@ -23,6 +23,7 @@ from forgepilot.runtime.tools.builtin import (
     build_search_definitions,
     build_tool_definitions,
 )
+from forgepilot.runtime.tools.web import build_web_definitions
 
 FORGE = Path(__file__).resolve().parents[2]
 
@@ -36,12 +37,16 @@ PROJECT_FILES = sorted(
 def _built() -> set[str]:
     """The names the registry can actually build, without a kernel.
 
-    Both builders only close over their argument inside the tool bodies, so
+    All three builders only close over their argument inside the tool bodies, so
     ``None`` is safe here: nothing is invoked, only the definitions are built.
+    ``web_fetch`` is built from configuration (its allow-list), and the empty
+    configuration is the honest one for this question — a tool that refuses every
+    host is still a tool nobody can opt into if no project names it.
     """
-    return {definition.name for definition in build_tool_definitions(None)} | {
-        definition.name for definition in build_search_definitions(None)
-    }
+    names = {definition.name for definition in build_tool_definitions(None)}
+    names |= {definition.name for definition in build_search_definitions(None)}
+    names |= {definition.name for definition in build_web_definitions({})}
+    return names
 
 
 def _offered() -> dict[str, str]:
