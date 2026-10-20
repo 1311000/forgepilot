@@ -1060,3 +1060,40 @@ dataset is missing (naming where it comes from). What it will not do is download
 the dataset or clone anything — a benchmark that fetches its own questions can
 also silently change them, which is why `swebench_fetch.py` is a separate command
 an operator runs and can inspect.
+
+## Pricing the composite, third attempt — and this one has a number (2026-10-20)
+
+Two earlier attempts failed for the same reason and it was not the composite's: the agent had
+`read_file`, and `read_file` on a directory **lists** it, so "the retriever is the only way to
+find the file" was false however narrow the tool set looked (`no-shell` still passed 3/3 on
+both arms). The instrument that finally separated them is `no-tree`: no `read_file`, no
+`list_dir`, no `glob`, no `run` — `code_search` and `read_code` are the only ways to learn what
+is in the checkout, and both go through whichever `Retriever` the task patched in. Writes stay,
+because a delivery has to edit something.
+
+Measured on `stale-corpus` (whose held-out probe demands the agent **reuse**
+`paging/_shared_guard.py`, a file the corpus predates), five reps per arm:
+
+| arm | retriever | fully green | tool calls | wall |
+|---|---|---|---|---|
+| `no-tree` | composite (index + working tree) | **5/5** | 9, 10, 11, 12, 12 | 25.5–34.2 s |
+| `no-tree` | `--variant index-only` | **1/5** | 28 (the pass), 34, 44, 46, 60 | 96–110 s |
+
+That is the price, and it is the first one this mechanism has produced. The corpus-only agent
+cannot find the helper at all — it writes its own `min(...)` and the reuse probe fails, or it
+never lands a change — while the composite greps the un-indexed working tree and answers. Even
+the one index-only success cost 28 calls and 110 s: roughly three times the composite's calls
+and four times its wall, for a task the composite finished in ten calls.
+
+⚠️ **The rows say `scratch_inside_repo: true`, so they are `aside`, not headline.** The scratch
+root outside the checkout was refused: the harness sandbox denies a child process `mkdir`
+outside the workspace (`PermissionError: [WinError 5]`), and `FORGEPILOT_EVAL_INSIDE_REPO=1`
+was the only path that ran. The comparison between the two arms stands — both were scored the
+same way, and the escape counter stayed at zero — but a number whose scratch sits inside the
+checkout is the number `evals/matrix.py` refuses to publish, and it should stay refused.
+
+**What this does not say.** It does not say the composite is better in general: it says one
+task, whose answer lives in the seam between a stale index and a live tree, needs both halves.
+On every task in the matrix the corpus is current, so the composite and the index alone are
+indistinguishable there — which is why the matrix does not include `no-tree` and why this arm
+is an instrument rather than an ablation.

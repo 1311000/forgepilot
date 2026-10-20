@@ -71,6 +71,23 @@ _SETS_WITHOUT_SHELL = {
     "bugfix": ["read_file", "code_search", "read_code", "write_file", "edit_file"],
 }
 
+#: **`no-tree`: the tree is not readable at all — only the retriever is.** `no-shell` left
+#: `read_file`, and `read_file` on a directory *lists* it (`read_file {"path": "paging"}`
+#: answered with the directory's entries, measured on 2026-10-19), so a `no-shell` agent
+#: still found `paging/_shared_guard.py` and the composite was never priced. Removing the
+#: file tool too leaves exactly one way to learn what is in the checkout: `code_search` and
+#: `read_code`, both of which go through whichever `Retriever` the task patched in. Writes
+#: stay, because a delivery has to edit something.
+#:
+#: Two arms rather than one, and the pair is the measurement: `no-tree` + the composite can
+#: serve a file the corpus lacks (it greps the working tree), while `no-tree` +
+#: `--variant index-only` can only answer from the corpus and must fail the same question.
+#: That difference, if it appears, is the composite's price.
+_SETS_WITHOUT_TREE = {
+    "default": ["code_search", "read_code", "write_file", "edit_file"],
+    "bugfix": ["code_search", "read_code", "write_file", "edit_file"],
+}
+
 
 ARMS: dict[str, Arm] = {
     "full": Arm(
@@ -116,6 +133,13 @@ ARMS: dict[str, Arm] = {
             "no `run`: discovery goes through the retriever, the shape a GVFS checkout has"
         ),
         project={"tool_sets": _SETS_WITHOUT_SHELL},
+    ),
+    "no-tree": Arm(
+        name="no-tree",
+        description=(
+            "no file tool at all: the retriever is the only way to learn what is in the tree"
+        ),
+        project={"tool_sets": _SETS_WITHOUT_TREE},
     ),
     "no-pinning": Arm(
         name="no-pinning",
