@@ -258,6 +258,14 @@ FIX_PROMPT = (
     "once you believe the checks will pass."
 )
 
+#: The completion cap used when a project declares none (`project.yaml: max_tokens`).
+#:
+#: ⚠️ It mirrors `run_turn`'s own default and a test asserts the two agree —
+#: a silent copy is the shape this repository keeps finding, and the two numbers
+#: would drift the first time the loop's default moved. `None` is not usable here
+#: because `run_turn` takes an `int`.
+DEFAULT_REQUEST_TOKENS = 4096
+
 
 @dataclass(frozen=True, slots=True)
 class RepoDelivery:
@@ -687,6 +695,7 @@ async def _deliver_repository(
             system_sections=plan.system_texts,
             workspace_root=handle.root,
             max_steps=max_steps,
+            max_tokens=project.max_tokens or DEFAULT_REQUEST_TOKENS,
             tool_schemas=plan.tool_schemas(tools),
             tracker=tracker,
             compactor=compactor,

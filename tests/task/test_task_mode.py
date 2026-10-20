@@ -718,3 +718,52 @@ async def test_changed_tests_are_checked_against_both_trees(task_rig) -> None:
         "the pinned tree and the agent's"
     )
     assert not outcome.delivered, "a run whose agent-tree check failed was delivered"
+
+
+# ---------------------------------------------------------------------------
+# The reply cap (`project.yaml: max_tokens`)
+# ---------------------------------------------------------------------------
+async def test_a_project_can_cap_one_reply(task_rig, monkeypatch) -> None:
+    """The wiring, not the parse: `run_task` must hand the cap to the loop.
+
+    A project key that is parsed and never passed is the shape this repository
+    records most often, so the assertion is on what `run_turn` received.
+    """
+    from dataclasses import replace
+
+    import forgepilot.runtime.loop.turn as turn_module
+
+    seen = []
+    real = turn_module.run_turn
+
+    async def spy(**kwargs):
+        seen.append(kwargs.get("max_tokens"))
+        return await real(**kwargs)
+
+    # `_deliver_repository` imports `run_turn` at call time, so patching the
+    # module it is imported *from* is what reaches it.
+    monkeypatch.setattr(turn_module, "run_turn", spy)
+
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    await run_task(
+        plan=plan,
+        project=replace(task_rig.project, max_tokens=2048),
+        session=task_rig.session,
+        llm=task_rig.llm,
+        tools=task_rig.registry,
+        vcs=task_rig.vcs,
+        workspace=task_rig.workspace,
+        sandbox=task_rig.sandbox,
+        constraints=task_rig.constraints,
+        pipeline=task_rig.pipeline,
+        tracker=task_rig.tracker,
+        model="replay-1",
+        policy=task_rig.policy,
+        approval=task_rig.approval,
+        principal=task_rig.principal,
+    )
+
+    assert seen == [2048], f"the loop was told {seen}, not the project's cap"

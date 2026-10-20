@@ -123,6 +123,14 @@ class ProjectConfig:
     network: NetworkAccess = NetworkAccess.DENY
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     budget: Budget = field(default_factory=Budget)
+    #: Completion tokens requested per model call, or ``None`` for the loop's own
+    #: default. ⚠️ **This is not ``budget.max_tokens``** and the two are not
+    #: convertible: the budget is the ceiling for the whole task (summed over
+    #: every call, checked by a guard), while this caps a *single* reply. A
+    #: project that needs long reasoning per call raises this; a project that
+    #: costs too much lowers the budget. Setting one cannot substitute for the
+    #: other.
+    max_tokens: int | None = None
     #: Named tool sets the router may choose between, e.g.
     #: ``{"default": [...], "bugfix": [...], "investigate": [...]}``.
     #:
@@ -276,6 +284,7 @@ def project_from_mapping(raw: Mapping[str, Any], *, name: str = "project") -> Pr
             max_wall_seconds=float(budget_raw.get("max_wall_seconds", Budget().max_wall_seconds)),
             max_cost_usd=float(budget_raw.get("max_cost_usd", Budget().max_cost_usd)),
         ),
+        max_tokens=(None if raw.get("max_tokens") is None else int(raw["max_tokens"])),
         tool_sets=_string_tuple_map("tool_sets"),
         category_tool_sets=_string_map("category_tool_sets"),
         category_engines=_string_map("category_engines"),

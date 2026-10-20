@@ -395,3 +395,27 @@ Four decisions:
 
 Not done: the child has no memory recall and no compaction — it is a short,
 bounded turn, and both would be work with no reader until a task needs a long one.
+
+## `project.yaml: max_tokens` is not `budget.max_tokens` (P6-3)
+
+Two keys, one file, adjacent names, different quantities — so the notes state the
+difference rather than leaving it to whoever reads the parser:
+
+| key | caps | enforced by |
+|---|---|---|
+| `max_tokens` | completion tokens for **one reply** | passed to `run_turn(max_tokens=…)` |
+| `budget.max_tokens` | tokens for the **whole task**, summed over every call | the budget guard, per tool call, and `run_turn` between steps |
+
+Raising the first does not raise the second, and the tests assert exactly that
+(`tests/config/test_project_max_tokens.py::test_max_tokens_is_read_and_does_not_touch_the_budget`)
+— a project that needs long answers per call and a project that spends too much
+are two different deployment problems.
+
+The default is `None`, which means "use the loop's own default"; `run_task`
+substitutes `DEFAULT_REQUEST_TOKENS` for it because `run_turn` takes an `int`.
+That constant is a copy of `run_turn`'s default, and a copy nobody checks is a
+copy that drifts, so one test reads the signature and fails if the two disagree
+(`test_the_request_default_mirrors_the_loop`). Measured, not assumed: removing
+the `max_tokens=` line from `_deliver_repository` turns
+`test_a_project_can_cap_one_reply` red with `the loop was told [None], not the
+project's cap`.
