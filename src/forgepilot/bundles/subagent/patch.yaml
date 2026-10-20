@@ -1,0 +1,28 @@
+# `spawn_subagent` — opt-in, because delegation multiplies what one ticket can do.
+#
+# This bundle is in **no** shipped profile. It registers one tool; a project then
+# has to name `spawn_subagent` in a `tool_sets` entry (see `configs/projects/`
+# `research`) before a model is offered it.
+#
+# The child is not a second agent process: it is another turn in another session,
+# created with `parent_session` set, and its authority is the parent's constraints
+# narrowed to read-only work (`SUBAGENT_OPERATIONS` in
+# `forgepilot/runtime/tools/subagent.py`). It cannot write, run commands, open a
+# pull request, fetch a URL, or delegate again.
+#
+# `tool_names` is the child's tool set, not the parent's: a subagent that inherits
+# the parent's shell would be a way to run commands with read-only intent.
+- id: toolsSubagent
+  plugin: forgepilot.runtime.tools.subagent:SubagentToolPlugin
+  config:
+    max_steps: 6
+    max_chars: 8000
+    timeout_s: 240
+    tool_names:
+      - read_file
+      - list_dir
+      - glob
+      - code_search
+      - read_code
+    max_tool_calls: 18
+  tier: trusted

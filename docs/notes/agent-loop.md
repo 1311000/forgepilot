@@ -364,3 +364,34 @@ order, not jump ahead of the call that preceded it.
 The cost is measured, not assumed: `tests/tools/test_parallel_reads.py` asserts
 two reads finish in one delay, that a write between them makes the step strictly
 sequential, and that two writes never overlap.
+## `spawn_subagent`: a child session, not a second agent (P6-2)
+
+Delegation here is one tool call that runs one turn of the loop in a *new session*
+whose header names the parent. It is deliberately not a second `AgentSpec`/factory
+path: `ForgePilotAgent` reads its session from `ctx.session`, which a tool cannot
+bind, so a second wiring would duplicate the loop instead of reusing it. The tool
+calls `run_turn` — the same function task mode calls — and the transcript that
+matters is the child's own log.
+
+Four decisions:
+
+- **The child is narrower than the parent, by construction.** `_narrowed` builds a
+  cap (read-only operations, no writable paths, network denied, the smaller step
+  budget) and intersects it with the parent through `constraints.narrowed_to`.
+  Writing it as an intersection means forgetting to reset a field cannot make the
+  child *wider*; it can only leave it as narrow as the parent.
+- **No shell, and no delegation.** `SUBAGENT_OPERATIONS` is
+  `{read_code, read_ticket}`; the child's tool schemas are filtered to
+  `DEFAULT_CHILD_TOOLS` and `spawn_subagent` is removed even if a deployment adds
+  it. The nested case is also refused at run time by reading the parent session's
+  `parent_session` — a cap that only lives in the schema is a cap a deployment can
+  widen.
+- **The answer is bounded and points at the transcript.** Past `max_chars` the
+  tool result is truncated and names the child session; the parent reads it with
+  `GET /sessions/{id}` rather than receiving an unbounded wall of text.
+- **A timeout names what it abandoned.** The child session is flushed and closed
+  in `finally`, and the error says which session holds what it read. A silent
+  timeout would lose work that exists on disk.
+
+Not done: the child has no memory recall and no compaction — it is a short,
+bounded turn, and both would be work with no reader until a task needs a long one.

@@ -23,6 +23,7 @@ from forgepilot.runtime.tools.builtin import (
     build_search_definitions,
     build_tool_definitions,
 )
+from forgepilot.runtime.tools.subagent import built_names as subagent_names
 from forgepilot.runtime.tools.web import build_web_definitions
 
 FORGE = Path(__file__).resolve().parents[2]
@@ -46,6 +47,7 @@ def _built() -> set[str]:
     names = {definition.name for definition in build_tool_definitions(None)}
     names |= {definition.name for definition in build_search_definitions(None)}
     names |= {definition.name for definition in build_web_definitions({})}
+    names |= subagent_names()
     return names
 
 

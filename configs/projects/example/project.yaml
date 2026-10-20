@@ -79,6 +79,15 @@ tool_sets:
   # are true.
   web:
     - web_fetch
+  # Delegation is opt-in per project: a research question may be split across
+  # read-only children, and `spawn_subagent` is registered by its own bundle.
+  research:
+    - read_file
+    - list_dir
+    - glob
+    - code_search
+    - read_code
+    - spawn_subagent
 category_tool_sets:
   bug: bugfix
   question: default
