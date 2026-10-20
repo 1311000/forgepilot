@@ -977,3 +977,46 @@ evidence* while it compares them; the weekly job is where the same rows are publ
 
 What this does not do: it prices nothing new, and three reps still cannot separate phrasing
 from behaviour -- it only makes the difference visible instead of averaging it away.
+
+## P9 — SWE-bench-lite: the adapter, and why there is no number (2026-10-20)
+
+The question "how does this do on somebody else's bugs" is not answerable on this
+box today, and the reason is infrastructure rather than design:
+
+- **HuggingFace is unreachable.** `datasets-server.huggingface.co` and
+  `huggingface.co/api/...` both time out through the only working proxy
+  (`127.0.0.1:18787`), so `princeton-nlp/SWE-bench_Lite`'s `instances.jsonl`
+  cannot be fetched — and the instance list *is* the benchmark.
+- `raw.githubusercontent.com` is unreachable too; `codeload.github.com` and
+  `api.github.com` answer 200, so tarballs for a *known* commit are obtainable, but
+  knowing which commit and which tests is exactly what the dataset carries.
+- `github.com:443` itself is refused by the proxy (`CONNECT tunnel failed, 502`),
+  which is also why the six local commits could not be pushed.
+
+What *is* built is the part that can be verified without any of that —
+`evals/swebench.py` plus `tools/swebench_spike.py`:
+
+- **Parsing refuses the unmeasurable.** A record whose `base_commit` is not a sha
+  (`HEAD`), whose `FAIL_TO_PASS` is empty, or which repeats an `instance_id` is
+  refused by name. `FAIL_TO_PASS` is accepted as the published JSON-string shape
+  *and* as a real list, because a hand-written fixture uses the latter.
+- **Grading refuses the ambiguous.** `verdict()` returns `resolved` only when no
+  `FAIL_TO_PASS` (or `PASS_TO_PASS`) id appears among the run's failures — and
+  `unknown` when the caller cannot say the runner reported its ids. That second
+  case is P7's documented ambiguity, and grading it as `resolved` is how an
+  unparseable runner becomes a benchmark score.
+- **The spike's precondition is checked first.** `spike()` verifies each
+  `repos/<owner>__<name>` is a checkout *root* whose HEAD starts with the pinned
+  commit, so the three instances are not spent against the wrong revision.
+
+⚠️ Writing that check re-measured a lesson from M19 a third time:
+`git -C <dir> rev-parse HEAD` **walks up** to the enclosing repository, so a plain
+directory inside this one answered with this repository's HEAD and the test
+expected "not a checkout". `--show-toplevel` must equal the directory, or the
+answer is about its parent.
+
+The spike itself is `tools/swebench_spike.py --instances <jsonl> --repos <dir>
+--limit 3`: exit 0 when every checkout is pinned, 1 when any is not, 2 when the
+dataset is missing (naming where it comes from). What it will not do is download
+the dataset or clone anything — a benchmark that fetches its own questions can
+also silently change them.
