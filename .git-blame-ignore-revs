@@ -1,0 +1,12 @@
+# Commits that are pure reformatting, skipped by `git blame`.
+#
+# `git config blame.ignoreRevsFile .git-blame-ignore-revs` makes blame walk past them, so
+# the line you are reading points at the change that wrote it rather than at the sweep that
+# moved it. Only commits whose **entire** content is layout belong here: a commit that also
+# changed behaviour must stay blameable, or the file would hide the very change it records.
+#
+# The format commit below is the one that made `ruff format` a gate. It is 138 files with
+# 1217 insertions and 1043 deletions, every one of them whitespace, wrapping or a trailing
+# comma — verified by running the full suite on it (1886 passed, 254 skipped) and by the
+# fact that nothing but layout changed.
+a7d3e8995e4c4d76c1849abce6827e8020957ac5

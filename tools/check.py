@@ -1,7 +1,6 @@
 """Every gate, in one command. Run this; CI runs this.
 
     python tools/check.py             # every gate
-    python tools/check.py --format    # also check formatting (see below)
 
 ⚠️ **This lives in `tools/` rather than `scripts/`, and the difference is not cosmetic.**
 On a case-insensitive filesystem — every Windows checkout — a `scripts/` directory here
@@ -17,13 +16,14 @@ drift, and the drift is invisible until the day a human's green run and CI's red
 disagree about the same commit. `--dump-config` and `--boot` cannot drift for that
 reason; these must not either.
 
-⚠️ **`ruff format` is available and is deliberately not part of the default run.**
-Measured on the tree as it stands: `ruff format --check` reports **125 of the
-repository's Python files** as it would reformat them. Adopting that is a 125-file
-diff whose entire content is layout — a decision for whoever owns the history, and not
-something to smuggle into the commit that adds CI. `--format` opts in and prints what
-it would touch; until it is adopted, `ruff format <paths>` is how new code gets
-formatted.
+⚠️ **`ruff format` is now a gate, and it became one the only honest way.** On 2026-10-20
+`ruff format` was applied to the whole tree in a commit whose entire content was layout
+(**138 files, +1217/−1043**), and that commit is listed in `.git-blame-ignore-revs` so
+`git blame` still lands on the change rather than on the reformat. Before that the tree
+was unformatted, and gating it would have been a 138-file red that nobody had agreed to.
+The sequence matters: format once, record the commit, *then* gate it — a gate added first
+would have been switched off in the first week. New code is formatted by the gate rather
+than by habit; `ruff format <paths>` still works for a single file.
 
 ⚠️ **The eval sweep is deliberately not a step here.** `evals/run.py --scripted`
 produces a **rate, not a verdict**: it exits 0 whether every task passed or none did,
@@ -125,16 +125,12 @@ def main(argv: list[str] | None = None) -> int:
     use_utf8_output()
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--format",
-        action="store_true",
-        help="also run `ruff format --check` (see the note in this file's docstring)",
-    )
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
-    steps: list[tuple[str, list[str]]] = [("ruff check", [ruff(), "check", "."])]
-    if args.format:
-        steps.append(("ruff format --check", [ruff(), "format", "--check", "."]))
+    steps: list[tuple[str, list[str]]] = [
+        ("ruff check", [ruff(), "check", "."]),
+        ("ruff format --check", [ruff(), "format", "--check", "."]),
+    ]
     # `--cov` takes no value: the source comes from `[tool.coverage.run]` and the
     # threshold from `[tool.coverage.report] fail_under`. One place, so a local run and
     # CI cannot be measuring different things — and so raising the bar is a one-line
