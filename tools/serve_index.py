@@ -33,6 +33,7 @@ import argparse
 import os
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,9 +48,10 @@ try:  # pragma: no cover - the `web` extra is what serves
 except ImportError:  # pragma: no cover - `--help` and `parse_tokens` work without it
     _Request = Any  # type: ignore[assignment,misc]
 
-from forgepilot.providers.retrieve.index import IndexCorpus
+from forgepilot.providers.retrieve.index import IndexCorpus, IndexedFile, symbols_for
+from forgepilot.seams.index_service import IndexDocument
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
-from forgepilot.seams.retriever import SearchQuery, SymbolKind, SymbolQuery
+from forgepilot.seams.retriever import SearchQuery, SymbolHit, SymbolKind, SymbolQuery
 from forgepilot.seams.security import ExecutionConstraints, Operation
 
 __all__ = ["DEFAULT_TOKEN_ENV", "build_app", "parse_tokens"]
@@ -59,6 +61,11 @@ DEFAULT_TOKEN_ENV = "FORGEPILOT_INDEX_TOKEN"
 
 #: An upper bound on a slice, so `/file` cannot be asked for a whole repository by accident.
 MAX_SLICE_LINES = 2000
+
+
+def _now() -> str:
+    """An ISO-8601 UTC stamp. Second resolution: a reader compares, not orders."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class Refused(Exception):
@@ -132,6 +139,7 @@ def build_app(
     corpus: IndexCorpus,
     *,
     tokens: Mapping[str, frozenset[str] | None],
+    writers: frozenset[str] = frozenset(),
     updated_at: str = "",
     anonymous: bool = False,
 ) -> Any:
@@ -144,6 +152,55 @@ def build_app(
 
     app = FastAPI(title="ForgePilot reference index", version="0.1.0")
     app.state.corpus = corpus
+
+    app.state.files = {(indexed.repo.slug, indexed.path): indexed for indexed in corpus.files}
+    app.state.symbols = {
+        (hit.location.repo.slug, hit.location.path): [hit] for hit in corpus.symbol_hits
+    }
+    app.state.stamps = {indexed.repo.slug: indexed.ref for indexed in corpus.files}
+    app.state.updated_at = updated_at or _now()
+
+    def _rebuild() -> None:
+        files = tuple(app.state.files[key] for key in sorted(app.state.files))
+        symbols: list[SymbolHit] = []
+        for key in sorted(app.state.symbols):
+            symbols.extend(app.state.symbols[key])
+        app.state.corpus = IndexCorpus(files, symbols)
+
+    def _apply(
+        repo: RepoRef,
+        ref: str,
+        documents: list[IndexDocument],
+        deletes: tuple[str, ...],
+        complete: bool,
+    ) -> int:
+        """Mutate the snapshot, then rebuild — one transaction's worth of work, in memory.
+
+        `complete` first removes what the repository no longer has, then documents are
+        written, so a snapshot never contains a file it just declared gone.
+        """
+        slug = repo.slug
+        if complete:
+            keeps = {(slug, document.path) for document in documents}
+            for key in [key for key in app.state.files if key[0] == slug and key not in keeps]:
+                app.state.files.pop(key, None)
+                app.state.symbols.pop(key, None)
+        for path in deletes:
+            key = (slug, path)
+            app.state.files.pop(key, None)
+            app.state.symbols.pop(key, None)
+        for document in documents:
+            key = (slug, document.path)
+            app.state.files[key] = IndexedFile(
+                repo=repo, path=document.path, ref=ref, text=document.text
+            )
+            app.state.symbols[key] = list(
+                symbols_for(document.text, repo=repo, path=document.path, ref=ref)
+            )
+        app.state.stamps[slug] = ref
+        app.state.updated_at = _now()
+        _rebuild()
+        return sum(1 for key in app.state.files if key[0] == slug)
 
     def _who(request: _Request) -> tuple[str, frozenset[str] | None]:
         if anonymous:
@@ -172,6 +229,7 @@ def build_app(
             raise Refused(400, "`pattern` is required; an empty one would match everything")
         ref = str(body.get("ref", ""))
         repos = [_repo_ref(str(slug)) for slug in body.get("repos", ())]
+        corpus = app.state.corpus
         constraints = _constraints(principal, allowed, corpus)
         refused = [repo.slug for repo in repos if not constraints.allows_repo(repo)]
         if refused:
@@ -213,6 +271,7 @@ def build_app(
             raise Refused(400, "`name` is required")
         ref = str(body.get("ref", ""))
         repos = [_repo_ref(str(slug)) for slug in body.get("repos", ())]
+        corpus = app.state.corpus
         constraints = _constraints(principal, allowed, corpus)
         refused = [repo.slug for repo in repos if not constraints.allows_repo(repo)]
         if refused:
@@ -257,6 +316,7 @@ def build_app(
             raise Refused(400, "`path` is required")
         start = max(1, int(body.get("start", 1)))
         end = max(start, int(body.get("end", start + 80 - 1)))
+        corpus = app.state.corpus
         constraints = _constraints(principal, allowed, corpus)
         if not constraints.allows_repo(repo):
             raise Refused(403, f"this token may not read {repo.slug}")
@@ -279,18 +339,53 @@ def build_app(
             "end": served.span.end,
             "text": served.text,
             "truncated": served.truncated,
-            "indexedAt": updated_at,
+            "indexedAt": app.state.updated_at,
+        }
+
+    @app.post("/index")
+    async def index_put(request: _Request) -> Any:
+        who, allowed = _who(request)
+        if who not in writers:
+            # Writing is not reading with a bigger number: a token allowed to read a
+            # repository has not thereby been granted the right to replace what everyone
+            # else is served. With no writer configured this refuses everything.
+            raise Refused(403, f"token {who!r} may not update this index")
+        body = await request.json()
+        repo = _repo_ref(str(body.get("repo", "")))
+        ref = str(body.get("ref", ""))
+        if not ref:
+            raise Refused(
+                400, "`ref` is required: an entry with no revision cannot be checked for staleness"
+            )
+        constraints = _constraints(who, allowed, app.state.corpus)
+        if not constraints.allows_repo(repo):
+            raise Refused(403, f"this token may not write {repo.slug}")
+        documents: list[IndexDocument] = []
+        for position, raw in enumerate(body.get("documents", ())):
+            path = str(raw.get("path", ""))
+            if not path:
+                raise Refused(400, f"documents[{position}] has no path")
+            documents.append(IndexDocument(path=path, text=str(raw.get("text", ""))))
+        deletes = tuple(str(path) for path in body.get("deletes", ()) if path)
+        count = _apply(repo, ref, documents, deletes, bool(body.get("complete", False)))
+        return {
+            "repo": repo.slug,
+            "ref": ref,
+            "files": count,
+            "refsByRepo": dict(app.state.stamps),
         }
 
     @app.get("/status")
     async def status(request: _Request) -> Any:
         _who(request)
+        corpus = app.state.corpus
         refs = sorted({indexed.ref for indexed in corpus.files})
         return {
             "repositories": len(corpus.repositories()),
             "files": len(corpus.files),
-            "updatedAt": updated_at,
+            "updatedAt": app.state.updated_at,
             "refs": refs,
+            "refsByRepo": dict(app.state.stamps),
         }
 
     return app
@@ -320,6 +415,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="serve every repository to anyone; refuse-by-default is the point of the token map",
     )
+    parser.add_argument(
+        "--write-token",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="a token allowed to POST /index; repeatable, and none by default",
+    )
     parser.add_argument("--updated-at", default="", help="an ISO stamp for /status")
     args = parser.parse_args(argv)
 
@@ -339,9 +441,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     corpus = IndexCorpus.from_path(args.index)
+    writers = frozenset(args.write_token)
+    for token in writers:
+        if token not in tokens:
+            # A writer that cannot be authenticated is not a writer. Naming it here is
+            # better than a 403 at three in the morning.
+            print(
+                f"error: --write-token {token!r} is not in the token map; add it with "
+                f"--token {token}=REPOS as well",
+                file=sys.stderr,
+            )
+            return 2
     app = build_app(
         corpus,
         tokens=tokens,
+        writers=writers,
         updated_at=args.updated_at,
         anonymous=args.allow_anonymous,
     )

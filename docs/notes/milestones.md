@@ -78,6 +78,21 @@ The proof lives in a test rather than a twelfth matrix task on purpose: a matrix
 services, and a task that needed an external port would be unrunnable in CI and would price the
 environment rather than the mechanism. See `docs/notes/retrieval.md`.
 
+**P15 (the index learns about a new commit) — complete.** An index built once is a corpus with
+a timestamp nobody checks. `seams/index_service.py` gained the write side —
+`IndexDocument`/`IndexUpdate`/`IndexWriter` — and a pure `lag(status, repo, current_ref)`;
+`providers/retrieve/index.py` gained `symbols_for`, so an incremental update produces symbols
+too (an updated file that cannot be found by name would be half-indexed, which looks complete
+and is worse). `tools/serve_index.py` gained `POST /index`: one transaction's worth of work in
+memory, writer tokens **separate** from read tokens (a token allowed to read a repository has
+not thereby been granted the right to replace what everyone else is served), a `complete` flag
+that distinguishes a snapshot from a delta, and `refsByRepo` on `/status`, which
+`HttpIndexService` now parses. Silence about a revision is read as **stale**, never as current.
+20 tests over a real socket plus 4 on the pure function. Two gaps stated rather than implied:
+there is no `IndexWriter` *client* in `src/` (the test posts over HTTP directly), and `lag()`
+has no caller — the consumer that knows a checkout's `HEAD` is the retriever provider, not the
+index client.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.

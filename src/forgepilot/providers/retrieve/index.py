@@ -38,6 +38,7 @@ mock). One corpus, one set of rules, two compositions.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections.abc import Sequence
@@ -60,7 +61,7 @@ from forgepilot.seams.retriever import (
 )
 from forgepilot.seams.security import ExecutionConstraints
 
-__all__ = ["CodeIndexRetrieverPlugin", "IndexCorpus", "IndexedFile", "load_index"]
+__all__ = ["CodeIndexRetrieverPlugin", "IndexCorpus", "IndexedFile", "load_index", "symbols_for"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +138,47 @@ def load_index(path: Path) -> tuple[tuple[IndexedFile, ...], tuple[SymbolHit, ..
         )
 
     return tuple(files), tuple(symbols)
+
+
+def symbols_for(text: str, *, repo: RepoRef, path: str, ref: str) -> tuple[SymbolHit, ...]:
+    """Structural symbols in one Python file, with the spans a reader can be handed.
+
+    A file that does not parse contributes no symbols and is still searchable text: the corpus
+    is allowed to contain broken code, because a task about a broken file is a normal thing to
+    ask. This lives beside the corpus rather than in `tools/build_code_index.py` because the
+    **write** side of an index also needs it — an incremental update that could not produce
+    symbols would make every updated file silently unsearchable by name, which is the kind of
+    half-truth a corpus must not have.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ()
+
+    found: list[SymbolHit] = []
+
+    def hit(node: ast.AST, name: str, kind: SymbolKind) -> SymbolHit:
+        start = getattr(node, "lineno", 1)
+        end = getattr(node, "end_lineno", None) or start
+        segment = ast.get_source_segment(text, node) or ""
+        return SymbolHit(
+            location=CodeRef(repo=repo, path=path, ref=ref),
+            name=name,
+            kind=kind,
+            span=LineSpan(start=start, end=max(end, start)),
+            signature=segment.splitlines()[0].strip() if segment else None,
+        )
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            found.append(hit(node, node.name, SymbolKind.CLASS))
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    found.append(hit(child, child.name, SymbolKind.METHOD))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            found.append(hit(node, node.name, SymbolKind.FUNCTION))
+
+    return tuple(found)
 
 
 class IndexCorpus:

@@ -31,7 +31,7 @@ speaks.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -46,6 +46,11 @@ __all__ = [
     "IndexSlice",
     "IndexStatus",
     "IndexService",
+    "IndexDocument",
+    "IndexUpdate",
+    "IndexWriter",
+    "IndexLag",
+    "lag",
     "IndexRefused",
     "IndexUnavailable",
 ]
@@ -101,6 +106,95 @@ class IndexStatus:
     files: int
     updated_at: str
     refs: tuple[str, ...] = field(default_factory=tuple)
+    #: Slug → the ref the index holds for that repository. Empty for a service that does
+    #: not say, which `lag()` treats as **stale**, never as "current".
+    refs_by_repo: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexDocument:
+    """One file's full text, as the index should hold it."""
+
+    path: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexUpdate:
+    """One repository's files at one ref — a **snapshot** or a **delta**.
+
+    ``complete=True`` means "this is the whole repository at ``ref``": anything the index
+    holds for that repository and that is not in ``documents`` is removed. ``complete=False``
+    is a delta: documents are upserted, ``deletes`` are removed, and everything else stays.
+
+    The two are separate because "the commit touched one file" and "here is the tree" are
+    opposite statements, and a service that guesses between them either deletes a repository
+    or keeps a file that no longer exists.
+    """
+
+    repo: RepoRef
+    ref: str
+    documents: Sequence[IndexDocument] = ()
+    deletes: Sequence[str] = ()
+    complete: bool = False
+
+
+@runtime_checkable
+class IndexWriter(Protocol):
+    """The write side. Consumers never see it; an ingestion job does.
+
+    It takes `ExecutionConstraints` like the read side, because "may this caller write this
+    repository's entries" is the same kind of question as "may it read them", and a writer
+    that trusted its caller would be the leak the read side forbids.
+    """
+
+    async def apply(
+        self, update: IndexUpdate, constraints: ExecutionConstraints
+    ) -> IndexStatus: ...
+
+
+@dataclass(frozen=True, slots=True)
+class IndexLag:
+    """Whether the index is behind ``current_ref``, and by what."""
+
+    behind: bool
+    indexed_ref: str
+    current_ref: str
+    detail: str = ""
+
+
+def lag(status: IndexStatus, repo: RepoRef, current_ref: str) -> IndexLag:
+    """Compare what the index holds for ``repo`` with the ref the caller sees.
+
+    Three answers, and the middle one is the reason this is a function rather than a
+    sentence: a service that does not report a per-repository ref is **stale**, not fresh.
+    "The index did not say" and "the index is current" are different facts, and only one of
+    them justifies trusting an answer.
+    """
+    slug = repo.slug
+    if not status.refs_by_repo:
+        return IndexLag(
+            behind=True,
+            indexed_ref="",
+            current_ref=current_ref,
+            detail="the service did not report which ref it holds, so freshness is unknown",
+        )
+    indexed = status.refs_by_repo.get(slug, "")
+    if not indexed:
+        return IndexLag(
+            behind=True,
+            indexed_ref="",
+            current_ref=current_ref,
+            detail=f"{slug} is not in this index at all",
+        )
+    if indexed != current_ref:
+        return IndexLag(
+            behind=True,
+            indexed_ref=indexed,
+            current_ref=current_ref,
+            detail=f"the index holds {indexed} while the checkout is at {current_ref}",
+        )
+    return IndexLag(behind=False, indexed_ref=indexed, current_ref=current_ref)
 
 
 class IndexRefused(PermissionError):

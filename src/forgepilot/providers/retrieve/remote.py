@@ -256,6 +256,14 @@ class HttpIndexService:
             files=int(body.get("files", 0)),
             updated_at=str(body.get("updatedAt", "")),
             refs=tuple(str(ref) for ref in body.get("refs", ())),
+            # A service that does not report per-repository refs leaves this empty, and
+            # `lag()` reads empty as *stale* — silence about a revision is not a claim that
+            # it is current.
+            refs_by_repo={
+                str(slug): str(ref)
+                for slug, ref in (body.get("refsByRepo") or {}).items()
+                if slug and ref
+            },
         )
 
 

@@ -200,6 +200,34 @@ not exist and cannot be verified on this machine. What exists is a file one depl
 lays down (`tools/build_code_index.py`), read whole and searched in memory. `supports_remote:
 false` is the honest capability for both the index and the composite.
 
+## P15 — the index learns about a new commit (2026-10-21)
+
+An index that is only ever built once is a corpus with a timestamp nobody checks. P15 adds
+the write side, and the two decisions that make it honest:
+
+- **Read and write are different seams.** `IndexService` (search/symbols/open/status) stays
+  what a consumer holds. `IndexWriter.apply(IndexUpdate, constraints)` is what an ingestion
+  job holds — a token allowed to read a repository has not thereby been granted the right to
+  replace what everyone else is served, and the reference service refuses writes unless a
+  token is named with `--write-token`.
+- **A snapshot and a delta are different statements.** `IndexUpdate.complete=True` means
+  "this is the whole repository at this ref", so anything the index holds that is not named
+  is removed. `complete=False` is a delta: documents are upserted, `deletes` are removed,
+  everything else stays. A service that guessed between them would either delete a
+  repository or keep a file that no longer exists.
+
+**Staleness is a function, not a sentence.** `lag(status, repo, current_ref)` returns
+`behind/indexed_ref/current_ref/detail`, and a status that reports **no** per-repository ref
+is `behind=True`. "The index did not say" and "the index is current" are different facts, and
+only one of them justifies trusting an answer. `GET /status` now returns `refsByRepo`; the
+HTTP client parses it into `IndexStatus.refs_by_repo`.
+
+**What is still missing, stated rather than implied**: there is no `IndexWriter` *client* in
+`src/` — the writer seam has one implementation (the reference service's `POST /index`) and
+its test posts over HTTP directly. `lag()` has no caller in `src/` yet either: the consumer
+that would use it is the one that knows the checkout's `HEAD`, which today is the retriever
+provider, not the index client. Both are gaps, not defects: the reader does not exist.
+
 ## M24 — the corpus, with the tree in front of it
 
 `providers/retrieve/composite.py` (`CompositeRetrieverPlugin`, bundle
