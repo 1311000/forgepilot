@@ -47,3 +47,53 @@ def test_a_green_run_yields_resolved_and_a_silent_one_does_not() -> None:
     # An empty id list is also what a run nobody could read produces, so it is only
     # `resolved` when the runner actually said something.
     assert verdict(INSTANCE, (), runner_told_us=False) == "unknown"
+
+
+WITH_REGRESSIONS = SwebenchInstance(
+    instance_id="astropy__astropy-14182",
+    repo="astropy/astropy",
+    base_commit="a5917978be",
+    problem_statement="an unrelated failure",
+    fail_to_pass=("astropy/io/ascii/tests/test_rst.py::test_rst_with_header_rows",),
+    pass_to_pass=(
+        "astropy/io/ascii/tests/test_rst.py::test_rst_without_header_rows",
+        "astropy/io/ascii/tests/test_read.py::test_simple",
+    ),
+)
+
+
+def test_the_regression_files_join_the_fix_files_once() -> None:
+    assert G.pass_files(WITH_REGRESSIONS) == (
+        "astropy/io/ascii/tests/test_rst.py",
+        "astropy/io/ascii/tests/test_read.py",
+    )
+    # The fix file is already in the list; the union does not repeat it.
+    assert G.all_test_files(WITH_REGRESSIONS) == (
+        "astropy/io/ascii/tests/test_rst.py",
+        "astropy/io/ascii/tests/test_read.py",
+    )
+    recipe = G.script_for(WITH_REGRESSIONS, None)
+    assert "test_rst.py" in recipe
+    assert "test_read.py" in recipe
+
+
+def test_a_pass_to_pass_failure_is_unresolved_even_when_the_fix_landed() -> None:
+    output = """
+FAILED astropy/io/ascii/tests/test_read.py::test_simple - AssertionError
+1 failed, 40 passed in 3.10s
+"""
+    report = G.report_for(WITH_REGRESSIONS, output, "none")
+    assert report["f2p_failed"] == []
+    assert report["p2p_failed"] == ["astropy/io/ascii/tests/test_read.py::test_simple"]
+    assert report["verdict"] == "unresolved"
+
+
+def test_a_failure_outside_both_lists_does_not_grade_the_environment() -> None:
+    output = """
+FAILED astropy/io/ascii/tests/test_ecsv.py::test_something_else - ConnectionError
+1 failed, 40 passed in 3.10s
+"""
+    report = G.report_for(WITH_REGRESSIONS, output, "none")
+    assert report["f2p_failed"] == []
+    assert report["p2p_failed"] == []
+    assert report["verdict"] == "resolved"

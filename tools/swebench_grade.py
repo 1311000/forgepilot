@@ -2,16 +2,17 @@
 
 `verdict()` decides from test ids; something has to *produce* those ids, and that something
 has to run where the instance can be built. This is that step: stage the checkout, apply the
-instance's test patch and (optionally) a diff, run the FAIL_TO_PASS test files, and hand the
-failed ids to `verdict()`.
+instance's test patch and (optionally) a diff, run the tests named by FAIL_TO_PASS *and*
+PASS_TO_PASS, and hand the failed ids to `verdict()`.
 
-Two limits are deliberate and printed rather than hidden:
+PASS_TO_PASS is run in the same invocation as FAIL_TO_PASS. It is the regression half of a
+score: a patch that fixes the reported bug and breaks a neighbouring test is `unresolved`, and
+only a run that includes those ids can say so. The lists are small here (2/13, 1/9 and 1/8
+ids for the three instances), so it is one pytest invocation, not a separate decision.
 
-* only the FAIL_TO_PASS tests are run. PASS_TO_PASS is the regression half of a real
-  SWE-bench score and it is 517–989 ids per instance here; running it is a separate decision
-  about time, not a detail to slip in.
-* the runner must have parsed the output. A pytest run whose ids nobody could read is
-  `unknown`, never `resolved` — the same rule `verdict()` already enforces.
+One limit is deliberate and printed rather than hidden: the runner must have parsed the
+output. A pytest run whose ids nobody could read is `unknown`, never `resolved` — the same
+rule `verdict()` already enforces.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import argparse
 import json
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
@@ -39,9 +41,27 @@ def test_files(instance: SwebenchInstance) -> tuple[str, ...]:
     pytest is given files rather than node ids: an id like `test_x[compound_model6-result6]`
     is a shell-quoting problem in a mounted container, and the file is what the run needs.
     """
+    return _files_of(instance.fail_to_pass)
+
+
+def pass_files(instance: SwebenchInstance) -> tuple[str, ...]:
+    """The files the PASS_TO_PASS ids live in — the regression half of the score."""
+    return _files_of(instance.pass_to_pass)
+
+
+def _files_of(nodes: Iterable[str]) -> tuple[str, ...]:
     files: list[str] = []
-    for node in instance.fail_to_pass:
+    for node in nodes:
         path = node.split("::", 1)[0]
+        if path not in files:
+            files.append(path)
+    return tuple(files)
+
+
+def all_test_files(instance: SwebenchInstance) -> tuple[str, ...]:
+    """Every file a verdict needs: FAIL_TO_PASS first, then PASS_TO_PASS, no duplicates."""
+    files = list(test_files(instance))
+    for path in pass_files(instance):
         if path not in files:
             files.append(path)
     return tuple(files)
@@ -74,7 +94,7 @@ def _to_lf(root: Path) -> None:
 
 def script_for(instance: SwebenchInstance, diff: Path | None) -> str:
     """The bash recipe to run where docker is callable. Printed, never executed here."""
-    tests = " ".join(test_files(instance))
+    tests = " ".join(all_test_files(instance))
     candidate = "true"
     if diff is not None:
         candidate = f"patch -p1 --batch --forward < /work/{instance.instance_id}.candidate.patch"
@@ -111,14 +131,25 @@ def stage(instance: SwebenchInstance, diff: Path | None) -> Path:
 
 
 def report_for(instance: SwebenchInstance, output: str, diff: str) -> dict[str, object]:
-    """Grade captured pytest output. Pure, so a test can pin every branch."""
+    """Grade captured pytest output. Pure, so a test can pin every branch.
+
+    A failure counts only when the id is in one of the instance's two lists. Tests outside
+    them can fail for reasons this patch did not cause (and often do, in a seven-year-old
+    tree), so counting them would grade the environment instead of the change.
+    """
     failed = parse_failed(output)
+    reported = set(failed)
+    f2p_failed = [node for node in instance.fail_to_pass if node in reported]
+    p2p_failed = [node for node in instance.pass_to_pass if node in reported]
     told = any(word in output for word in ("passed", "failed", "error"))
     return {
         "instance": instance.instance_id,
         "diff": diff,
         "failed": list(failed),
         "fail_to_pass": list(instance.fail_to_pass),
+        "pass_to_pass": len(instance.pass_to_pass),
+        "f2p_failed": f2p_failed,
+        "p2p_failed": p2p_failed,
         "verdict": verdict(instance, failed, ran=bool(output.strip()), runner_told_us=told),
         "tail": output.strip().splitlines()[-3:],
     }

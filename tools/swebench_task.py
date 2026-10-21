@@ -42,6 +42,18 @@ def mirror(instance_id: str) -> Path:
         ["git", "clone", "--quiet", "--no-hardlinks", str(REPOS / instance_id), str(target)],
         check=True,
     )
+    # A SWE-bench base commit is a detached revision, and the workspace provider needs a
+    # branch to start from — so the mirror gets `main` at the instance's base.
+    head = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(target), "update-ref", "refs/heads/main", head], check=True)
+    subprocess.run(
+        ["git", "-C", str(target), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
     return target
 
 
@@ -102,6 +114,13 @@ budget:
   config:
     model: ${{FORGEPILOT_LLM_MODEL:-deepseek-flash}}
     max_tokens: 2048
+  tier: trusted
+
+- id: agent-loop
+  plugin: forgepilot.runtime.loop.agent_loop:ForgePilotAgentLoopPlugin
+  config:
+    engine: forgepilot
+    max_steps: 24
   tier: trusted
 
 - id: tickets

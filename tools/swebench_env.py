@@ -31,8 +31,13 @@ PIP = (
     "setuptools_scm jinja2 pytest hypothesis pytest-doctestplus pyerfa pyyaml packaging pyparsing"
 )
 APT = (
-    "apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive "
-    "apt-get install -y -qq --no-install-recommends build-essential patch git >/dev/null 2>&1"
+    # Debian's mirror is not reliably reachable from this machine's container network, and a
+    # silent `set -e` failure reads as "the tests failed" three layers later. Retry, and say
+    # so when every attempt lost.
+    "for i in 1 2 3; do apt-get update -qq >/dev/null 2>&1 && "
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
+    'build-essential patch git >/dev/null 2>&1 && break; echo "apt attempt $i failed, retrying" >&2; '
+    "sleep 3; done; command -v patch >/dev/null || { echo 'apt could not install patch' >&2; exit 1; }"
 )
 CFLAGS = "-std=gnu17 -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
 

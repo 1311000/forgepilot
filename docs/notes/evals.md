@@ -1201,7 +1201,41 @@ Measured, `astropy__astropy-12907`, one turn:
 | container, test patch + candidate patch | **`15 passed`** |
 | `verdict()` | **`resolved`** |
 
-So the score is **1/1 resolved, one instance, one run**. It is not a SWE-bench-lite
-percentage: three instances were fetched, only one was driven, and PASS_TO_PASS was
-not run (517–989 ids per instance). What it does establish is that the whole chain —
-agent, diff, container, verdict — produces a number that means what it says.
+So the score was **1/1 resolved, one instance, one run**. It was not a SWE-bench-lite
+percentage: three instances were fetched, one was driven, and PASS_TO_PASS was not run.
+
+⚠️ The sentence that used to sit here said PASS_TO_PASS was "517–989 ids per instance".
+That was a character count of the dataset's *string* field, not a count of ids: the
+three instances carry **2/13, 1/9 and 1/8** ids for FAIL_TO_PASS/PASS_TO_PASS. P14 also
+replaced the guess with a measurement — see the next section.
+
+## P14 — three instances, and both halves of the score (2026-10-21)
+
+`tools/swebench_grade.py` now runs **PASS_TO_PASS in the same pytest invocation** as
+FAIL_TO_PASS and splits the failures into `f2p_failed` and `p2p_failed`. A failure
+counts only when its id is in one of the instance's two lists: a seven-year-old tree
+fails tests for reasons a patch did not cause, and counting those would grade the
+environment instead of the change.
+
+The same driver ran all three instances on disk (`tools/swebench_task.py`, one agent
+turn each, `max_steps: 24`):
+
+| instance | agent changed | FAIL_TO_PASS | PASS_TO_PASS | verdict |
+|---|---|---|---|---|
+| `astropy__astropy-12907` | `astropy/modeling/separable.py` (1 line) | 2/2 | 13/13 | **resolved** |
+| `astropy__astropy-14182` | `astropy/io/ascii/rst.py` | 1/1 | 9/9 | **resolved** |
+| `astropy__astropy-14365` | `astropy/io/ascii/qdp.py` | 1/1 | 8/8 | **resolved** |
+
+Three of three, with the regression half included. Two limits stay stated:
+
+- **Three instances is not SWE-bench-lite.** It is three instances of one repository,
+  fetched when the dataset was reachable; the dataset itself is not a dependency this
+  machine can rely on.
+- **The in-loop check is still a stub.** Task mode's own `run_checks` is `cmd /c exit 0`
+  because the tests need this container; the score comes from the oracle, applied to the
+  diff afterwards. A deployment with the container in its sandbox would run them in the
+  loop, and nothing in the seam prevents that.
+
+One more measurement was needed to get here: the apt line in the recipe now retries
+three times and fails loudly, because a silent `set -e` exit from an unreachable Debian
+mirror read as "the tests failed" three layers up.
