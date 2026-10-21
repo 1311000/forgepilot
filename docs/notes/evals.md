@@ -1177,3 +1177,31 @@ So the number remains absent, and the reason is recorded rather than left as "an
 exists". A benchmark whose data cannot be fetched and whose environments cannot be built
 grades nothing; saying `resolved: 0` would be a fabricated measurement of the environment,
 not of the agent.
+
+## P13 — the first score: one instance, resolved (2026-10-21)
+
+`tools/swebench_task.py` scaffolds a task-mode deployment for one instance: a mirror
+clone with `main` at the instance's base commit, a ticket built from the problem
+statement (the completeness rules are language-shaped, so the four required sections
+are written in), and a project whose in-loop check is `cmd /c exit 0`. That stub is
+not laziness — the instance's own tests need the python:3.10 container, and this box's
+python cannot call docker (it answers the shell and denies the npipe). The oracle is
+the container, applied to the diff afterwards.
+
+The agent's tool set excludes `run` for the same reason: on this interpreter
+`python -m pytest` against a 5.0-era tree is a wall, and a model that walks into it
+spends the budget learning nothing.
+
+Measured, `astropy__astropy-12907`, one turn:
+
+| stage | result |
+|---|---|
+| agent | edited `astropy/modeling/separable.py` (1 insertion, 1 deletion) |
+| delivered | `main:73` (`return separable if separable else separable_matrix(model)`) |
+| container, test patch + candidate patch | **`15 passed`** |
+| `verdict()` | **`resolved`** |
+
+So the score is **1/1 resolved, one instance, one run**. It is not a SWE-bench-lite
+percentage: three instances were fetched, only one was driven, and PASS_TO_PASS was
+not run (517–989 ids per instance). What it does establish is that the whole chain —
+agent, diff, container, verdict — produces a number that means what it says.
