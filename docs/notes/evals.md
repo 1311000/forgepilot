@@ -1239,3 +1239,67 @@ Three of three, with the regression half included. Two limits stay stated:
 One more measurement was needed to get here: the apt line in the recipe now retries
 three times and fails loudly, because a silent `set -e` exit from an unreachable Debian
 mirror read as "the tests failed" three layers up.
+
+## P18 — pricing, as a rule instead of a sentence (2026-10-21)
+
+Every earlier matrix report said, in prose, which mechanisms were "priced". Prose drifts: the
+same numbers were read as "search prices" in one era and "nothing prices" in another, because
+each reader chose their own threshold. `evals/pricing.py` now writes the rule down and applies
+it to rows, so the verdict is a function of the data:
+
+- **`insufficient`** — fewer than three reps on either side of the comparison. Two reps cannot
+  show a flip; they can only show a coin.
+- **`unpriced`** — no flip worth the name (the arm fails less than two thirds, or the full arm
+  fails more than one third). The mechanism is reachable and busy, and the task does not miss it.
+- **`inverted`** — the arm passes *more* often than the full arm. That is a task whose check
+  measures something else, and averaging it into "no effect" hides it.
+- **`priced`** — the flip holds *and* at least one failing arm row has a **behaviour** kind
+  (`checks`, `changed`, `state`, `delivery`, `other`). Tidiness (`scratch`, `cost`), narration
+  and held-out probes do not count: those are different questions.
+- **`priced_but_unclassified`** — the flip holds but no behaviour failure explains it: the arm
+  lost and the rows do not say why.
+
+Rows written before `failure_kinds` existed still carry the failure text, and the field is a
+pure function of that text, so the kinds are **re-derived with the runner's own classifier**
+(`--no-derive` turns it off). That is why the 96-cell run below can be priced at all.
+
+### The 160-cell matrix cannot price anything
+
+Ten tasks, eight arms, **two** reps — 70 arm/task pairs, every one of them `insufficient`:
+
+```
+task                  priced  priced_but_unclassified  unpriced  inverted  insufficient
+bug-fix                    0            0                 0         0          7
+feature                    0            0                 0         0          7
+... (ten rows, 7 each)                                                          70
+```
+
+That is not a defect in the rule; it is the reason the 96-cell run exists. A two-rep cell has
+no way to distinguish "the arm always fails" from "the arm failed twice".
+
+### The 96-cell matrix, four tasks, three reps
+
+```
+task                  priced  priced_but_unclassified  unpriced  inverted  insufficient
+no-failing-test            5            0                 2         0          0
+not-in-the-checkout        2            0                 5         0          0
+out-of-scope               0            0                 0         7          0
+two-repos                  0            0                 4         3          0
+```
+
+Three readings, and the first is the uncomfortable one:
+
+1. **`no-failing-test` prices five arms** — including `no-memory` and `no-distill`, which cannot
+   possibly matter for a task about a failing test. When arms that remove unrelated machinery
+   all price, the number is describing the task's instability, not the arms. The rule prices
+   *arms*; it does not certify tasks. `--summary` exists so this is visible instead of buried.
+2. **`not-in-the-checkout` prices exactly the two arms that remove the retriever** (`baseline`,
+   `no-search`), and nothing else. That is the one clean pricing in the suite: with no retriever
+   the answer is unreachable, and `full` finds it 3/3.
+3. **`out-of-scope` is inverted for all seven arms** — `full` passes 0/3 while every arm passes
+   2/3 or 3/3, because that task's check is a sentence (`P4`). `two-repos` is three inversions
+   and four unpriced, which is the changed-path limit rather than any mechanism (`M23`).
+
+What the rule deliberately does not do: check whether an arm is *pertinent* to a task. That is a
+property of the eval set, not of a row, and the honest place to see it is the summary table above
+plus a human who knows what each arm switches off.
