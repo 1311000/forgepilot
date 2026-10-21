@@ -35,7 +35,7 @@ from forgepilot.identity.policy import (
 )
 from forgepilot.identity.principal import Grant, PrincipalServicePlugin, TokenRecord
 from forgepilot.identity.scope import RequestScope, open_request_scope
-from forgepilot.identity.signing import ENV_KEY, load_key, sign, verify
+from forgepilot.identity.signing import ENV_KEY, configured_key, load_key, sign, verify
 
 __all__ = [
     # principal
@@ -47,7 +47,11 @@ __all__ = [
     "ResourceRef",
     "PolicyServicePlugin",
     # constraints
+    "configured_key",
+    "configured_key",
     "ProjectPolicy",
+    "configured_key",
+    "configured_key",
     "derive",
     # signing
     "sign",

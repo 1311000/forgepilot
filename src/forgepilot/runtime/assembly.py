@@ -80,6 +80,7 @@ async def assemble_session(
     workspace_root: Path | None = None,
     principal: Principal | None = None,
     minimum_enforcement_for_exec: Any = None,
+    signing_key: bytes | None = None,
 ) -> SessionRuntime:
     """Wire a session's pieces together around an already-signed authority set.
 
@@ -121,8 +122,38 @@ async def assemble_session(
     # The session is provided *into* the scope rather than handed around beside it,
     # so the loop finds it the same way it finds everything else — and so a plugin
     # that wants it has to declare it, which keeps the dependency visible.
+    # ⚠️ **The signature is checked where the authority is consumed, or it is not checked.**
+    # This call used to pass `verify_signature=False` unconditionally, which made the HMAC a
+    # decoration: `derive(key=...)` signed the object and no production path ever verified it.
+    # Two honest states now, and one refusal:
+    # - a key is configured -> the object is verified before a scope exists (a tampered set
+    #   never gets a context to live in);
+    # - no key -> unsigned, which is the truth inside one process, where the boundary is the
+    #   kernel reachability rather than the signature;
+    # - signed but no key -> a refusal, because an unchecked signature *looks* like tamper
+    #   protection while providing none.
+    if signing_key is None:
+        # The configured key is the default so that every caller -- CLI, HTTP, tests --
+        # verifies by the same rule. A caller that passes none does not thereby opt out;
+        # it means 'whatever this deployment configured', which may be nothing.
+        from forgepilot.identity.signing import configured_key
+
+        signing_key = configured_key()
+
+    if constraints.is_signed and signing_key is None:
+        raise ValueError(
+            "these constraints carry a signature and no signing key was configured, so the "
+            "signature could not be checked. Set FORGEPILOT_SIGNING_KEY to the value that "
+            "derived them, or derive without a key. An unchecked signature is worse than "
+            "none: it looks like tamper protection while providing nothing."
+        )
+
     scope = open_request_scope(
-        root, constraints, verify_signature=False, extra_services={"session": session}
+        root,
+        constraints,
+        key=signing_key,
+        verify_signature=signing_key is not None,
+        extra_services={"session": session},
     )
 
     # **The decision authority is required, and its absence is not permission.**

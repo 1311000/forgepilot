@@ -108,7 +108,12 @@ def credential_dependency(root: Any, policy: Any):
         if not token:
             raise HTTPException(status_code=401, detail="a bearer credential is required")
         try:
-            return resolve_credential(root, token, project=policy)
+            # The same key that derives the authority also verifies it in
+            # `assemble_session`; passing it here is what makes the signature a check
+            # rather than a field.
+            from forgepilot.identity.signing import configured_key
+
+            return resolve_credential(root, token, project=policy, key=configured_key())
         except Exception as exc:  # noqa: BLE001 - any failure to authenticate is a 401
             # The reason is deliberately not echoed: distinguishing "no such
             # token" from "expired token" tells an attacker which of their guesses

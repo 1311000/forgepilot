@@ -27,6 +27,23 @@ from forgepilot.seams.refs import PrincipalId, RepoRef, SessionId, TenantId
 from forgepilot.seams.security import ExecutionConstraints, NetworkAccess, Operation, Principal
 from forgepilot.seams.session import SessionHeader
 
+
+@pytest.fixture(autouse=True)
+def _the_environment_a_test_leaves_behind_is_the_one_it_found():
+    """Restore ``os.environ`` around every test.
+
+    Not a convenience: a test that calls :func:`forgepilot.env.load_local_env` changes the
+    process for every test after it, and the failure that follows is attributed to whichever
+    test happens to run next. Restoring here makes the leak impossible to express.
+    """
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+
+
 # ---------------------------------------------------------------------------
 # A temp root inside the checkout, decided rather than inherited.
 #

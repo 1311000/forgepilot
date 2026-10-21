@@ -687,7 +687,7 @@ def _chat(args: argparse.Namespace) -> int:
     import os
 
     from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
-    from forgepilot.identity import ENV_KEY, ProjectPolicy, derive
+    from forgepilot.identity import ENV_KEY, ProjectPolicy, configured_key, derive
     from forgepilot.kernel import create_root
     from forgepilot.runtime.assembly import assemble_session
     from forgepilot.seams.agent_loop import AgentSpec, UserInput
@@ -727,7 +727,8 @@ def _chat(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 3
 
-        constraints = derive(record.principal, record.grant, ProjectPolicy.open_project(), key=None)
+        key = configured_key()
+        constraints = derive(record.principal, record.grant, ProjectPolicy.open_project(), key=key)
 
         # Every tool's writes are bounded by this directory, and the sandbox
         # policy takes its root from here — so an unresolved path would widen the
@@ -743,6 +744,7 @@ def _chat(args: argparse.Namespace) -> int:
             workspace_root=workspace,
             principal=record.principal,
             minimum_enforcement_for_exec=minimum_enforcement,
+            signing_key=key,
         )
 
         spec = AgentSpec(
@@ -1375,7 +1377,7 @@ def _task(args: argparse.Namespace) -> int:
 
     from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
     from forgepilot.config.project import find_project, load_project
-    from forgepilot.identity import ENV_KEY, derive
+    from forgepilot.identity import ENV_KEY, configured_key, derive
     from forgepilot.kernel import create_root
     from forgepilot.orchestration import ClassifierGateway
     from forgepilot.orchestration.modes.task import plan_task, run_task
@@ -1435,7 +1437,8 @@ def _task(args: argparse.Namespace) -> int:
 
         # The project contributes its own policy on top of the caller's grant.
         # It can only ever narrow — see `derive`.
-        constraints = derive(record.principal, record.grant, project.to_policy(), key=None)
+        key = configured_key()
+        constraints = derive(record.principal, record.grant, project.to_policy(), key=key)
 
         try:
             ticket = await root.tickets.fetch(TicketId(args.task))
@@ -1449,6 +1452,7 @@ def _task(args: argparse.Namespace) -> int:
             workspace_root=workspace,
             principal=record.principal,
             minimum_enforcement_for_exec=_minimum_enforcement(root, args),
+            signing_key=key,
         )
         try:
             # The session goes on the gateway: a model-backed classifier must record

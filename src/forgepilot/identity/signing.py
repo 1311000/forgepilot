@@ -31,7 +31,7 @@ from dataclasses import replace
 from forgepilot.identity.errors import SignatureInvalid, SigningKeyMissing
 from forgepilot.seams.security import ExecutionConstraints
 
-__all__ = ["ENV_KEY", "load_key", "sign", "verify", "signed"]
+__all__ = ["ENV_KEY", "configured_key", "load_key", "sign", "verify", "signed"]
 
 #: Where the signing key is expected. Deliberately an environment variable:
 #: config files are dumped by `--dump-config`, and a key in a dump is a leaked key.
@@ -47,6 +47,17 @@ def load_key() -> bytes:
             f"running with unverifiable authority is worse than not running."
         )
     return raw.encode("utf-8")
+
+
+def configured_key() -> bytes | None:
+    """The key this deployment configured, or ``None`` when it configured none.
+
+    Deliberately *not* :func:`load_key`: that one raises, because signing without a key is
+    a mistake. Asking whether a key exists is a legitimate question with two answers, and
+    the caller that asks it is deciding whether authority is verifiable at all.
+    """
+    raw = os.environ.get(ENV_KEY, "").strip()
+    return raw.encode("utf-8") if raw else None
 
 
 def _digest(constraints: ExecutionConstraints, key: bytes) -> str:

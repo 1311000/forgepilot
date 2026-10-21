@@ -93,6 +93,19 @@ there is no `IndexWriter` *client* in `src/` (the test posts over HTTP directly)
 has no caller — the consumer that knows a checkout's `HEAD` is the retriever provider, not the
 index client.
 
+**P17 (the threat model) — complete.** Every security-relevant sentence is now a row with
+a mechanism, a file and a test, and the rows are parsed by
+`tests/contract/test_the_threat_model_is_checkable.py`, which fails when a row names a test
+file that does not exist (falsified by moving one aside). It found a real defect on the way
+in: `assemble_session` opened every request scope with `verify_signature=False`, so the HMAC
+on `ExecutionConstraints` was checked by a function in `deps.py` that nothing in `src/`
+called -- signed in the object, unverified in the system. The fix makes the assembly verify
+with the configured key, refuse a signed set it cannot check, and default to
+`configured_key()`, so "the caller passed no key" means "whatever this deployment
+configured" rather than "stop checking". Five tests drive the four sentences; the tampered
+payload is refused with `SignatureInvalid` even though a key is present, which is the
+difference between checking and merely having a key.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.
