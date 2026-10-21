@@ -129,6 +129,27 @@ Prerequisites that are not variables:
   `ubuntu-22.04` base no host change is needed.
 - **ripgrep** for `code_search` (in the image).
 
+## P19 — the thresholds are measured, and one of them could never fire (2026-10-21)
+
+`deploy/alerts.yml` used to carry five `for:` values chosen because they looked reasonable.
+Two of them were wrong in a way only a reader of the code would notice:
+
+- **`ForgePilotApprovalWaiting` was on `for: 15m` over a five-minute timeout.** An unanswered
+  approval is a refusal after `DEFAULT_APPROVAL_TIMEOUT_S = 300.0`, so `approvals_pending`
+  returns to 0 before a fifteen-minute window can elapse. The rule was monitoring that could not
+  fire. It is now `4m` — below the timeout it has to catch — and a guard asserts that
+  relationship against the constant itself rather than against a comment.
+- **`ForgePilotTurnStall` was on `for: 30m`.** The 1343 live turns in this box's durable logs
+  have p50 0.2 s, p95 28.0 s and a maximum of 242.5 s, so thirty minutes meant the alert would
+  arrive after a stuck turn had long been abandoned by whoever was watching. It is now `10m`,
+  about 2.5× the longest turn ever recorded here.
+
+The measurement, and the page each alert needs, live in `docs/notes/runbook.md`. Two guards keep
+the files from drifting: every alert must have a runbook page and every page must name a real
+alert (both directions), and every `for:` must appear in the runbook's threshold table. Both were
+falsified by reintroducing the old value and deleting a page; each failed on the sentence it was
+written to say.
+
 ## What is deliberately not here
 
 Kubernetes manifests, a Postgres-backed session registry, RS256/JWKS (M26's OIDC

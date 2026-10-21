@@ -6,6 +6,14 @@
 # pointing at a series nobody emits is an alert that never fires, which is worse
 # than no alert: it is the appearance of monitoring.
 #
+# **Every `for:` below is either measured or derived from a number in the code, and
+# `docs/notes/runbook.md` carries the table those numbers came from.** Two guards keep
+# the two files from drifting: `tests/contract/test_every_alert_has_a_runbook_page.py`
+# (each alert has a page, each page names a real alert) and
+# `tests/contract/test_the_alert_thresholds_are_measured.py` (each `for:` appears in the
+# runbook's measurement table, and the two thresholds that must sit on a particular side
+# of a code constant do).
+#
 # ⚠️ **What these rules cannot see.** One process owns the state directory, so
 # there is no second replica to take over and `up == 0` means the service is down,
 # not that a replica is unlucky. Vertical truth — "the agent is getting worse",
@@ -26,19 +34,25 @@ groups:
             state directory, this is the whole service, not one replica of it:
             check the container, then the serve lock in `$FORGEPILOT_HOME`.
 
+      # `shutdown_timeout` defaults to 15 s (DEFAULT_SHUTDOWN_TIMEOUT_S in cli/main.py),
+      # and the drain test measured a 5.2 s stream on this box. 1m is four times the
+      # default and still short enough to page while the streams are open; the old 5m
+      # meant a stuck drain held streams for five minutes before anybody looked.
       - alert: ForgePilotDraining
         expr: max(forgepilot_ready) < 1
-        for: 5m
+        for: 1m
         labels:
           severity: page
         annotations:
-          summary: "ForgePilot has been draining for five minutes"
+          summary: "ForgePilot has been draining for a minute"
           description: >-
-            `/readyz` has been 503 for longer than the graceful-shutdown timeout,
-            which means a process is alive but refusing new work and not leaving.
-            Restart it; a draining process that outlives `shutdown_timeout` is a
-            shutdown that did not finish, and its SSE streams are still open.
+            `/readyz` has been 503 for longer than `shutdown_timeout`, which means a
+            process is alive but refusing new work and not leaving. Restart it; a
+            draining process that outlives the timeout is a shutdown that did not
+            finish, and its SSE streams are still open.
 
+      # No measurement, and that is the honest entry: it must outlast a scrape interval,
+      # and the Prometheus default interval is 60 s. 5m is five of them.
       - alert: ForgePilotNoScrape
         expr: absent(forgepilot_ready)
         for: 5m
@@ -52,28 +66,39 @@ groups:
 
   - name: forgepilot-work
     rules:
+      # ⚠️ **This was 15m, and 15m could never fire.** An unanswered approval is a refusal
+      # after `approval_timeout` — 300 s by default — so `approvals_pending` returns to 0
+      # before a 15-minute window could elapse. The alert is now below the timeout it has
+      # to catch, and the guard asserts that relationship against the constant itself.
       - alert: ForgePilotApprovalWaiting
         expr: forgepilot_approvals_pending > 0
-        for: 15m
+        for: 4m
         labels:
           severity: ticket
         annotations:
-          summary: "An approval has been waiting for a human for fifteen minutes"
+          summary: "An approval has been waiting for a human for four minutes"
           description: >-
-            A turn is blocked on an approval nobody has answered. The pending
-            request is visible on `GET /sessions/{id}`; answering it, or letting it
-            time out, are both fine — the alert exists because "waiting" looks the
-            same as "working" from outside.
+            A turn is blocked on an approval nobody has answered, and the request
+            expires at five minutes. The pending request is visible on
+            `GET /sessions/{id}`; answering it is the only thing that turns the turn
+            loose. Answer it or let it expire — the alert exists because "waiting"
+            looks the same as "working" from outside.
 
+      # Measured: 1343 live turns on this box, p50 0.2 s, p95 28.0 s, max 242.5 s.
+      # 10m is about 2.5x the longest turn ever recorded here, and deliberately below the
+      # 24-minute bound that `max_steps` x the 120 s command timeout allows — a
+      # legitimately slow 20-minute turn would page once, which is the price of an alert
+      # that fires while the turn is still stuck rather than after it is long dead.
       - alert: ForgePilotTurnStall
         expr: forgepilot_turns_running > 0
-        for: 30m
+        for: 10m
         labels:
           severity: ticket
         annotations:
-          summary: "A turn has been running for half an hour"
+          summary: "A turn has been running for ten minutes"
           description: >-
-            Turns are bounded by `agent-loop.max_steps` and by the per-command
-            sandbox timeout, so a turn this old is a row that will not finish (the
-            2026-10-19 eval hang was a command waiting on stdin). Let the approval
-            timeout pass; if it does not clear, the stream log names the command.
+            The longest turn measured on this box took four minutes; turns are bounded
+            by `agent-loop.max_steps` and by the per-command sandbox timeout. A turn this
+            old is a row that will not finish (the 2026-10-19 eval hang was a command
+            waiting on stdin). If the stream log's last `tool/call` has no `tool/result`,
+            that call is the one to look at.

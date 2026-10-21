@@ -564,6 +564,11 @@ def _end_streams_on_signals(server: Any, app: Any) -> None:
             signals.signal(sig, handle)
 
 
+#: How long uvicorn lets in-flight connections finish. `deploy/alerts.yml`'s drain
+#: threshold has to sit *above* this, or it pages before the shutdown it is watching.
+DEFAULT_SHUTDOWN_TIMEOUT_S = 15.0
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Boot the profile and serve the HTTP/SSE API.
 
@@ -647,7 +652,9 @@ def _serve(args: argparse.Namespace) -> int:
                 # signal handler sets the registry's stop flag, and this bounds
                 # how long a *reply* that is still in flight may take. Without any
                 # bound, one stuck client makes `SIGTERM` mean "hang".
-                timeout_graceful_shutdown=float(row.config.get("shutdown_timeout", 15.0)),
+                timeout_graceful_shutdown=float(
+                    row.config.get("shutdown_timeout", DEFAULT_SHUTDOWN_TIMEOUT_S)
+                ),
             )
         )
         _end_streams_on_signals(server, app)

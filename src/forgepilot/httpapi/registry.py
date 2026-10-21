@@ -85,6 +85,12 @@ class SessionStopping(RuntimeError):
     """
 
 
+#: How long an approval waits before it is treated as a refusal. Named because
+#: `deploy/alerts.yml` must fire *before* this elapses; a threshold above it can never
+#: fire at all, and a guard asserts the relationship against this constant.
+DEFAULT_APPROVAL_TIMEOUT_S = 300.0
+
+
 @dataclass
 class PendingApproval:
     """One question waiting for an answer, and the future that carries it."""
@@ -129,7 +135,7 @@ class SessionRegistry:
 
     root: Any
     #: How long a question waits for a human before it is treated as silence.
-    approval_timeout: float = 300.0
+    approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT_S
     sessions: dict[SessionId, LiveSession] = field(default_factory=dict)
     approvals: dict[str, PendingApproval] = field(default_factory=dict)
     #: Set once, at shutdown. Read by the SSE tail so a stream ends *now* rather
