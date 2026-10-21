@@ -1127,6 +1127,19 @@ The recipe is `tools/swebench_env.py`, and every part of it was learned by faili
 - **Windows line endings** — a checkout staged from this box is CRLF, and `patch` reports
   "different line endings" and applies nothing. The staging step converts to LF first.
 
+The grading pipeline itself has now been exercised (`tools/swebench_grade.py`): the baseline
+output grades **unresolved** with two failed `FAIL_TO_PASS` ids, the gold output grades
+**resolved**. Two things about *how* it runs were measured, not chosen:
+
+- **`docker` answers pwsh and refuses a child process.** `docker version` succeeds in the
+  shell and returns `permission denied while trying to connect to the docker API at
+  npipe://...` when the same command is launched from Python in the same process tree — same
+  binary, same context, no `DOCKER_HOST`. So the tool is split: `--print-script` stages the
+  checkout and prints the recipe an operator runs, `--from-output` grades the captured text.
+  Grading stays testable and deterministic; the invocation stays where it works.
+- **`pytest-doctestplus` is part of the environment**, because astropy's `setup.cfg` puts
+  `--doctest-rst` in `addopts` and pytest refuses the whole run without it.
+
 Still not a score: `verdict()` grades an *agent run*, and the agent has not been pointed at
 this instance yet. What exists now is the half that must be true before any score means
 anything — the environment, the baseline, and the gold control.

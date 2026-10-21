@@ -28,7 +28,7 @@ from pathlib import Path
 IMAGE = "python:3.10-slim"
 PIP = (
     "pip install -q 'setuptools<70' wheel 'numpy<2' cython 'extension-helpers>=1' "
-    "setuptools_scm jinja2 pytest hypothesis pyerfa pyyaml packaging pyparsing"
+    "setuptools_scm jinja2 pytest hypothesis pytest-doctestplus pyerfa pyyaml packaging pyparsing"
 )
 APT = (
     "apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive "
