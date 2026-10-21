@@ -1098,6 +1098,39 @@ On every task in the matrix the corpus is current, so the composite and the inde
 indistinguishable there — which is why the matrix does not include `no-tree` and why this arm
 is an instrument rather than an ablation.
 
+## P13 — the baseline, measured in a container (2026-10-21)
+
+The blocker above was the *workstation*. A container is a Linux host, and the user started
+Docker Desktop, so the same three instances became usable. What was measured, on
+`astropy__astropy-12907` at `d16bfe05a7`:
+
+| Step | Command | Result |
+|---|---|---|
+| baseline | test patch applied, `pytest astropy/modeling/tests/test_separable.py` | **2 failed, 13 passed** — the two `FAIL_TO_PASS` ids, `AssertionError` inside the tests, not an import error |
+| gold | + the instance's `patch` | **15 passed** |
+
+That is the property the adapter's `verdict()` assumes and had never been shown: the same
+tests, the same environment, red before the fix and green after. A run that passes at the
+baseline is measuring the wrong thing, and now there is a number that says so.
+
+The recipe is `tools/swebench_env.py`, and every part of it was learned by failing:
+
+- **No `.git` in the staged copy** → `setuptools_scm` cannot derive a version and astropy
+  refuses to import. `SETUPTOOLS_SCM_PRETEND_VERSION` is the fix; `git init` is not.
+- **`setuptools<70`** — astropy 5.0 imports `setuptools.dep_util`, which is gone from newer
+  releases.
+- **`CFLAGS='-std=gnu17 …'`** — the Debian images ship gcc 14, which defaults to `-std=gnu23`
+  and refuses 2022-era C (`fast_sigma_clip.c:44`). This is the one that looks like "the
+  instance is broken" and is not.
+- **`build_ext --inplace`, then pytest from the tree** — astropy's conftest refuses a tree
+  whose extensions were not built in place, and `--pyargs` cannot reach a checkout's tests.
+- **Windows line endings** — a checkout staged from this box is CRLF, and `patch` reports
+  "different line endings" and applies nothing. The staging step converts to LF first.
+
+Still not a score: `verdict()` grades an *agent run*, and the agent has not been pointed at
+this instance yet. What exists now is the half that must be true before any score means
+anything — the environment, the baseline, and the gold control.
+
 ## P13 — the dataset came back for an hour, and the environment is still the blocker
 
 Measured 2026-10-20, the same day the three instances were fetched through the proxy at
