@@ -1,0 +1,16 @@
+# A session log in SQLite, so more than one replica can write it.
+#
+# Load this with `--patch src/forgepilot/bundles/session_sqlite/patch.yaml` when the
+# deployment runs `--multi-replica`. It replaces the `sessionPersistence` row rather
+# than adding a second store: two stores means two histories, and "which log did the
+# model see" becomes a question nobody can answer.
+#
+# `path` has no default. A database file inside the installed package is a database
+# nobody owns, and a relative default would put one in whatever directory the
+# process happened to start in.
+- id: session
+  plugin: forgepilot.providers.session_store.sqlite:SqliteSessionStorePlugin
+  config:
+    path: ${FORGEPILOT_HOME}/sessions.db
+    busy_timeout_ms: 5000
+  tier: trusted

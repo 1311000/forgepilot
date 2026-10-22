@@ -423,4 +423,34 @@ an unclaimed name is refused. `tests/contract/test_seam_contracts.py` covers the
 Full gate at this point: `1125 passed, 225 skipped`, 8104 statements, 88.25%,
 `All gates passed.`
 
+## A session log the database writes (P16 ①, 2026-10-22)
 
+The JSONL store assigns nothing: `Session` picks the number before the write, and the
+store refuses a batch that does not continue the log. That is correct for one writer
+and it is what a single-replica deployment runs. It cannot be the only design, because
+two replicas that each compute "last seq + 1" from a value they read a moment ago both
+write the same number, and a log with two `seq = 7` is not repairable.
+
+`providers/session_store/sqlite.py` is the store where the database decides:
+
+- `append` assigns sequence numbers inside `BEGIN IMMEDIATE`. A caller that passes a
+  number is validated (a gap is refused, never renumbered); a caller that passes `0`
+  is given the next one.
+- `recover_tail` says there is nothing to trim — SQLite commits per transaction, so a
+  torn tail cannot exist. It does not pretend to inspect anything.
+- `fork` copies rows inside one transaction, so a child can never see half a parent.
+- WAL, because a replica serving `GET /sessions/{id}` must not wait behind another
+  replica's append.
+
+It runs the same contract suite as the other two stores
+(`tests/contract/test_session_store_contract.py` is parameterised over `memory`,
+`jsonl` and `sqlite`), and `tests/providers/test_the_store_assigns_the_sequence.py`
+covers what that suite cannot express: two independent connections appending to one
+session interleaved produce a contiguous log of 20 events, and a caller-supplied gap is
+refused without spending a number.
+
+What it does not do: blobs. The JSONL store spills large payloads beside the log because
+a megabyte-long line breaks every tool that greps the file; a row has no such problem,
+so payloads stay inline. Load it with `--patch src/forgepilot/bundles/session_sqlite/patch.yaml`
+when running `--multi-replica`; it replaces the row rather than adding a second store,
+because two stores means two histories.

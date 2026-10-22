@@ -33,7 +33,7 @@ from forgepilot.seams.session import (
 )
 
 
-@pytest.fixture(params=["memory", "jsonl"])
+@pytest.fixture(params=["memory", "jsonl", "sqlite"])
 async def store(request, tmp_path: Path):
     """Each store implementation, loaded through the container."""
     from forgepilot.config import resolve_plugin
@@ -41,14 +41,27 @@ async def store(request, tmp_path: Path):
     spec = {
         "memory": "forgepilot.providers.session_store.memory:InMemorySessionStorePlugin",
         "jsonl": "forgepilot.providers.session_store.jsonl:JsonlSessionStorePlugin",
+        "sqlite": "forgepilot.providers.session_store.sqlite:SqliteSessionStorePlugin",
     }[request.param]
-    config = {"root": str(tmp_path / "sessions")} if request.param == "jsonl" else {}
+    if request.param == "jsonl":
+        config = {"root": str(tmp_path / "sessions")}
+    elif request.param == "sqlite":
+        config = {"path": str(tmp_path / "sessions.db")}
+    else:
+        config = {}
 
     root = create_root()
     fiber = await root.plugin(resolve_plugin(spec), config)
     try:
         yield root.sessionPersistence
     finally:
+        # A store may own an OS resource (the SQLite one holds a file handle).
+        # Disposing the fiber unregisters the service; it does not close a resource
+        # the provider opened itself, and an unclosed connection is a ResourceWarning
+        # in every run instead of one confusing failure later.
+        closer = getattr(root.sessionPersistence, "close", None)
+        if callable(closer):
+            closer()
         await dispose_fiber(fiber)
 
 
