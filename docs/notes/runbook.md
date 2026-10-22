@@ -163,6 +163,10 @@ memory: the log is telling the truth and this process is not the writer. Confirm
 with `GET /sessions/{id}` — if it answers with `"running": false` and a non-zero
 event count, the read fell back to storage and the *other* replica holds the lease.
 
+`ForgePilotTurnStall` and `ForgePilotApprovalWaiting` fire on the **sum** across
+replicas, so the page does not say which one; `forgepilot_turns_running` on each
+replica's `/metrics` does. `ForgePilotDown` and the draining page are per target.
+
 The only safe actions from this replica are reads and answering an approval the
 log shows as pending (`POST /approvals/{id}` works from any replica). Do **not**
 `docker restart` this one hoping to "clear" the session: it holds no state, and

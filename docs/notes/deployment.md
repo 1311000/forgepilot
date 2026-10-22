@@ -178,8 +178,10 @@ It is a **single-writer, many-reader** shape, and the writer is per session:
   deployment's decision, and a compose file cannot make one.
 
 What it does **not** buy: cross-replica cancellation (a task started on A is not
-stoppable from B), fleet-level metrics (`/metrics` is per process; aggregate with
-`sum by (job)` in the scrape layer), or a shared memory store (the single-file
+stoppable from B), per-replica *drill-down* metrics beyond what `/metrics` answers
+for one process (the two "is there work" alert rules already `sum()` across
+replicas; `up` and `forgepilot_ready` stay per target, because "this replica is
+draining" is a fact about one process), or a shared memory store (the single-file
 SQLite store is local-only, which `docs/notes/memory.md` records as a decision
 with this exact re-opening condition).
 

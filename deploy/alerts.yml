@@ -14,11 +14,17 @@
 # runbook's measurement table, and the two thresholds that must sit on a particular side
 # of a code constant do).
 #
-# ⚠️ **What these rules cannot see.** One process owns the state directory, so
-# there is no second replica to take over and `up == 0` means the service is down,
-# not that a replica is unlucky. Vertical truth — "the agent is getting worse",
-# "the checks are failing more" — is not here: it lives in the session logs, and a
-# metric invented for it would be a number without a reader.
+# ⚠️ **What these rules can and cannot see.** `/metrics` is per process: each
+# replica answers for itself. The two "is there work" rules therefore `sum()` across
+# replicas, because a turn stuck on replica B is a stuck turn even when replica A is
+# idle — a per-instance expression would be an alert that fires only on the unlucky
+# replica. `up` and `forgepilot_ready` stay per target on purpose: "this replica is
+# draining" and "this replica is gone" are facts about one process, and a lease on
+# its sessions expires and is taken over by another.
+#
+# Vertical truth — "the agent is getting worse", "the checks are failing more" — is
+# not here: it lives in the session logs, and a metric invented for it would be a
+# number without a reader.
 groups:
   - name: forgepilot-availability
     rules:
@@ -30,9 +36,12 @@ groups:
         annotations:
           summary: "ForgePilot is not answering scrapes"
           description: >-
-            The process is gone or wedged. Because only one process may own the
-            state directory, this is the whole service, not one replica of it:
-            check the container, then the serve lock in `$FORGEPILOT_HOME`.
+            This replica is gone or wedged. With one replica that is the whole
+            service; with several, the others keep serving and any session this one
+            held is taken over when its lease expires (the fencing number moves).
+            Check the container, then the serve lock in `$FORGEPILOT_HOME` — the
+            lock is what a *single-replica* deployment takes, and its absence in a
+            multi-replica deployment is expected (`--multi-replica`).
 
       # `shutdown_timeout` defaults to 15 s (DEFAULT_SHUTDOWN_TIMEOUT_S in cli/main.py),
       # and the drain test measured a 5.2 s stream on this box. 1m is four times the
@@ -71,7 +80,7 @@ groups:
       # before a 15-minute window could elapse. The alert is now below the timeout it has
       # to catch, and the guard asserts that relationship against the constant itself.
       - alert: ForgePilotApprovalWaiting
-        expr: forgepilot_approvals_pending > 0
+        expr: sum(forgepilot_approvals_pending) > 0
         for: 4m
         labels:
           severity: ticket
@@ -90,7 +99,7 @@ groups:
       # legitimately slow 20-minute turn would page once, which is the price of an alert
       # that fires while the turn is still stuck rather than after it is long dead.
       - alert: ForgePilotTurnStall
-        expr: forgepilot_turns_running > 0
+        expr: sum(forgepilot_turns_running) > 0
         for: 10m
         labels:
           severity: ticket
