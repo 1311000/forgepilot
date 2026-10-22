@@ -176,7 +176,7 @@ class TaskService:
         live = self._registry.add(runtime, principal=str(cred.principal.principal_id))
         self._started[live.session_id] = wanted
         try:
-            self._registry.start_turn(live, lambda: self._run(live, ticket, cred))
+            await self._registry.start_turn(live, lambda: self._run(live, ticket, cred))
         except SessionStopping as exc:
             # The session was assembled a moment too late, and it will never run.
             # Dropping it keeps `GET /sessions` honest about there being work.
@@ -271,7 +271,7 @@ class TaskService:
                 live=True,
                 started=sid in self._started,
                 ticket_id=self._started.get(sid, ""),
-                pending=self._pending(live),
+                pending=await self._pending(live),
             )
 
         store = getattr(self._root, "sessionPersistence", None)
@@ -287,7 +287,16 @@ class TaskService:
         if header.principal != principal:
             return None
         events = [event async for event in store.read(sid)]
-        return self._from_events(events, sid=sid, live=False, started=False, ticket_id="")
+        return self._from_events(
+            events,
+            sid=sid,
+            # `live` means "a replica is running it", not "this process knows it":
+            # with N replicas, the second half of that sentence is a false
+            # `interrupted` (P16).
+            live=await self._registry.active(sid),
+            started=False,
+            ticket_id="",
+        )
 
     async def views(self, principal: str) -> tuple[TaskView, ...]:
         """Every task this principal can see: the live ones, then what the log holds.
@@ -318,7 +327,11 @@ class TaskService:
             opened += 1
             events = [event async for event in store.read(summary.session_id)]
             view = self._from_events(
-                events, sid=summary.session_id, live=False, started=False, ticket_id=""
+                events,
+                sid=summary.session_id,
+                live=await self._registry.active(summary.session_id),
+                started=False,
+                ticket_id="",
             )
             if view is not None:
                 durable.append(view)
@@ -334,13 +347,13 @@ class TaskService:
                 live=True,
                 started=live.session_id in self._started,
                 ticket_id=self._started.get(live.session_id, ""),
-                pending=self._pending(live),
+                pending=await self._pending(live),
             )
             if view is not None:
                 views.append(view)
         return tuple(views)
 
-    def _pending(self, live: Any) -> tuple[dict[str, Any], ...]:
+    async def _pending(self, live: Any) -> tuple[dict[str, Any], ...]:
         return tuple(
             {
                 "requestId": pending.request.request_id,
@@ -348,7 +361,7 @@ class TaskService:
                 "arguments": pending.request.arguments_json,
                 "reason": pending.request.reason,
             }
-            for pending in self._registry.pending_approvals(live.session_id)
+            for pending in await self._registry.pending_approvals(live.session_id)
         )
 
     def _from_events(

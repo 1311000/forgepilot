@@ -1,0 +1,17 @@
+# P16 — the shared coordinator, for a deployment that runs more than one replica.
+#
+# Not in any profile: a single-replica deployment does not need it, and loading it
+# would change where approvals are answered for no gain. Enable with
+# `--patch src/forgepilot/bundles/coordination/patch.yaml` *and* run more than one
+# server against one state directory; `--serve --multi-replica` is what tells
+# serve_lock that the lock is not wanted.
+patches:
+  - id: coordination
+    plugin: forgepilot.providers.coordination.files:FileCoordinationPlugin
+    config:
+      # `state_dir` is omitted on purpose: the provider defaults to
+      # $FORGEPILOT_HOME (or ~/.forgepilot), the same directory the watermark store
+      # and the env loader use, so there is one answer to "where does this
+      # installation keep its files".
+      poll_s: 0.1
+    tier: trusted

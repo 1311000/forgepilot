@@ -121,6 +121,54 @@ async def tail_session(
         unsubscribe()
 
 
+async def tail_store(
+    poll: Any,
+    *,
+    after: int = 0,
+    stopping: asyncio.Event | None = None,
+    interval_s: float = 0.1,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield frames by **asking storage** for events after each one sent.
+
+    This is the multi-replica path, and it exists because a stream is not a
+    property of the process that accepted the connection: a browser reconnecting
+    to replica B expects the events replica A is writing. Polling storage is the
+    honest way to read a log with another writer — there is no in-process signal
+    to wait on that a second process could raise.
+
+    ``interval_s`` is the price of that honesty and is deliberately visible: the
+    single-replica path wakes on a listener, this one wakes on a clock, and a
+    client may see up to one interval of extra latency. ``stopping`` still ends
+    the stream promptly, because shutdown is the one thing that must not wait for
+    a tick.
+    """
+    # One frame before the first poll, and not only for the test: a stream that
+    # sends nothing until an event arrives leaves the client without headers, so
+    # a load balancer cannot see it and an idle timeout can kill it before the
+    # first event ever does. ``stream/open`` is stream state, not log state — it
+    # carries no ``id``, so a client resuming from ``Last-Event-ID`` is unaffected.
+    yield {"event": "stream/open", "data": "{}"}
+
+    delivered = after
+    while True:
+        events = await poll(delivered)
+        for event in events:
+            if event.seq <= delivered:
+                continue
+            delivered = event.seq
+            yield frame(event)
+        if stopping is not None and stopping.is_set():
+            return
+        if stopping is None:
+            await asyncio.sleep(interval_s)
+            continue
+        try:
+            await asyncio.wait_for(stopping.wait(), timeout=interval_s)
+        except TimeoutError:
+            continue
+        return
+
+
 async def _next(queue: asyncio.Queue, stopping: asyncio.Event | None) -> Any | None:
     """The next event, or ``None`` once shutdown has been asked for.
 

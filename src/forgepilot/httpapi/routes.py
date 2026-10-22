@@ -21,8 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from forgepilot.errors import ForgePilotError
-from forgepilot.httpapi.registry import SessionNotFound, SessionRegistry, SessionStopping
-from forgepilot.httpapi.sse import LostStream, tail_session
+from forgepilot.httpapi.registry import (
+    SessionNotFound,
+    SessionOwnedElsewhere,
+    SessionRegistry,
+    SessionStopping,
+)
+from forgepilot.httpapi.sse import LostStream, tail_session, tail_store
 from forgepilot.runtime.usage import totals
 from forgepilot.seams.approval import ApprovalOutcome
 from forgepilot.seams.refs import AgentId, Mode, SessionId
@@ -53,6 +58,41 @@ class Decision:
 #: answer) or ``cancelled`` (that is the harness withdrawing a question).
 _ALLOW = "allowed-once"
 _DENY = "rejected"
+
+
+async def _detail_from_storage(registry: Any, session_id: str, cred: Any) -> dict[str, Any]:
+    """The same shape as the live answer, folded from the log.
+
+    Replica B has never run this session, so everything it can say is what was
+    recorded: the event count, the price, and any question still waiting. The
+    `running` flag is the honest part — B cannot see a task it is not running, so
+    it reports False and leaves "is a turn in flight" to the log's own last
+    `task/state`, which ``GET /tasks/{id}`` reads (P16).
+    """
+    store = registry.root.sessionPersistence
+    try:
+        header = await store.header(SessionId(session_id))
+    except KeyError:
+        raise ApiError(404, f"no session {session_id!r}") from None
+    if header.principal != str(cred.principal.principal_id):
+        raise ApiError(404, f"no session {session_id!r}")
+    events = [event async for event in store.read(SessionId(session_id))]
+    pending = await registry.pending_approvals(SessionId(session_id))
+    return {
+        "sessionId": session_id,
+        "running": False,
+        "events": len(events),
+        "usage": totals(events).to_payload(),
+        "pendingApprovals": [
+            {
+                "requestId": p.request_id,
+                "tool": p.tool_name,
+                "arguments": p.arguments_json,
+                "reason": p.reason,
+            }
+            for p in pending
+        ],
+    }
 
 
 def build_router(
@@ -115,6 +155,9 @@ def build_router(
 
     @router.get("/sessions/{session_id}")
     async def session_detail(session_id: str, cred=Depends(who)) -> dict[str, Any]:
+        live = registry.sessions.get(SessionId(session_id))
+        if live is None:
+            return await _detail_from_storage(registry, session_id, cred)
         live = _owned(registry, session_id, cred)
         return {
             "sessionId": str(live.session_id),
@@ -127,12 +170,12 @@ def build_router(
             "usage": totals(live.session.events).to_payload(),
             "pendingApprovals": [
                 {
-                    "requestId": p.request.request_id,
-                    "tool": p.request.tool_name,
-                    "arguments": p.request.arguments_json,
-                    "reason": p.request.reason,
+                    "requestId": p.request_id,
+                    "tool": p.tool_name,
+                    "arguments": p.arguments_json,
+                    "reason": p.reason,
                 }
-                for p in registry.pending_approvals(live.session_id)
+                for p in await registry.pending_approvals(live.session_id)
             ],
         }
 
@@ -205,11 +248,16 @@ def build_router(
         # listening turns a silent hang into a 500.
         turn = _prepare_chat(root, live, body.text, project)
         try:
-            registry.start_turn(live, lambda: _run_chat_turn(live, turn))
+            await registry.start_turn(live, lambda: _run_chat_turn(live, turn))
         except SessionStopping as exc:
             # 503 rather than 409: nothing about this session is busy, and a
             # client that retried against another replica could succeed.
             raise ApiError(503, str(exc)) from exc
+        except SessionOwnedElsewhere as exc:
+            # 409 with the *owner* named: the turn exists, it is just not this
+            # replica's to run, and a client that retries here forever would be
+            # queueing behind a lease it cannot take.
+            raise ApiError(409, f"another replica is running session {exc}") from exc
         return {"accepted": True, "sessionId": str(live.session_id)}
 
     @router.get("/sessions/{session_id}/events")
@@ -226,16 +274,33 @@ def build_router(
         nothing to implement — and because the cursor is durable, a reconnect
         after a *server* restart replays from storage too.
         """
-        live = _owned(registry, session_id, cred)
         cursor = _cursor(last_event_id, after)
+        live = registry.sessions.get(SessionId(session_id))
+        if live is not None:
+            live = _owned(registry, session_id, cred)
+            source = tail_session(live.session, after=cursor, stopping=registry.stopping)
+        else:
+            # Another replica is running it (or it is finished). Either way the
+            # log is the answer, and the principal check moves to the header —
+            # same 404 for "not yours", for the same reason.
+            store = registry.root.sessionPersistence
+            try:
+                header = await store.header(SessionId(session_id))
+            except KeyError:
+                raise ApiError(404, f"no session {session_id!r}") from None
+            if header.principal != str(cred.principal.principal_id):
+                raise ApiError(404, f"no session {session_id!r}")
+
+            async def poll(after_seq: int):
+                return [event async for event in store.read(SessionId(session_id), after=after_seq)]
+
+            source = tail_store(poll, after=cursor, stopping=registry.stopping)
 
         async def stream():
             if metrics is not None:
                 metrics.counter("forgepilot_streams_opened_total", "Event streams opened.")
             try:
-                async for frame in tail_session(
-                    live.session, after=cursor, stopping=registry.stopping
-                ):
+                async for frame in source:
                     yield frame
             except LostStream as exc:
                 # Say so rather than closing silently: the client's cursor is
@@ -256,13 +321,19 @@ def build_router(
         to a session this principal owns, or it is not theirs to answer.
         """
         outcome = _outcome(body.decision)
-        pending = registry.approvals.get(request_id)
+        # From this replica's memory *or* the shared mailbox: the replica that
+        # asked is usually not the one whose request carries the human's answer.
+        pending = await registry.lookup(request_id)
         if pending is None:
             # Not an error worth hiding behind a 404 either way — but a client
             # racing a timeout needs to know its answer landed nowhere.
             return {"answered": False, "reason": "no such pending approval"}
-        _owned(registry, str(pending.request.session_id), cred)
-        return {"answered": registry.answer(request_id, outcome)}
+        _owned(registry, str(pending.session_id), cred)
+        return {
+            "answered": await registry.answer(
+                request_id, outcome, principal=str(cred.principal.principal_id)
+            )
+        }
 
     # -- the review surface, straight from M9 ------------------------------
     @router.post("/review")

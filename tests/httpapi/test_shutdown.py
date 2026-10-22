@@ -43,7 +43,7 @@ async def test_a_stream_ends_when_shutdown_is_asked_for(live_api) -> None:
     await asyncio.sleep(0.2)
     assert not reader.done()
 
-    live_api.registry.stop()
+    await live_api.registry.stop()
 
     await asyncio.wait_for(reader, timeout=5.0)
 
@@ -52,7 +52,7 @@ async def test_a_new_turn_is_refused_with_503_while_stopping(api) -> None:
     created = await api.client.post("/sessions", headers=api.auth())
     session_id = created.json()["sessionId"]
 
-    api.registry.stop()
+    await api.registry.stop()
 
     response = await api.client.post(
         f"/sessions/{session_id}/messages", headers=api.auth(), json={"text": "hello"}
@@ -85,7 +85,7 @@ async def test_a_question_waiting_on_a_human_is_released_as_unavailable(api) -> 
     await asyncio.sleep(0.05)
     assert not asking.done()
 
-    api.registry.stop()
+    await api.registry.stop()
 
     outcome = await asyncio.wait_for(asking, timeout=2.0)
     assert outcome is ApprovalOutcome.UNAVAILABLE
@@ -98,7 +98,7 @@ async def test_the_health_endpoint_still_answers_while_stopping(api) -> None:
     drain, which is the wrong order: existing streams would be cut by the proxy
     instead of ending on their own.
     """
-    api.registry.stop()
+    await api.registry.stop()
 
     response = await api.client.get("/healthz")
 
@@ -118,7 +118,7 @@ async def test_readiness_refuses_before_liveness_does(api) -> None:
     assert ready.status_code == 200, ready.text
     assert ready.json() == {"status": "ready"}
 
-    api.registry.stop()
+    await api.registry.stop()
 
     draining = await api.client.get("/readyz")
     assert draining.status_code == 503, draining.text

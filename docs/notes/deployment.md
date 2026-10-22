@@ -150,6 +150,39 @@ alert (both directions), and every `for:` must appear in the runbook's threshold
 falsified by reintroducing the old value and deleting a page; each failed on the sentence it was
 written to say.
 
+## P16 — more than one replica (2026-10-22)
+
+`--serve --multi-replica` runs beside other replicas against one state directory.
+It is a **single-writer, many-reader** shape, and the writer is per session:
+
+- **One writer per session, by lease.** The log's `seq` is assigned by `Session`
+  before a line is durable (a buffered event must carry its number for
+  `source_event_seq`), so two processes appending one session would mint the same
+  number twice. `seams/coordination.py` is the lease: `acquire` returns `None`
+  while another holder's lease is live, `fencing` increments across takeovers, and
+  the lease is renewed while a turn runs. A replica that loses its lease cancels
+  the turn rather than finishing it into a log it no longer owns.
+- **Approvals travel by the shared mailbox**, not by a process-local future: a
+  question asked on A is answered on B, and both see it stop pending. The answer
+  is created with `O_EXCL`, so exactly one replica wins and a second answer is
+  refused rather than overwriting the first.
+- **A session this replica is not running is read from the log.** `GET
+  /sessions/{id}` and the event stream both fall back to storage; the stream polls
+  by `seq` (there is no in-process signal a second process could raise) and starts
+  with a `stream/open` frame so a load balancer sees the connection before the
+  first event.
+- **`--multi-replica` does not take the serve lock.** That lock's promise is "one
+  process owns this state directory"; a deployment running replicas is saying the
+  log arbitrates instead. The reference `deploy/compose.yaml` is unchanged — it
+  still runs one replica, because the file system the replicas share is the
+  deployment's decision, and a compose file cannot make one.
+
+What it does **not** buy: cross-replica cancellation (a task started on A is not
+stoppable from B), fleet-level metrics (`/metrics` is per process; aggregate with
+`sum by (job)` in the scrape layer), or a shared memory store (the single-file
+SQLite store is local-only, which `docs/notes/memory.md` records as a decision
+with this exact re-opening condition).
+
 ## What is deliberately not here
 
 Kubernetes manifests, a Postgres-backed session registry, RS256/JWKS (M26's OIDC

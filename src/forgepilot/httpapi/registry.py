@@ -18,6 +18,7 @@ deadlock would look like a hang, not an error.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,7 @@ __all__ = [
     "PendingApproval",
     "SessionBusy",
     "SessionNotFound",
+    "SessionOwnedElsewhere",
     "SessionRegistry",
     "SessionStopping",
 ]
@@ -73,6 +75,17 @@ class SessionBusy(RuntimeError):
     Refused rather than queued: one session has one runner, and two overlapping
     turns would interleave in the log — the ordering authority the whole design
     rests on.
+    """
+
+
+class SessionOwnedElsewhere(RuntimeError):
+    """Another replica holds this session's lease.
+
+    Distinct from :class:`SessionBusy` — which says *this* process already has a
+    turn in flight — because the honest answer to the client is different: the
+    work exists, it is just not this replica's to run. Without a shared lease the
+    second replica would start a second turn on one log, and two writers would
+    assign the same ``seq`` twice.
     """
 
 
@@ -144,6 +157,17 @@ class SessionRegistry:
     #: Optional counter sink. Present so the numbers come from the object that
     #: owns the truth rather than from a call site that could be forgotten.
     metrics: Any = None
+    #: The shared half (P16). ``None`` keeps the in-process behaviour: one
+    #: replica, a lock on the state directory, and approvals answered by this
+    #: process only.
+    coordinator: Any = None
+    #: How this replica names itself in a lease. The pid is not enough — two
+    #: replicas can run under the same pid on different hosts.
+    holder: str = ""
+    lease_ttl_s: float = 30.0
+    renew_s: float = 10.0
+    _leases: dict[SessionId, Any] = field(default_factory=dict)
+    _heartbeats: dict[SessionId, asyncio.Task] = field(default_factory=dict)
 
     # -- sessions ----------------------------------------------------------
     def add(self, runtime: Any, *, principal: str) -> LiveSession:
@@ -162,18 +186,35 @@ class SessionRegistry:
         return tuple(s for s in self.sessions.values() if s.principal == principal)
 
     # -- turns -------------------------------------------------------------
-    def start_turn(self, live: LiveSession, factory: Any) -> asyncio.Task:
+    async def start_turn(self, live: LiveSession, factory: Any) -> asyncio.Task:
         """Run a turn in the background. Refuses if one is already in flight.
 
         Takes a zero-argument factory rather than a coroutine, so the refusal
         path cannot leave an un-awaited coroutine behind: refusing a turn must
         not also create one.
+
+        With a coordinator, the turn runs under a **lease** — see
+        :mod:`forgepilot.seams.coordination` for why the log cannot have two
+        writers. The lease is renewed while the turn runs and released when it
+        ends, including when it ends by raising.
         """
         if live.running:
             raise SessionBusy(str(live.session_id))
         if self.stopping.is_set():
             raise SessionStopping("the server is shutting down")
+        lease = None
+        if self.coordinator is not None:
+            lease = await self.coordinator.acquire(
+                live.session_id, holder=self.holder, ttl_s=self.lease_ttl_s
+            )
+            if lease is None:
+                raise SessionOwnedElsewhere(str(live.session_id))
+            self._leases[live.session_id] = lease
         task = asyncio.create_task(factory())
+        if lease is not None:
+            self._heartbeats[live.session_id] = asyncio.create_task(
+                self._keep_the_lease(live.session_id, task)
+            )
         live.task = task
         if self.metrics is not None:
             self.metrics.counter("forgepilot_turns_started_total", "Turns started, chat and task.")
@@ -184,7 +225,29 @@ class SessionRegistry:
         task.add_done_callback(_report_failure(live))
         return task
 
-    def stop(self) -> None:
+    async def _keep_the_lease(self, session_id: SessionId, task: asyncio.Task) -> None:
+        """Renew while the turn runs; release when it ends, however it ends."""
+        try:
+            while not task.done():
+                await asyncio.sleep(self.renew_s)
+                lease = self._leases.get(session_id)
+                if lease is None:
+                    return
+                renewed = await self.coordinator.renew(lease, ttl_s=self.lease_ttl_s)
+                if renewed is None:
+                    # The lease was taken from us (an expired clock, a paused
+                    # process). There is no safe way to continue writing, so the
+                    # turn is stopped rather than left to interleave.
+                    task.cancel()
+                    return
+                self._leases[session_id] = renewed
+        finally:
+            lease = self._leases.pop(session_id, None)
+            self._heartbeats.pop(session_id, None)
+            if lease is not None:
+                await self.coordinator.release(lease)
+
+    async def stop(self) -> None:
         """Begin shutdown: refuse new turns, and stop waiting on humans.
 
         Two things have to happen before :meth:`close` cancels anything, because
@@ -200,10 +263,13 @@ class SessionRegistry:
         """
         self.stopping.set()
         for request_id in list(self.approvals):
-            self.answer(request_id, ApprovalOutcome.UNAVAILABLE)
+            await self.answer(request_id, ApprovalOutcome.UNAVAILABLE)
 
     async def close(self) -> None:
         """Cancel in-flight turns and close every session."""
+        for heartbeat in list(self._heartbeats.values()):
+            heartbeat.cancel()
+        self._heartbeats.clear()
         for live in list(self.sessions.values()):
             if live.running:
                 live.task.cancel()
@@ -229,14 +295,40 @@ class SessionRegistry:
         loop = asyncio.get_running_loop()
         pending = PendingApproval(request=request, future=loop.create_future())
         self.approvals[request.request_id] = pending
+        mirror: asyncio.Task | None = None
+        if self.coordinator is not None:
+            await self.coordinator.post_approval(
+                request, expires_at=time.time() + self.approval_timeout
+            )
+            mirror = asyncio.create_task(self._mirror(request.request_id, pending))
         try:
             return await asyncio.wait_for(pending.future, timeout=self.approval_timeout)
         except (TimeoutError, asyncio.CancelledError):
             return ApprovalOutcome.UNAVAILABLE
         finally:
+            if mirror is not None:
+                mirror.cancel()
             self.approvals.pop(request.request_id, None)
 
-    def answer(self, request_id: str, outcome: ApprovalOutcome) -> bool:
+    async def _mirror(self, request_id: str, pending: PendingApproval) -> None:
+        """Resolve the local future when *another* replica answers the question.
+
+        Polling, because a filesystem has no notification worth the name. The
+        local answer path stays synchronous-to-the-future, so a question answered
+        by the replica that asked it never waits for a poll interval.
+        """
+        try:
+            outcome = await self.coordinator.wait_approval(
+                request_id, timeout_s=self.approval_timeout
+            )
+        except Exception:  # noqa: BLE001 - a broken mailbox must not kill the turn
+            return
+        if outcome is not None and not pending.future.done():
+            pending.future.set_result(outcome)
+
+    async def answer(
+        self, request_id: str, outcome: ApprovalOutcome, *, principal: str = "-"
+    ) -> bool:
         """Resolve a pending question. Returns whether one was waiting.
 
         One-shot: the future is resolved once and the entry is dropped, so a
@@ -244,15 +336,65 @@ class SessionRegistry:
         outcome, because a remembered grant is a *permission*, which is a
         different concept owned by ``policy``.
         """
+        answered = False
         pending = self.approvals.get(request_id)
-        if pending is None or pending.future.done():
-            return False
-        pending.answered = True
-        pending.future.set_result(outcome)
-        return True
+        if pending is not None and not pending.future.done():
+            pending.answered = True
+            pending.future.set_result(outcome)
+            answered = True
+        if self.coordinator is not None:
+            # Write the shared answer even when this replica was the waiter: the
+            # other replicas cannot see this process's future, and an answer that
+            # exists only in memory is an answer a restart loses.
+            written = await self.coordinator.answer_approval(
+                request_id, outcome, principal=principal
+            )
+            answered = answered or written
+        return answered
 
-    def pending_approvals(self, session_id: SessionId) -> tuple[PendingApproval, ...]:
-        return tuple(p for p in self.approvals.values() if p.request.session_id == session_id)
+    async def pending_approvals(self, session_id: SessionId) -> tuple[ApprovalRequest, ...]:
+        """Questions on this session nobody has answered, whoever is waiting.
+
+        Returns requests rather than futures: a question another replica is
+        waiting on has no future here, and handing out an unresolvable one would
+        invite a caller to await it.
+        """
+        local = tuple(
+            p.request for p in self.approvals.values() if p.request.session_id == session_id
+        )
+        if self.coordinator is None:
+            return local
+        seen = {request.request_id for request in local}
+        remote = await self.coordinator.pending_approvals(session_id)
+        return local + tuple(r for r in remote if r.request_id not in seen)
+
+    async def lookup(self, request_id: str) -> ApprovalRequest | None:
+        """The question behind an id, from this replica or from the mailbox.
+
+        Needed because authorisation is by *ownership of the question*: a replica
+        that is not waiting on it still has to know whose question this is before
+        it may answer.
+        """
+        pending = self.approvals.get(request_id)
+        if pending is not None:
+            return pending.request
+        if self.coordinator is None:
+            return None
+        request = await self.coordinator.pending_request(request_id)
+        return request
+
+    async def active(self, session_id: SessionId) -> bool:
+        """Is a replica running this session right now?
+
+        Used where the answer used to be "is it in this process's registry": with
+        N replicas, a task that is running elsewhere still is not *interrupted*.
+        """
+        live = self.sessions.get(session_id)
+        if live is not None and live.running:
+            return True
+        if self.coordinator is None:
+            return live is not None
+        return await self.coordinator.holder(session_id) is not None
 
     def install(self) -> None:
         """Become the approval service's answerer.

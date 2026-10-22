@@ -381,7 +381,7 @@ async def test_a_prompt_outlives_a_restart_but_its_answer_cannot(api, session_id
     # The process dies here. What a fresh server can see is only the log.
     restarted = SessionRegistry(root=api.root, approval_timeout=0.1)
 
-    assert restarted.answer("c5-approval", ApprovalOutcome.ALLOWED_ONCE) is False, (
+    assert await restarted.answer("c5-approval", ApprovalOutcome.ALLOWED_ONCE) is False, (
         "a fresh process claimed to answer a question it never had"
     )
 

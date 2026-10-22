@@ -196,6 +196,20 @@ def readiness(stopping: bool, store: Any) -> tuple[int, dict[str, str]]:
     return 200, {"status": "ready"}
 
 
+def _replica_name() -> str:
+    """A name for this replica in a lease: host, pid, and a random suffix.
+
+    The pid alone is not enough — two replicas can share one across hosts — and
+    the suffix keeps a restarted process on the same port from being mistaken for
+    the one that held the lease before it.
+    """
+    import os
+    import socket
+    import uuid
+
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+
+
 def build_app(
     root: Any,
     *,
@@ -214,7 +228,18 @@ def build_app(
 
     project, policy = resolve_project(workspace_root)
     metrics = Metrics()
-    registry = SessionRegistry(root=root, approval_timeout=approval_timeout, metrics=metrics)
+    # The shared half is optional: a profile without a `coordination` row keeps the
+    # single-process behaviour (and `--serve`'s lock), which is what every shipped
+    # profile does. With the row, a second replica can answer this one's approval
+    # and can see that a session is running here (P16).
+    coordinator = getattr(root, "coordination", None)
+    registry = SessionRegistry(
+        root=root,
+        approval_timeout=approval_timeout,
+        metrics=metrics,
+        coordinator=coordinator,
+        holder=_replica_name() if coordinator is not None else "",
+    )
     # The approval service holds one answerer for the process. Installing it here
     # — once, at assembly — is what makes an approval raised by *any* session
     # reachable by the request that knows its id.
@@ -260,7 +285,7 @@ def build_app(
         # path; `close()` then cancels whatever is still running and closes the
         # sessions. Reversed, a cancellation lands inside `ask()` and the log
         # loses the reason.
-        registry.stop()
+        await registry.stop()
         await registry.close()
 
     app = FastAPI(title="ForgePilot", version="0.0.1", lifespan=lifespan)

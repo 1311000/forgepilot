@@ -92,7 +92,7 @@ async def test_the_ready_gauge_reads_the_same_flag_the_endpoint_does(api) -> Non
     assert "forgepilot_ready 1" in (await api.client.get("/metrics")).text
     assert (await api.client.get("/readyz")).status_code == 200
 
-    api.registry.stop()
+    await api.registry.stop()
 
     assert "forgepilot_ready 0" in (await api.client.get("/metrics")).text
     assert (await api.client.get("/readyz")).status_code == 503

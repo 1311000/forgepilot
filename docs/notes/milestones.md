@@ -126,6 +126,20 @@ was on a fifteen-minute window over a five-minute approval timeout, so it could 
 `ForgePilotTurnStall` waited thirty minutes against a measured maximum turn of 242.5 s. Both are
 now on the right side of the number they depend on, asserted by a guard against the constant.
 
+- **P16 (more than one replica) — complete.** Three couplings were in one place:
+  the lock said one process per state directory, `SessionRegistry` held sessions,
+  approvals and the stop flag in memory, and the SSE stream woke on an in-process
+  queue. The answer keeps **one writer per session**: `seams/coordination.py`
+  leases it, with `fencing` so a takeover is visible, and a shared approval
+  mailbox created `O_EXCL` so exactly one replica's answer lands. Everything a
+  replica does *not* own is read from the log — `GET /sessions/{id}` falls back to
+  storage, and the stream polls by `seq` and emits `stream/open` first so a load
+  balancer sees the connection. `--serve --multi-replica` skips the lock and says
+  so. Tested with two registries over one directory (a lease refuses a second
+  turn; an approval answered on B releases A's tool; a rejected one leaves no
+  file) and with two apps over one root. What it does not buy is named in
+  `docs/notes/deployment.md`: no cross-replica cancellation, per-process metrics,
+  local-only memory store.
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.

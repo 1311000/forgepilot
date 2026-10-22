@@ -221,6 +221,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--host", default=None, help="bind address; overrides the bundle")
     serve.add_argument("--port", type=int, default=None, help="bind port; overrides the bundle")
+    serve.add_argument(
+        "--multi-replica",
+        action="store_true",
+        help="run beside other replicas against one state directory (needs the "
+        "coordination bundle; the single-process lock is not taken)",
+    )
 
     state = parser.add_argument_group("state")
     state.add_argument(
@@ -658,14 +664,27 @@ def _serve(args: argparse.Namespace) -> int:
             )
         )
         _end_streams_on_signals(server, app)
+        print(
+            f"serving on http://{host}:{port}/   workspace {workspace}",
+            file=sys.stderr,
+        )
+        print("Ctrl-C to stop", file=sys.stderr)
         try:
-            with hold(_state_directory()):
+            if getattr(args, "multi_replica", False):
+                # The lock's whole promise is "one process owns this state
+                # directory". A deployment running replicas is saying the *log*
+                # arbitrates instead — one writer per session, by lease (P16) —
+                # so taking the lock here would make the second replica refuse to
+                # start, the opposite of what the flag asks for.
                 print(
-                    f"serving on http://{host}:{port}/   workspace {workspace}",
+                    "note: --multi-replica: not taking the single-process serve "
+                    "lock; sessions are arbitrated by the coordination lease",
                     file=sys.stderr,
                 )
-                print("Ctrl-C to stop", file=sys.stderr)
                 await server.serve()
+            else:
+                with hold(_state_directory()):
+                    await server.serve()
         except AlreadyServing as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2

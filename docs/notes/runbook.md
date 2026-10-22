@@ -156,6 +156,20 @@ executor, not in the ticket.
 indistinguishable from a long turn waiting on stdin by the gauge alone. The session log's last
 event is what separates them.
 
+#### A session that is running on another replica
+
+`GET /tasks/{id}` says `running` while this replica has no such session in
+memory: the log is telling the truth and this process is not the writer. Confirm
+with `GET /sessions/{id}` — if it answers with `"running": false` and a non-zero
+event count, the read fell back to storage and the *other* replica holds the lease.
+
+The only safe actions from this replica are reads and answering an approval the
+log shows as pending (`POST /approvals/{id}` works from any replica). Do **not**
+`docker restart` this one hoping to "clear" the session: it holds no state, and
+the writer is unaffected. To stop a run that has gone wrong you must reach the
+replica holding the lease, or wait for the lease to expire — an expired lease is
+taken over safely, with `fencing` incremented.
+
 ## Procedures no alert watches
 
 #### Backup and restore, once per release
