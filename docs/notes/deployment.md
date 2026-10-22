@@ -232,3 +232,25 @@ for:
 not made safe); no automated backup schedule (the flag is what a cron job calls);
 no RS256/JWKS; no alert on "the agent is getting worse" — that lives in the
 session logs, and a metric invented for it would be a number without a reader.
+
+### Backing up a multi-replica deployment (P16 ④, what is *not* done)
+
+`forgepilot --backup` takes the single-replica state-directory lock for the duration
+of the copy. Under `--multi-replica` no replica holds that lock, so the two are not
+mutually exclusive and nothing in this tree stops a backup from running while another
+replica appends.
+
+Two consequences, stated rather than papered over:
+
+- **The JSONL store**: a tar of a live log can capture a torn last line. The restore
+  path verifies every line and refuses the archive, so the failure is loud, but the
+  backup is still not a consistent snapshot.
+- **The SQLite store**: copying `sessions.db` with `tar` while a WAL is active can
+  miss committed rows that still live in `-wal`. Use SQLite's own copy
+  (`sqlite3 sessions.db "VACUUM INTO 'backup.db'"` or `.backup`), which is safe
+  against a live writer.
+
+The missing piece is a state-directory *lease* (as opposed to the per-session lease the
+coordinator already hands out) held by the backup process. It is deliberately not
+improvised here: a lease with no reader is the defect shape this repository has spent
+several milestones deleting.

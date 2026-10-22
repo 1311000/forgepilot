@@ -195,3 +195,11 @@ server against it if you want to see the data before trusting it.
 A second server exits **2** and says which pid holds it. Never delete the file while that process
 is alive: two processes on one state directory interleave their JSONL appends and the second one
 wins the file cache. If the pid is gone, delete it and start again.
+
+## Backing up while a fleet is running
+
+`--backup` and a `--multi-replica` server do not exclude each other. If the state
+directory holds `sessions.db`, do not tar it: use `sqlite3 sessions.db "VACUUM INTO
+'backup.db'"`, which is safe while writers are active. For JSONL state, prefer a
+window with no traffic; a torn tail is caught by restore, but the archive is then
+useless.
