@@ -10,6 +10,7 @@ proves nothing about the deployment.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 
 import pytest
@@ -145,3 +146,49 @@ async def test_a_backup_holding_the_deployment_is_503_not_a_busy_session(api, tm
     assert refused.status_code == 503
     assert "backup" in refused.json()["error"]
     assert "retry" in refused.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_two_replicas_starting_the_same_turn_at_once_produce_one_turn(api, tmp_path) -> None:
+    """The concurrent case: two ``POST /tasks`` (or two messages) at the same moment.
+
+    ``SessionBusy`` is a check on *one process's* memory, so on its own it cannot
+    answer this — two replicas both see "not running". The lease is what decides,
+    and exactly one of the two acquires it. The loser gets ``SessionOwnedElsewhere``,
+    which the task service turns into a refusal rather than a second run of the same
+    ticket in the same worktree.
+    """
+    shared = FileCoordination(root=tmp_path / "coord", poll_s=0.01)
+    api.registry.coordinator = shared
+    api.registry.holder = "replica-a"
+    other = SessionRegistry(
+        root=api.root, approval_timeout=5.0, coordinator=shared, holder="replica-b"
+    )
+
+    created = await api.client.post("/sessions", headers=api.auth())
+    session_id = SessionId(created.json()["sessionId"])
+    live = api.registry.sessions[session_id]
+    release = asyncio.Event()
+
+    async def slow() -> None:
+        await release.wait()
+
+    # Each replica has its own LiveSession for the same session id: `running` is a
+    # property of *this process's* task, so sharing one object would test a
+    # single process's memory (SessionBusy) rather than the lease.
+    twin = dataclasses.replace(live, task=None)
+
+    async def attempt(registry: SessionRegistry, view) -> str:
+        try:
+            task = await registry.start_turn(view, slow)
+        except SessionOwnedElsewhere:
+            return "refused"
+        task.cancel()
+        return "started"
+
+    try:
+        outcomes = await asyncio.gather(attempt(api.registry, live), attempt(other, twin))
+    finally:
+        release.set()
+
+    assert sorted(outcomes) == ["refused", "started"]
