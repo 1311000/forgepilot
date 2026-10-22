@@ -1331,16 +1331,67 @@ def _backup(args: argparse.Namespace) -> int:
     No profile is resolved: the state directory is the whole subject, and booting
     plugins to copy files would add failure modes without adding information.
     """
+    import asyncio
+
     from forgepilot.runtime.backup import BackupRefused, backup
 
     state = _state_directory()
+    # A backup of a running log is the operation whose damage only shows up at
+    # restore time, so it takes the deployment lease first: with a replica
+    # holding a writer heartbeat it is *refused* rather than racing an append it
+    # cannot snapshot. With no coordinator in use (the single-process default,
+    # which already holds the state directory) nobody is a writer and this
+    # succeeds immediately.
+    entered = _enter_maintenance(state)
+    if entered is None:
+        return 2
+    coordinator, lease = entered
     try:
         archive = backup(state, Path(args.backup))
     except BackupRefused as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    finally:
+        asyncio.run(coordinator.leave_maintenance(lease))
     print(f"backed up {state} to {archive}")
     return 0
+
+
+#: Long enough for a state directory of any realistic size, short enough that a
+#: backup killed by a power cut stops refusing writers within ten minutes.
+MAINTENANCE_TTL_S = 600.0
+
+
+def _enter_maintenance(state: Path) -> tuple[Any, Any] | None:
+    """Take the deployment lease, or name who is writing and return ``None``.
+
+    Constructed from the state directory rather than from a profile: whether a
+    backup may run is the same fact the replicas share, and resolving a profile
+    to learn it would let a misconfigured machine back up a running fleet.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.providers.coordination.files import FileCoordination
+    from forgepilot.seams.coordination import CoordinationUnavailable
+
+    coordinator = FileCoordination(root=state)
+    holder = f"backup:{os.getpid()}"
+    try:
+        lease = asyncio.run(coordinator.enter_maintenance(holder=holder, ttl_s=MAINTENANCE_TTL_S))
+    except CoordinationUnavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+    if lease is None:
+        writers = asyncio.run(coordinator.writers())
+        who = ", ".join(writers) if writers else "another process"
+        print(
+            f"error: {state} is being written by {who}; a backup of a live log can "
+            "miss or tear an append. Stop the writer, or run the backup when it is idle.",
+            file=sys.stderr,
+        )
+        return None
+    return coordinator, lease
 
 
 def _restore(args: argparse.Namespace) -> int:

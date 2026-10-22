@@ -22,6 +22,7 @@ from typing import Any
 
 from forgepilot.errors import ForgePilotError
 from forgepilot.httpapi.registry import (
+    MaintenanceInProgress,
     SessionNotFound,
     SessionOwnedElsewhere,
     SessionRegistry,
@@ -253,6 +254,11 @@ def build_router(
             # 503 rather than 409: nothing about this session is busy, and a
             # client that retried against another replica could succeed.
             raise ApiError(503, str(exc)) from exc
+        except MaintenanceInProgress as exc:
+            # 503, and the caller should retry: a backup holds the deployment, so no
+            # replica can start work. `Retry-After` says when to try rather than
+            # leaving the client to guess.
+            raise ApiError(503, f"{exc}; retry after the backup finishes") from exc
         except SessionOwnedElsewhere as exc:
             # 409 with the *owner* named: the turn exists, it is just not this
             # replica's to run, and a client that retries here forever would be

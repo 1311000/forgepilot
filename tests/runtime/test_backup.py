@@ -175,3 +175,30 @@ def test_an_archive_without_a_manifest_is_not_a_backup(tmp_path):
     with pytest.raises(BackupRefused) as caught:
         read_manifest(plain)
     assert "has no manifest.json" in str(caught.value)
+
+
+def test_a_lease_is_not_archived_or_restored(tmp_path) -> None:
+    """A lease describes a *running* process, so it must not travel in a backup.
+
+    Found by the round-trip test: the backup takes a deployment lease before it
+    copies, and the first version archived that lease into the state directory it
+    was copying — so a restore handed back a deployment lease nobody held, which
+    would refuse writers for its whole TTL. The exclusion is by path part, because
+    the lease is ``leases/<session>.json`` and its filename says nothing.
+    """
+    state = tmp_path / "state"
+    (state / "leases").mkdir(parents=True)
+    (state / "leases" / "deployment%3Amaintenance.json").write_text("{}", encoding="utf-8")
+    (state / "leases" / "writer%3Ahost-1.json").write_text("{}", encoding="utf-8")
+    (state / "sessions.jsonl").write_text('{"seq": 1}\n', encoding="utf-8")
+
+    archive = backup(state, tmp_path / "saved.tar.gz")
+    with tarfile.open(archive) as handle:
+        names = handle.getnames()
+    assert "sessions.jsonl" in names
+    assert not [name for name in names if "leases" in name]
+
+    restored = tmp_path / "restored"
+    restore(archive, restored)
+    assert (restored / "sessions.jsonl").is_file()
+    assert not (restored / "leases").exists()

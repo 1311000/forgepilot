@@ -198,6 +198,15 @@ wins the file cache. If the pid is gone, delete it and start again.
 
 ## Backing up while a fleet is running
 
+`forgepilot --backup` refuses while any replica holds a writer heartbeat, and exits 2
+naming the holders. That is the intended behaviour, not a fault: stop the replica (or
+wait for the run to end) and take the backup then. If you must copy while replicas
+run, copy with the store's own mechanism (`VACUUM INTO` for SQLite) and expect the
+JSONL store's last line to be the only thing a restore will complain about.
+
+A refusal that says *nobody* is writing but still fails means the state directory is
+not shared between the backup host and the replicas — check `FORGEPILOT_HOME` first.
+
 `--backup` and a `--multi-replica` server do not exclude each other. If the state
 directory holds `sessions.db`, do not tar it: use `sqlite3 sessions.db "VACUUM INTO
 'backup.db'"`, which is safe while writers are active. For JSONL state, prefer a

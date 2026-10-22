@@ -55,6 +55,15 @@ class CoordinationUnavailable(RuntimeError):
     """The shared state cannot be reached, so nothing may be decided."""
 
 
+class MaintenanceInProgress(RuntimeError):
+    """A backup holds the deployment: no new work starts until it ends.
+
+    Raised rather than silently writing. A backup of a live log is the one operation
+    whose damage is invisible until a restore is needed, so the writer is told to
+    retry instead of being allowed to race it.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Lease:
     """Ownership of one session for a while, with a number that only grows.
@@ -105,6 +114,27 @@ class Coordinator(Protocol):
 
     async def pending_approvals(self, session_id: SessionId) -> tuple[ApprovalRequest, ...]:
         """Questions on this session that nobody has answered yet."""
+
+    async def join_writers(self, *, holder: str, ttl_s: float) -> Lease | None:
+        """Register this process as a writer, or ``None`` while a backup holds it.
+
+        A writer is not a session: it is *this process may append*. The set exists so
+        a backup can ask "is anybody writing?" without enumerating sessions, and can
+        then be refused instead of racing a log it cannot snapshot.
+        """
+        ...
+
+    async def leave_writers(self, lease: Lease) -> None: ...
+
+    async def writers(self) -> tuple[str, ...]:
+        """Holders with a live writer heartbeat, for the message a refusal prints."""
+        ...
+
+    async def enter_maintenance(self, *, holder: str, ttl_s: float) -> Lease | None:
+        """Take the deployment, or ``None`` while any writer heartbeat is live."""
+        ...
+
+    async def leave_maintenance(self, lease: Lease) -> None: ...
 
     async def pending_request(self, request_id: str) -> ApprovalRequest | None:
         """One question by id, or ``None`` — needed to authorise an answer.

@@ -123,3 +123,25 @@ async def test_a_rejected_approval_from_the_other_replica_stops_the_tool(api, tm
     assert results and results[-1].data.get("isError") is True, results
     # `tests/httpapi/conftest.py` boots the app with `workspace_root=tmp_path/"ws"`.
     assert not (tmp_path / "ws" / "src" / "denied.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_backup_holding_the_deployment_is_503_not_a_busy_session(api, tmp_path) -> None:
+    """A backup refuses new work on *every* replica, and says so with 503.
+
+    409 would be a lie here: nothing about the session is busy, and retrying on
+    another replica would hit the same refusal.
+    """
+    shared = FileCoordination(root=tmp_path / "coord", poll_s=0.01)
+    api.registry.coordinator = shared
+    api.registry.holder = "replica-a"
+    assert await shared.enter_maintenance(holder="backup", ttl_s=60.0) is not None
+
+    created = await api.client.post("/sessions", headers=api.auth())
+    session_id = created.json()["sessionId"]
+    refused = await api.client.post(
+        f"/sessions/{session_id}/messages", json={"text": "go"}, headers=api.auth()
+    )
+    assert refused.status_code == 503
+    assert "backup" in refused.json()["error"]
+    assert "retry" in refused.json()["error"]

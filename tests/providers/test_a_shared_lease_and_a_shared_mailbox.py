@@ -144,3 +144,48 @@ async def test_a_corrupt_answer_is_an_error_not_a_verdict(tmp_path: Path) -> Non
     path.write_text('{"outcome": "maybe"}', encoding="utf-8")
     with pytest.raises(CoordinationUnavailable, match="outside the closed set"):
         await a.wait_approval(request.request_id, timeout_s=0.2)
+
+
+# -- writers, and the deployment lease a backup takes ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_maintenance_lease_refuses_a_writer(tmp_path) -> None:
+    coordinator = FileCoordination(root=tmp_path)
+    maintenance = await coordinator.enter_maintenance(holder="backup", ttl_s=60.0)
+    assert maintenance is not None
+    assert await coordinator.join_writers(holder="replica-a", ttl_s=60.0) is None
+    assert await coordinator.writers() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_live_writer_refuses_the_backup(tmp_path) -> None:
+    coordinator = FileCoordination(root=tmp_path)
+    writer = await coordinator.join_writers(holder="replica-a", ttl_s=60.0)
+    assert writer is not None
+    assert await coordinator.enter_maintenance(holder="backup", ttl_s=60.0) is None
+    assert await coordinator.writers() == ("replica-a",)
+
+
+@pytest.mark.asyncio
+async def test_an_expired_writer_does_not_block_the_backup(tmp_path) -> None:
+    now = [1000.0]
+    coordinator = FileCoordination(root=tmp_path, clock=lambda: now[0])
+    writer = await coordinator.join_writers(holder="replica-a", ttl_s=30.0)
+    assert writer is not None
+    now[0] += 31.0
+    # The heartbeat stopped (a crashed replica), so the lease is dead rather than
+    # held: a backup that waited for an operator to clear a stale file would never
+    # run after a crash.
+    assert await coordinator.writers() == ()
+    assert await coordinator.enter_maintenance(holder="backup", ttl_s=60.0) is not None
+
+
+@pytest.mark.asyncio
+async def test_leaving_releases_the_writer_role(tmp_path) -> None:
+    coordinator = FileCoordination(root=tmp_path)
+    writer = await coordinator.join_writers(holder="replica-a", ttl_s=60.0)
+    assert writer is not None
+    await coordinator.leave_writers(writer)
+    assert await coordinator.writers() == ()
+    assert await coordinator.enter_maintenance(holder="backup", ttl_s=60.0) is not None

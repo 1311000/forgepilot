@@ -39,6 +39,12 @@ from forgepilot.seams.coordination import (
 )
 from forgepilot.seams.refs import SessionId
 
+#: Reserved lease keys. A lease is keyed by an id, and these two are not sessions but
+#: the two roles that must exclude each other: "a process is writing" (many holders,
+#: one file each) and "a backup is running" (one holder).
+WRITER_PREFIX = "writer:"
+MAINTENANCE = SessionId("deployment:maintenance")
+
 __all__ = ["FileCoordination", "FileCoordinationPlugin"]
 
 #: How often a waiter looks for an answer. 100 ms is under the latency a human
@@ -173,6 +179,37 @@ class FileCoordination:
             return None
         holder = current.get("holder")
         return str(holder) if holder is not None else None
+
+    # -- writers and the deployment lease ----------------------------------
+    async def join_writers(self, *, holder: str, ttl_s: float) -> Lease | None:
+        if await self.holder(MAINTENANCE) is not None:
+            return None
+        return await self.acquire(SessionId(f"{WRITER_PREFIX}{holder}"), holder=holder, ttl_s=ttl_s)
+
+    async def leave_writers(self, lease: Lease) -> None:
+        await self.release(lease)
+
+    async def writers(self) -> tuple[str, ...]:
+        found: list[str] = []
+        for path in sorted(self._leases().glob("*.json")):
+            raw = _read_json(path)
+            if raw is None:
+                continue
+            session_id = str(raw.get("session_id", ""))
+            if not session_id.startswith(WRITER_PREFIX):
+                continue
+            if float(raw.get("expires_at", 0.0)) <= self.clock():
+                continue
+            found.append(str(raw.get("holder", session_id[len(WRITER_PREFIX) :])))
+        return tuple(sorted(found))
+
+    async def enter_maintenance(self, *, holder: str, ttl_s: float) -> Lease | None:
+        if await self.writers():
+            return None
+        return await self.acquire(MAINTENANCE, holder=holder, ttl_s=ttl_s)
+
+    async def leave_maintenance(self, lease: Lease) -> None:
+        await self.release(lease)
 
     # -- approvals ---------------------------------------------------------
     async def post_approval(self, request: ApprovalRequest, *, expires_at: float) -> None:

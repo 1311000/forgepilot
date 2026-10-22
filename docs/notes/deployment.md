@@ -233,24 +233,37 @@ not made safe); no automated backup schedule (the flag is what a cron job calls)
 no RS256/JWKS; no alert on "the agent is getting worse" — that lives in the
 session logs, and a metric invented for it would be a number without a reader.
 
-### Backing up a multi-replica deployment (P16 ④, what is *not* done)
+### Backing up a multi-replica deployment (P16 ④)
 
-`forgepilot --backup` takes the single-replica state-directory lock for the duration
-of the copy. Under `--multi-replica` no replica holds that lock, so the two are not
-mutually exclusive and nothing in this tree stops a backup from running while another
-replica appends.
+`forgepilot --backup` takes the single-replica state-directory lock for the duration of
+the copy. Under `--multi-replica` no replica holds that lock, so the lock is not what
+protects a backup there. Two roles do, and they exclude each other:
 
-Two consequences, stated rather than papered over:
+- **A writer heartbeat.** A replica joins the writer set the first time it starts a
+  turn (`SessionRegistry._ensure_writer`) and renews that lease while it runs. It is
+  joined lazily rather than at boot, so a replica that receives no work never appears
+  as a writer — a backup refused by an idle process would be a false refusal, and a
+  false refusal is how a lock gets removed entirely.
+- **A deployment lease** (`deployment:maintenance`, TTL 600 s). `--backup` takes it
+  before copying and releases it in `finally`. If any writer heartbeat is live, the
+  take fails and the command exits 2 naming the holders:
 
-- **The JSONL store**: a tar of a live log can capture a torn last line. The restore
-  path verifies every line and refuses the archive, so the failure is loud, but the
-  backup is still not a consistent snapshot.
-- **The SQLite store**: copying `sessions.db` with `tar` while a WAL is active can
-  miss committed rows that still live in `-wal`. Use SQLite's own copy
-  (`sqlite3 sessions.db "VACUUM INTO 'backup.db'"` or `.backup`), which is safe
-  against a live writer.
+  ```
+  error: /srv/forgepilot is being written by /srv/.../host:4242; a backup of a live
+  log can miss or tear an append. Stop the writer, or run the backup when it is idle.
+  ```
 
-The missing piece is a state-directory *lease* (as opposed to the per-session lease the
-coordinator already hands out) held by the backup process. It is deliberately not
-improvised here: a lease with no reader is the defect shape this repository has spent
-several milestones deleting.
+  While the deployment lease is held, a new turn is refused with **503** (not 409: no
+  session is busy, and another replica would refuse identically) and the message says
+  to retry after the backup.
+
+The lease directory is **excluded from the archive**, by any path part rather than by
+filename — a lease says *this process is running now*, so a restored one would either
+refuse writers for its whole TTL or hand a restore a deployment lease nobody holds.
+That is the same reasoning as `serve.lock`, and the first version of this feature got
+it wrong: the maintenance lease was archived and the round-trip test saw two files.
+
+What is still left to the operator: the copy itself. A JSONL tar can still capture a
+torn last line written *between* the lease check and the read, and the SQLite store
+must be copied with `VACUUM INTO` (WAL holds committed rows not yet in the main file).
+The lease removes the *racing writer*, not the need for a store-aware copy.

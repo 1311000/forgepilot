@@ -47,8 +47,11 @@ FORMAT = 1
 MANIFEST = "manifest.json"
 
 #: Never archived: the lock is this process's own claim, and a restored lock file
-#: would tell the next server that somebody else owns the directory.
-_EXCLUDED = frozenset({"serve.lock"})
+#: would tell the next server that somebody else owns the directory. The lease
+#: directory is the same kind of claim in a different shape — a lease says *this
+#: process is running now*, so restoring one would either refuse writers for its
+#: whole TTL or hand a restore a deployment lease nobody holds.
+_EXCLUDED = frozenset({"serve.lock", "leases"})
 
 
 class BackupRefused(RuntimeError):
@@ -61,7 +64,12 @@ def _files(state_dir: Path) -> list[Path]:
     found = [
         path
         for path in sorted(state_dir.rglob("*"))
-        if path.is_file() and path.name not in _EXCLUDED
+        if path.is_file()
+        # By *any* part, not just the filename: a lease lives at
+        # ``leases/<session>.json``, and its own name says nothing about where it
+        # is. A name-only test would archive every lease while claiming to skip
+        # the directory.
+        and not (set(path.relative_to(state_dir).parts) & _EXCLUDED)
     ]
     return found
 

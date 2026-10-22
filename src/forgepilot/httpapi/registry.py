@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
+from forgepilot.seams.coordination import MaintenanceInProgress
 from forgepilot.seams.refs import SessionId
 
 __all__ = [
@@ -168,6 +169,8 @@ class SessionRegistry:
     renew_s: float = 10.0
     _leases: dict[SessionId, Any] = field(default_factory=dict)
     _heartbeats: dict[SessionId, asyncio.Task] = field(default_factory=dict)
+    _writer_lease: Any = None
+    _writer_heartbeat: asyncio.Task | None = None
 
     # -- sessions ----------------------------------------------------------
     def add(self, runtime: Any, *, principal: str) -> LiveSession:
@@ -202,6 +205,11 @@ class SessionRegistry:
             raise SessionBusy(str(live.session_id))
         if self.stopping.is_set():
             raise SessionStopping("the server is shutting down")
+        # A backup takes the deployment lease; a writer may not start under it. This
+        # is checked here, once, rather than in every store: "may this process append
+        # at all" is a fact about the deployment, and the turn is the unit that
+        # appends.
+        await self._ensure_writer()
         lease = None
         if self.coordinator is not None:
             lease = await self.coordinator.acquire(
@@ -224,6 +232,45 @@ class SessionRegistry:
         # that died is exactly the thing nobody would otherwise notice.
         task.add_done_callback(_report_failure(live))
         return task
+
+    async def _ensure_writer(self) -> None:
+        """Join the writer set on first use, and keep its heartbeat alive.
+
+        Joining happens on the first turn rather than at construction: a registry
+        built in a test, or by a replica that never receives work, must not appear
+        as a writer — a backup refused by a process that is not writing would be a
+        false refusal, and a false refusal is how a lock gets removed entirely.
+        """
+        if self._writer_lease is not None or self.coordinator is None:
+            return
+        joined = getattr(self.coordinator, "join_writers", None)
+        if joined is None:
+            return
+        lease = await joined(holder=self.holder, ttl_s=self.lease_ttl_s)
+        if lease is None:
+            holders = getattr(self.coordinator, "writers", None)
+            live = await holders() if holders is not None else ()
+            raise MaintenanceInProgress(
+                "a backup holds the deployment"
+                + (f" (writers: {', '.join(live)})" if live else "")
+                + "; try again when it ends"
+            )
+        self._writer_lease = lease
+        self._writer_heartbeat = asyncio.create_task(self._keep_the_writer())
+
+    async def _keep_the_writer(self) -> None:
+        while self._writer_lease is not None:
+            await asyncio.sleep(self.renew_s)
+            lease = self._writer_lease
+            if lease is None:
+                return
+            renewed = await self.coordinator.renew(lease, ttl_s=self.lease_ttl_s)
+            if renewed is None:
+                # The lease was taken or expired. Stop pretending to be a writer;
+                # the next turn will try to join again and be refused if needed.
+                self._writer_lease = None
+                return
+            self._writer_lease = renewed
 
     async def _keep_the_lease(self, session_id: SessionId, task: asyncio.Task) -> None:
         """Renew while the turn runs; release when it ends, however it ends."""
@@ -248,6 +295,7 @@ class SessionRegistry:
                 await self.coordinator.release(lease)
 
     async def stop(self) -> None:
+        await self._leave_writers()
         """Begin shutdown: refuse new turns, and stop waiting on humans.
 
         Two things have to happen before :meth:`close` cancels anything, because
@@ -264,6 +312,20 @@ class SessionRegistry:
         self.stopping.set()
         for request_id in list(self.approvals):
             await self.answer(request_id, ApprovalOutcome.UNAVAILABLE)
+
+    async def _leave_writers(self) -> None:
+        """Give up the writer role, so a waiting backup is not refused by a dead server."""
+        heartbeat = self._writer_heartbeat
+        lease = self._writer_lease
+        self._writer_heartbeat = None
+        self._writer_lease = None
+        if heartbeat is not None:
+            heartbeat.cancel()
+        if lease is None or self.coordinator is None:
+            return
+        leave = getattr(self.coordinator, "leave_writers", None)
+        if leave is not None:
+            await leave(lease)
 
     async def close(self) -> None:
         """Cancel in-flight turns and close every session."""
