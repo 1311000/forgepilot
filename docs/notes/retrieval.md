@@ -505,3 +505,42 @@ Measured: ``tests/runtime/test_import_edges.py`` (11 tests over the extractor an
 ``tests/providers/test_the_index_answers_who_imports.py`` (5 over a real socket: an edge is
 found, a re-sent file replaces it, a deleted file takes it away, a near-miss target is not a
 match, a repository outside the credential is never asked).
+
+## P23 — a second implementation, over a service we did not write (2026-10-22)
+
+`tools/serve_index.py` speaks our wire. That makes it a good conformance fixture and a poor
+rehearsal: an enterprise already runs a code-search service and will not adopt our JSON. P23
+is the seam's second implementation — `providers/retrieve/enterprise.py` — and its value is
+not the translation, it is the four rules it keeps *at the boundary* even though the other
+side has never heard of them.
+
+1. **Permission is re-checked here.** Repositories the caller named but may not read are
+   refused before a request is sent; results the upstream volunteers for other repositories
+   are dropped **and counted** (`dropped_results`). An upstream ACL and this deployment's
+   constraints are two authorities, and the narrower one wins.
+2. **Every answer carries a revision.** A result with no `revision`, no `file`, or a
+   `repository` that does not read back as host/namespace/name is **refused**, not dropped:
+   dropping turns a broken answer into a shorter one, which reads as "there is nothing
+   there". A hit without a revision cannot be re-read — the caller would edit whatever that
+   path holds today and call it the version it saw.
+3. **"Cannot answer" is never "nothing there".** 5xx, a timeout, a non-JSON body, a failed
+   shard — all `IndexUnavailable`. An empty `results` list is the only thing that means
+   empty. A service with no `/_links` says it does not answer import questions rather than
+   answering none.
+4. **Freshness is visible.** The catalog names the revision per repository; repositories it
+   omits are *stale* to `lag()`, not fresh — and a catalog with no revisions at all is the
+   strongest stale signal, not a reason to assume agreement.
+
+What it is not: a vendor integration. The wire is one plausible foreign shape
+(`/_search`, `/_symbols`, `/_slice`, `/_catalog`, `/_links`), named once at module level so a
+deployment can subclass it. Measured with `httpx.MockTransport` rather than a socket — the
+wire is foreign and the four rules are the subject, which is the opposite of the reference
+service, where a real socket found four defects the shape could not.
+
+15 tests in `tests/providers/test_the_enterprise_index_adapter.py`: revision carried through,
+a result without one refused (and the message says why), a repository outside the credential
+refused *before* the request, an over-returning upstream dropped and counted, a failed shard
+refused, an empty list returned as empty, 503 and a non-JSON body as unavailable, symbols with
+span and revision, a slice that names its revision, a slice without text refused, a catalog
+that makes staleness visible, an omitted revision stale-not-fresh, links answered when present
+and named as absent when not.
