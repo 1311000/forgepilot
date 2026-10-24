@@ -407,3 +407,66 @@ Not here yet: **nothing schedules the job** — no webhook, no polling loop, so 
 is "as often as somebody runs `--index-update`". A per-repository partial failure in the
 service's `/index` is also unreported (one 200 means every document was stored), and
 `IndexWriter` still has no composite/fan-out form for more than one shard.
+
+## P21 — shards, a fan-out, and the shard that did not answer (2026-10-23)
+
+The reference service can now split its corpus two ways — one shard per repository
+(`--shard-by repo`, the default) or one per top directory inside a repository
+(`--shard-by top-dir`) — ask only the shards a query could match, and answer with bookkeeping
+that says which shards were asked, which were skipped, and which never answered.
+
+The measurement, `tools/bench_index.py`, 10 020 files across 20 repositories on one host, one
+process, in-memory FTS5, 60 queries per cell:
+
+| layout | shards | query | hits | p50 ms | p95 ms | max ms |
+|---|---|---|---|---|---|---|
+| repo | 20 | every shard | 12000 | 68.4 | 70.3 | 75.3 |
+| repo | 20 | `globs mod03/**` | 1200 | 47.2 | 51.2 | 57.6 |
+| top-dir | 200 | every shard | 12000 | 82.0 | 84.1 | 90.5 |
+| top-dir | 200 | `globs mod03/**` | 1200 | 12.0 | 12.8 | 13.5 |
+
+Three readings, and the first one is the honest one:
+
+- **Fan-out is not free.** With every shard asked, 200 shards cost ~14 ms more at p95 than
+  20 — the overhead is per shard, not per file. A layout that only ever answers unfiltered
+  queries is a layout that should be the coarser one.
+- **Selectivity is what sharding buys.** The same narrowed query is 12.8 ms on 200 shards
+  against 51.2 ms on 20, because 190 shards are never asked at all. That is the case a
+  sharded index exists for, and it is why the shard is `(repository, top directory)` rather
+  than a hash of the path.
+- **The deadline is the correctness boundary.** Every query carries a per-shard budget
+  (`deadlineMs`, default 1200 ms, clamped to 1 ms–30 s). A shard that misses it is
+  **reported**, not treated as empty: `shards.failed` names it with the reason, and both
+  response models carry `shards: {answered, failed, skipped}`.
+
+The client refuses rather than returns the rest (`HttpIndexService` calls
+`_refuse_failed_shards`): `IndexUnavailable: search: 1 shard(s) did not answer —
+git.corp/team/mono#web (no answer within 0.150s). This is not an empty result: those shards
+could not be asked.` Presenting the answered shards as the answer would make a timeout
+indistinguishable from "the code is not there", which is the one confusion the seam forbids.
+
+`tests/providers/test_the_index_fans_out.py` pins the decisions in-process (layout, empty
+`repos` selects nothing, glob selection, timeout naming, exception naming, clamped deadline,
+client refusal). `tests/providers/test_the_index_is_sharded.py` starts the service on a real
+port with `--shard-delay mono#web=0.6 --shard-deadline-ms 150` and proves the whole chain:
+the same query is refused when it needs the slow shard, answers when it skips it, and answers
+fully when the caller sets a `deadlineMs` it can wait for.
+
+Two defects surfaced while wiring it, both of the shape this project keeps finding:
+
+- **Shard selection and file filtering disagreed about `api/**`.** Shard selection read it as
+  a directory (correct); the corpus filter stripped the leading `*` and compared suffixes, so
+  `api/handlers.py` was asked for and then dropped — a silent empty answer, not an error.
+  `seams/retriever.py::matches_glob` is now the one definition both levels use. This is the
+  second time a glob has been read two ways in this provider (`search(root=…)` was the first).
+- **A prefix that means two things.** Under `repo` an empty prefix means "the whole
+  repository"; under `top-dir` it means "files with no directory". Skipping the root shard
+  for `web/**` is exact in one and wrong in the other, so `Shard` carries its `layout` and
+  `_shard_could_hold` reads it. The test that caught it asserts the *chosen* set, not just
+  that the query answered.
+
+Still not here, unchanged: a real enterprise index (P20's client and P21's shards are the
+reference service's, one host, no replication), and a shard set that changes while queries
+are in flight — a rebuild swaps the whole list under the lock, which is honest for a
+reference implementation and not what a 200-repository deployment should do.
+

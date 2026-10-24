@@ -30,9 +30,12 @@ Two decisions worth stating:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import fnmatch
 import os
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -150,6 +153,174 @@ def _constraints(
     )
 
 
+#: Per-shard budget for one query. The query is fanned out concurrently, so this
+#: bounds the whole answer, not each shard's share of a larger budget.
+DEFAULT_DEADLINE_MS = 1200
+
+#: `repo` gives one shard per repository; `top-dir` splits a repository by its first
+#: path segment, which is what a monorepo needs and what a small repository must not
+#: pay for (a dozen one-file shards is slower than one corpus).
+SHARD_LAYOUTS = ("repo", "top-dir")
+
+
+@dataclass(frozen=True, slots=True)
+class Shard:
+    """One corpus, and the part of a repository it answers for."""
+
+    name: str
+    repo: str
+    prefix: str
+    corpus: IndexCorpus
+    layout: str = "repo"
+
+
+def shards_of(corpus: IndexCorpus, *, by: str = "repo") -> tuple[Shard, ...]:
+    """Group a corpus into shards. Deterministic order: by name."""
+    if by not in SHARD_LAYOUTS:
+        raise ValueError(f"unknown shard layout {by!r}; expected one of {SHARD_LAYOUTS}")
+    files: dict[tuple[str, str], list[Any]] = {}
+    symbols: dict[tuple[str, str], list[Any]] = {}
+    for indexed in corpus.files:
+        prefix = (
+            indexed.path.split("/", 1)[0] + "/" if by == "top-dir" and "/" in indexed.path else ""
+        )
+        files.setdefault((indexed.repo.slug, prefix), []).append(indexed)
+    for hit in corpus.symbol_hits:
+        prefix = (
+            hit.location.path.split("/", 1)[0] + "/"
+            if by == "top-dir" and "/" in hit.location.path
+            else ""
+        )
+        symbols.setdefault((hit.location.repo.slug, prefix), []).append(hit)
+    shards: list[Shard] = []
+    for repo, prefix in sorted(set(files) | set(symbols)):
+        name = f"{repo}#{prefix.rstrip('/')}" if prefix else repo
+        shards.append(
+            Shard(
+                name=name,
+                repo=repo,
+                prefix=prefix,
+                layout=by,
+                corpus=IndexCorpus(
+                    tuple(files.get((repo, prefix), ())),
+                    tuple(symbols.get((repo, prefix), ())),
+                    max_hits=corpus.max_hits,
+                ),
+            )
+        )
+    return tuple(shards)
+
+
+def choose_shards(
+    shards: tuple[Shard, ...], repos: tuple[Any, ...], globs: tuple[str, ...] = ()
+) -> tuple[tuple[Shard, ...], tuple[Shard, ...]]:
+    """Split shards into (relevant, skipped).
+
+    A shard is relevant when its repository was asked for — an empty ``repos`` is
+    *no* repository, never all of them, so it selects nothing — and, when globs are
+    given, when the shard's prefix could contain a path the glob matches. A shard
+    whose prefix does not intersect any glob would only ever return nothing, and
+    scanning it is how a fan-out turns into a scan.
+    """
+    wanted = {repo.slug for repo in repos}
+    chosen: list[Shard] = []
+    skipped: list[Shard] = []
+    for shard in shards:
+        if shard.repo not in wanted:
+            skipped.append(shard)
+            continue
+        if globs and not any(_shard_could_hold(shard, g) for g in globs):
+            skipped.append(shard)
+            continue
+        chosen.append(shard)
+    return tuple(chosen), tuple(skipped)
+
+
+def _shard_could_hold(shard: Shard, glob: str) -> bool:
+    """Whether a glob could match any path this shard holds.
+
+    The two layouts mean different things by an empty prefix, and conflating them is
+    how a fan-out silently loses a shard. Under ``repo`` a shard *is* the repository,
+    so it holds every path and is never skipped. Under ``top-dir`` a shard with the
+    empty prefix holds only files with no directory at all, so a glob that names one
+    (``web/**``) cannot match anything in it — skipping it is exact, not a guess.
+    """
+    if not shard.prefix:
+        return shard.layout != "top-dir" or "/" not in glob
+    return _prefix_could_match(shard.prefix, glob)
+
+
+def _prefix_could_match(prefix: str, glob: str) -> bool:
+    """Whether a glob could match any path under ``prefix``.
+
+    Deliberately conservative in the safe direction: a false positive costs one
+    shard scan, a false negative is a missing answer.
+    """
+    stem = glob.split("*", 1)[0]
+    if not stem:
+        return True
+    return stem.startswith(prefix) or prefix.startswith(stem) or fnmatch.fnmatch(prefix, f"{stem}*")
+
+
+async def fan_out(
+    shards: tuple[Shard, ...],
+    ask: Any,
+    *,
+    deadline_s: float,
+) -> tuple[list[Any], list[dict[str, str]], tuple[str, ...]]:
+    """Ask every shard concurrently; return (answers, failures, answered names).
+
+    A shard that times out or raises is **reported**, never dropped: a partial answer
+    presented as a complete one is the confidently-wrong answer this seam exists to
+    prevent. The caller decides — the client turns a non-empty failure list into
+    `IndexUnavailable` rather than an empty result.
+    """
+
+    async def one(shard: Shard) -> tuple[str, Any]:
+        return shard.name, await asyncio.wait_for(ask(shard.corpus, shard), timeout=deadline_s)
+
+    results = await asyncio.gather(*(one(shard) for shard in shards), return_exceptions=True)
+    answers: list[Any] = []
+    failures: list[dict[str, str]] = []
+    answered: list[str] = []
+    for shard, outcome in zip(shards, results, strict=True):
+        if isinstance(outcome, BaseException):
+            reason = (
+                f"{type(outcome).__name__}: {outcome}"
+                if not isinstance(outcome, asyncio.TimeoutError)
+                else f"no answer within {deadline_s:.3f}s"
+            )
+            failures.append({"shard": shard.name, "reason": reason})
+            continue
+        answered.append(shard.name)
+        answers.extend(outcome[1])
+    return answers, failures, tuple(answered)
+
+
+def _deadline(body: Mapping[str, Any], state: Any) -> float:
+    """The per-shard budget, from the request when it asks for one.
+
+    Clamped rather than trusted: a client that sends ``deadlineMs: 0`` would otherwise
+    turn every shard into a timeout, and one that sends a day would make the deadline
+    a decoration.
+    """
+    raw = body.get("deadlineMs")
+    if raw is None:
+        return float(state.deadline_s)
+    try:
+        milliseconds = float(raw)
+    except (TypeError, ValueError):
+        milliseconds = float(DEFAULT_DEADLINE_MS)
+    return max(1.0, min(milliseconds, 30_000.0)) / 1000.0
+
+
+async def _maybe_slow(app: Any, shard: str) -> None:
+    """The one test hook: a named shard takes this long, so a timeout is exercised."""
+    delay = app.state.shard_delay_s.get(shard, 0.0)
+    if delay:
+        await asyncio.sleep(delay)
+
+
 def build_app(
     corpus: IndexCorpus,
     *,
@@ -157,6 +328,8 @@ def build_app(
     writers: frozenset[str] = frozenset(),
     updated_at: str = "",
     anonymous: bool = False,
+    shard_by: str = "repo",
+    shard_delay_s: Mapping[str, float] | None = None,
 ) -> Any:
     """The four endpoints, bound to one corpus and one token map.
 
@@ -174,6 +347,13 @@ def build_app(
     }
     app.state.stamps = {indexed.repo.slug: indexed.ref for indexed in corpus.files}
     app.state.updated_at = updated_at or _now()
+    app.state.shard_by = shard_by
+    app.state.deadline_s = DEFAULT_DEADLINE_MS / 1000.0
+    # A test hook, and only that: naming a shard here makes it take this long to answer,
+    # so "a shard that misses the deadline is reported" is exercised without a real hang.
+    app.state.shard_delay_s = dict(shard_delay_s or {})
+
+    app.state.shards = shards_of(corpus, by=shard_by)
 
     def _rebuild() -> None:
         files = tuple(app.state.files[key] for key in sorted(app.state.files))
@@ -181,6 +361,7 @@ def build_app(
         for key in sorted(app.state.symbols):
             symbols.extend(app.state.symbols[key])
         app.state.corpus = IndexCorpus(files, symbols)
+        app.state.shards = shards_of(app.state.corpus, by=shard_by)
 
     def _apply(
         repo: RepoRef,
@@ -251,18 +432,31 @@ def build_app(
             # 403 rather than an empty list: the seam's rule is that "you may not read this"
             # and "there is nothing there" are different answers.
             raise Refused(403, f"this token may not read {refused}")
-        hits = await corpus.search(
-            SearchQuery(
-                pattern=pattern,
-                repos=tuple(repos),
-                ref=ref,
-                globs=tuple(str(g) for g in body.get("globs", ())),
-                max_hits=int(body.get("maxHits", 200)),
-                literal=bool(body.get("literal", False)),
-            ),
-            constraints,
+        query = SearchQuery(
+            pattern=pattern,
+            repos=tuple(repos),
+            ref=ref,
+            globs=tuple(str(g) for g in body.get("globs", ())),
+            max_hits=int(body.get("maxHits", 200)),
+            literal=bool(body.get("literal", False)),
+        )
+        chosen, skipped = choose_shards(app.state.shards, tuple(repos), query.globs)
+        deadline_s = _deadline(body, app.state)
+
+        async def ask(shard_corpus: Any, shard: Any) -> list[Any]:
+            await _maybe_slow(app, shard.name)
+            return await shard_corpus.search(query, constraints)
+
+        found, failed, answered = await fan_out(chosen, ask, deadline_s=deadline_s)
+        found.sort(
+            key=lambda hit: (-hit.score, hit.location.repo.slug, hit.location.path, hit.line)
         )
         return {
+            "shards": {
+                "answered": list(answered),
+                "failed": failed,
+                "skipped": [shard.name for shard in skipped],
+            },
             "hits": [
                 {
                     "repo": hit.location.repo.slug,
@@ -273,8 +467,8 @@ def build_app(
                     "text": hit.text,
                     "score": hit.score,
                 }
-                for hit in hits
-            ]
+                for hit in found[: query.max_hits]
+            ],
         }
 
     @app.post("/symbols")
@@ -295,17 +489,27 @@ def build_app(
             kinds = tuple(SymbolKind(str(kind)) for kind in body.get("kinds", ()) if kind)
         except ValueError as exc:
             raise Refused(400, str(exc)) from None
-        hits = await corpus.symbols(
-            SymbolQuery(
-                name=name,
-                repos=tuple(repos),
-                ref=ref,
-                kinds=kinds,
-                max_hits=int(body.get("maxHits", 50)),
-            ),
-            constraints,
+        query = SymbolQuery(
+            name=name,
+            repos=tuple(repos),
+            ref=ref,
+            kinds=kinds,
+            max_hits=int(body.get("maxHits", 50)),
         )
+        chosen, skipped = choose_shards(app.state.shards, tuple(repos))
+        deadline_s = _deadline(body, app.state)
+
+        async def ask(shard_corpus: Any, shard: Any) -> list[Any]:
+            await _maybe_slow(app, shard.name)
+            return await shard_corpus.symbols(query, constraints)
+
+        found, failed, answered = await fan_out(chosen, ask, deadline_s=deadline_s)
         return {
+            "shards": {
+                "answered": list(answered),
+                "failed": failed,
+                "skipped": [shard.name for shard in skipped],
+            },
             "symbols": [
                 {
                     "repo": hit.location.repo.slug,
@@ -317,8 +521,8 @@ def build_app(
                     "end": hit.span.end,
                     "signature": hit.signature,
                 }
-                for hit in hits
-            ]
+                for hit in found[: query.max_hits]
+            ],
         }
 
     @app.post("/file")
@@ -338,14 +542,25 @@ def build_app(
         # The bound is the service's, not the caller's: `/file` must not become a way to ask
         # for a repository in one request.
         end = min(end, start + MAX_SLICE_LINES - 1)
-        try:
-            served = await corpus.open(
-                CodeRef(repo=repo, path=path, ref=str(body.get("ref", ""))),
-                LineSpan(start, end),
-                constraints,
-            )
-        except FileNotFoundError as exc:
-            raise Refused(404, str(exc)) from None
+        wanted = CodeRef(repo=repo, path=path, ref=str(body.get("ref", "")))
+        span = LineSpan(start, end)
+        candidates = sorted(
+            (shard for shard in app.state.shards if shard.repo == repo.slug),
+            key=lambda shard: -len(shard.prefix),
+        )
+        served = None
+        missing: FileNotFoundError | None = None
+        for shard in candidates:
+            if shard.prefix and not path.startswith(shard.prefix):
+                continue
+            try:
+                served = await shard.corpus.open(wanted, span, constraints)
+            except FileNotFoundError as exc:
+                missing = exc
+                continue
+            break
+        if served is None:
+            raise Refused(404, str(missing) if missing else f"no shard holds {path}")
         return {
             "repo": served.location.repo.slug,
             "path": served.location.path,
@@ -401,9 +616,30 @@ def build_app(
             "updatedAt": app.state.updated_at,
             "refs": refs,
             "refsByRepo": dict(app.state.stamps),
+            "shardBy": app.state.shard_by,
+            "shards": [
+                {
+                    "shard": shard.name,
+                    "repo": shard.repo,
+                    "prefix": shard.prefix,
+                    "files": len(shard.corpus.files),
+                    "refs": sorted({indexed.ref for indexed in shard.corpus.files}),
+                }
+                for shard in app.state.shards
+            ],
         }
 
     return app
+
+
+def _parse_delays(specs: list[str]) -> dict[str, float]:
+    delays: dict[str, float] = {}
+    for spec in specs:
+        shard, _, seconds = spec.partition("=")
+        if not shard or not seconds:
+            raise ValueError(f"--shard-delay {spec!r} must be SHARD=SECONDS")
+        delays[shard] = float(seconds)
+    return delays
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -438,6 +674,28 @@ def main(argv: list[str] | None = None) -> int:
         help="a token allowed to POST /index; repeatable, and none by default",
     )
     parser.add_argument("--updated-at", default="", help="an ISO stamp for /status")
+    parser.add_argument(
+        "--shard-by",
+        choices=SHARD_LAYOUTS,
+        default="repo",
+        help="how the corpus is split: one shard per repository, or per top directory",
+    )
+    parser.add_argument(
+        "--shard-deadline-ms",
+        type=float,
+        default=float(DEFAULT_DEADLINE_MS),
+        help=f"per-shard budget for one query by default (default {DEFAULT_DEADLINE_MS})",
+    )
+    parser.add_argument(
+        "--shard-delay",
+        action="append",
+        default=[],
+        metavar="SHARD=SECONDS",
+        help=(
+            "make one shard take this long before answering; a test hook, so a shard "
+            "that misses the deadline is exercised without a real hang"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.index.is_file():
@@ -473,12 +731,16 @@ def main(argv: list[str] | None = None) -> int:
         writers=writers,
         updated_at=args.updated_at,
         anonymous=args.allow_anonymous,
+        shard_by=args.shard_by,
+        shard_delay_s=_parse_delays(args.shard_delay),
     )
+    app.state.deadline_s = max(0.001, args.shard_deadline_ms / 1000.0)
 
     import uvicorn
 
     print(
-        f"serving {len(corpus.files)} file(s) from {args.index} on "
+        f"serving {len(corpus.files)} file(s) in {len(app.state.shards)} shard(s) "
+        f"({args.shard_by}) from {args.index} on "
         f"http://{args.host}:{args.port}"
         + (" (anonymous: every repository is readable)" if args.allow_anonymous else ""),
         file=sys.stderr,

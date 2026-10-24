@@ -98,6 +98,29 @@ DEFAULT_TOKEN_ENV = "FORGEPILOT_INDEX_TOKEN"
 DEFAULT_TIMEOUT_S = 30.0
 
 
+def _refuse_failed_shards(body: Any, what: str) -> None:
+    """Turn a partial answer into a refusal.
+
+    A fan-out that reports a failed shard has answered *some* of the question. Returning
+    the shards that did answer would present that partial set as complete, and the caller
+    cannot tell an empty result from an unasked shard — the confidently-wrong answer this
+    seam's first rule forbids. So the call fails, naming the shards.
+    """
+    shards = body.get("shards") if isinstance(body, dict) else None
+    failed = (shards or {}).get("failed") or ()
+    if not failed:
+        return
+    named = ", ".join(
+        f"{entry.get('shard', '?')} ({entry.get('reason', 'no reason given')})"
+        for entry in failed
+        if isinstance(entry, dict)
+    )
+    raise IndexUnavailable(
+        f"{what}: {len(failed)} shard(s) did not answer — {named}. "
+        "This is not an empty result: those shards could not be asked."
+    )
+
+
 class _Wire:
     """The transport the read and write sides share.
 
@@ -207,6 +230,7 @@ class HttpIndexService(_Wire):
         # the last place between a remote answer and the model. A service that
         # returns a repository the principal may not read is a server bug, and a
         # server bug must not become a leak.
+        _refuse_failed_shards(body, "search")
         return [hit for hit in hits if constraints.allows_repo(hit.location.repo)]
 
     async def symbols(
@@ -235,6 +259,7 @@ class HttpIndexService(_Wire):
                     signature=entry.get("signature"),
                 )
             )
+        _refuse_failed_shards(body, "symbols")
         return [hit for hit in hits if constraints.allows_repo(hit.location.repo)]
 
     async def open(

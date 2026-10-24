@@ -14,6 +14,7 @@ Two things about this seam are load-bearing rather than incidental:
 
 from __future__ import annotations
 
+import fnmatch
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -33,6 +34,7 @@ __all__ = [
     "FileSlice",
     "RetrieverCapabilities",
     "Retriever",
+    "matches_glob",
     "ref_to_serve",
 ]
 
@@ -46,6 +48,29 @@ SERVICE_NAME = "retriever"
 #: edits. A provider that honours this reports in each hit the commit it really
 #: read — including ``+dirty`` when the tree is not clean.
 WORKING_TREE = "<worktree>"
+
+
+def matches_glob(path: str, glob: str) -> bool:
+    """Whether a repository-relative ``path`` matches ``glob``.
+
+    One definition, because two levels speak this language: the shard a query is sent to,
+    and the file a hit is kept from. They disagreed once — shard selection treated
+    ``api/**`` as a directory, the file filter stripped the leading ``*`` and compared
+    suffixes, so a query was sent to the right shard and then threw away every hit it
+    answered with. That failure is invisible: an empty result looks like "not there".
+
+    ``**`` matches any number of path components, including none (``api/**`` matches
+    ``api/x.py`` and ``api/a/b.py``); everything else is :func:`fnmatch.fnmatchcase`,
+    where ``*`` also spans ``/`` — the same forgiving reading ripgrep's ``--glob`` has.
+    """
+    if glob.startswith("**/"):
+        glob = glob[3:]
+    if glob == "**":
+        return True
+    if glob.endswith("/**"):
+        prefix = glob[:-3]
+        return path == prefix or path.startswith(prefix + "/")
+    return fnmatch.fnmatchcase(path, glob)
 
 
 def ref_to_serve(held: Iterable[str], requested: str) -> str:

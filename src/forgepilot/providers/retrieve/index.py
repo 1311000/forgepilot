@@ -57,6 +57,7 @@ from forgepilot.seams.retriever import (
     SymbolHit,
     SymbolKind,
     SymbolQuery,
+    matches_glob,
     ref_to_serve,
 )
 from forgepilot.seams.security import ExecutionConstraints
@@ -295,9 +296,7 @@ class IndexCorpus:
         for indexed in self.files:
             if indexed.repo not in permitted or (indexed.repo, indexed.ref) not in served:
                 continue
-            if query.globs and not any(
-                indexed.path.endswith(glob.lstrip("*")) for glob in query.globs
-            ):
+            if query.globs and not any(matches_glob(indexed.path, glob) for glob in query.globs):
                 continue
             for line_no, line in enumerate(indexed.text.splitlines(), start=1):
                 match = matcher.search(line)
