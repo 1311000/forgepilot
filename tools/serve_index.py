@@ -122,15 +122,30 @@ def _constraints(
 ) -> ExecutionConstraints:
     """A principal's authority, expressed the way every other provider expects it.
 
-    ``None`` means "every repository in this corpus" and is resolved against the corpus
-    rather than written as a wildcard: there is no wildcard in ``ExecutionConstraints``, and
-    inventing one here would be a second permission model beside the real one.
+    ``None`` means *every* repository, and it is written as the empty prefix rather
+    than resolved against the corpus. Two reasons, both measured:
+
+    * A corpus-derived scope cannot authorise the first snapshot of a repository the
+      index does not hold yet, so ingestion of anything new was impossible.
+    * It also disappears at the worst moment: once a repository's last file is
+      deleted, its slug leaves the corpus, and a ``*`` token then got **403 "you may
+      not read this"** where the true answer is "the index holds nothing for it".
+      Those two answers lead to opposite decisions, which is the seam's first rule.
+
+    A ``*`` prefix is not a new permission model: ``allows_repo`` already matches
+    glob-ish prefixes, and ``*`` is the documented spelling for "anything".
     """
-    slugs = allowed if allowed is not None else frozenset(r.slug for r in corpus.repositories())
+    if allowed is None:
+        prefixes = frozenset({"*"})
+        slugs: frozenset[str] = frozenset()
+    else:
+        prefixes = frozenset()
+        slugs = allowed
     return ExecutionConstraints(
         principal_id=principal,
         tenant_id="index",
         allowed_repos=frozenset(_repo_ref(slug) for slug in slugs),
+        allowed_repo_prefixes=prefixes,
         permitted_operations=frozenset({Operation.READ_CODE}),
     )
 

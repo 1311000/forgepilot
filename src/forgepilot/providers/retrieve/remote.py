@@ -70,6 +70,7 @@ from forgepilot.seams.index_service import (
     IndexStatus,
     IndexSymbolQuery,
     IndexUnavailable,
+    IndexUpdate,
 )
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
 from forgepilot.seams.retriever import (
@@ -87,6 +88,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TOKEN_ENV",
     "HttpIndexService",
+    "HttpIndexWriter",
     "RemoteIndexRetrieverPlugin",
 ]
 
@@ -96,12 +98,12 @@ DEFAULT_TOKEN_ENV = "FORGEPILOT_INDEX_TOKEN"
 DEFAULT_TIMEOUT_S = 30.0
 
 
-class HttpIndexService:
-    """`IndexService` over HTTP.
+class _Wire:
+    """The transport the read and write sides share.
 
-    ``transport`` exists for tests: ``httpx.MockTransport`` lets the wire shape
-    be exercised exactly — same serialisation, same status mapping — without a
-    socket and without a second implementation that could drift from this one.
+    One class for headers, timeouts and status mapping, so the write side cannot
+    drift into its own idea of what a 403 means. ``transport`` exists for tests:
+    ``httpx.MockTransport`` exercises the wire shape without a socket.
     """
 
     def __init__(
@@ -167,6 +169,12 @@ class HttpIndexService:
             raise IndexUnavailable(
                 f"the index answered {path} with something that is not JSON: {exc}"
             ) from None
+
+
+class HttpIndexService(_Wire):
+    """`IndexService` over HTTP: search, symbols, a slice, and the status."""
+
+    __slots__ = ()
 
     # -- IndexService ------------------------------------------------------
     async def search(self, query: IndexQuery, constraints: ExecutionConstraints) -> list[CodeHit]:
@@ -272,6 +280,57 @@ def _repo(slug: str) -> RepoRef:
     if len(parts) != 3:
         raise ValueError(f"an index answered with {slug!r}, which is not host/namespace/name")
     return RepoRef(*parts)
+
+
+class HttpIndexWriter(_Wire):
+    """`IndexWriter` over the same wire as the reader.
+
+    For a long time `IndexWriter` was a contract with no client: the only code
+    that ever wrote to an index was a test doing a raw ``POST /index``. That
+    makes "the index learns about a new commit" a claim about a service nobody
+    drove, which is why this class exists before any ingestion scheduling does.
+
+    It refuses a repository the caller may not write *before* sending anything,
+    for the same reason the reader refuses before it reads: the question "may
+    this credential write that repository" belongs to the deployment, not to the
+    server's opinion of it.
+    """
+
+    __slots__ = ()
+
+    async def apply(self, update: IndexUpdate, constraints: ExecutionConstraints) -> None:
+        if not constraints.allows_repo(update.repo):
+            raise IndexRefused(
+                f"{update.repo.slug} is not one of this principal's repositories, "
+                f"so its index may not be written. Nothing was sent."
+            )
+        await self._request(
+            "POST",
+            "/index",
+            {
+                "repo": update.repo.slug,
+                "ref": update.ref,
+                "documents": [
+                    {"path": document.path, "text": document.text} for document in update.documents
+                ],
+                "deletes": list(update.deletes),
+                "complete": update.complete,
+            },
+        )
+
+    async def indexed_ref(self, repo: RepoRef) -> str | None:
+        """Which revision the service last recorded for ``repo``, or ``None``.
+
+        ``None`` is not "the same as HEAD": it means the service has no revision
+        for this repository, so an ingestion job has to send a full snapshot
+        rather than an empty delta that would look like "nothing changed".
+        """
+        body = await self._request("GET", "/status", None)
+        refs = body.get("refsByRepo") if isinstance(body, dict) else None
+        if not isinstance(refs, dict):
+            return None
+        value = refs.get(repo.slug)
+        return str(value) if value else None
 
 
 class RemoteIndexRetrieverPlugin(PluginService):

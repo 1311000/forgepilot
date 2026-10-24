@@ -355,3 +355,55 @@ returns a 500:
 `corpus-only/remote_only.py`, a path that exists nowhere in this repository, and asserts the
 service returns its text. Every other assertion in that file could in principle be satisfied by
 a provider that quietly read a checkout; that one cannot.
+
+## P20 — a commit becomes a delta, and the client that found two service defects (2026-10-22)
+
+`runtime/index_update.py` turns a commit into an `IndexUpdate` by asking git, not by
+re-reading the tree: `git diff --name-status -z --find-renames base..head`, with two
+rules that are easy to get wrong and are therefore stated in the module docstring and
+pinned by tests. **A rename is two statements** — the old path is deleted and the new
+one added, because an add alone leaves the old path answering forever. **A delete is
+sent as a delete**, never as an empty document: an empty file and a removed file look
+identical to a searcher and only one of them is true. A file that cannot be read as
+UTF-8, or is over `MAX_DOCUMENT_BYTES`, is dropped **and named** in `Plan.skipped`;
+an ingestion job that silently drops half a commit builds an index that confidently
+says "nothing there" about code that exists.
+
+The same trap the index builder hit in M19, and the SWE-bench spike hit twice, appeared
+a fourth time: `git -C <plain directory> rev-parse HEAD` walks **up** to the enclosing
+repository, so a directory that merely sits inside a checkout answers with a commit it
+does not hold. `_assert_checkout_root` compares `git rev-parse --show-toplevel` with the
+directory and refuses, which is why `git_head`/`git_delta`/`tracked_files` all refuse a
+plain directory rather than returning a neighbouring repository's history.
+
+`HttpIndexWriter` (in `providers/retrieve/remote.py`, beside `HttpIndexService`) is the
+first client the `IndexWriter` contract has ever had, and the CLI drives it:
+
+```
+python -m forgepilot --index-update git.local/demo/ingest \
+  --index-url http://127.0.0.1:8001 --repo-root <checkout>
+```
+
+It reads the base from the **service** (`GET /status` → `refsByRepo`), not from anything
+this process remembers, because a remembered base is a second source of truth that
+disagrees the first time the job runs elsewhere. `None` from `indexed_ref` is not "the
+same as HEAD": it means the service has no revision for that repository, so the job
+sends a complete snapshot rather than an empty delta that would claim "nothing changed".
+
+**Two defects the client found in the reference service**, both in `_constraints` in
+`tools/serve_index.py`. A `*` token's authority was resolved against the *corpus*:
+
+* the first snapshot of a repository the index did not hold yet was **403** — an index
+  that refuses to learn about anything it does not already know cannot be ingested;
+* once a repository's last file was deleted, its slug left the corpus and the same token
+  got **403 "you may not read this"** where the truth is "the index holds nothing for
+  it". Those two answers lead to opposite decisions, which is this seam's first rule.
+
+The fix is not a new permission model: `*` becomes the glob prefix `*`, which
+`ExecutionConstraints.allows_repo` already understands, so a `*` token covers every
+slug and an empty answer is an empty result. Scoped tokens are unchanged.
+
+Not here yet: **nothing schedules the job** — no webhook, no polling loop, so freshness
+is "as often as somebody runs `--index-update`". A per-repository partial failure in the
+service's `/index` is also unreported (one 200 means every document was stored), and
+`IndexWriter` still has no composite/fan-out form for more than one shard.

@@ -252,6 +252,40 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --restore: replace a directory that already holds files",
     )
+
+    index = parser.add_argument_group("index")
+    index.add_argument(
+        "--index-update",
+        default=None,
+        metavar="REPO",
+        help=(
+            "send the commits since the indexed revision to a running index service, "
+            "then exit. REPO is the slug the index knows (host/namespace/name)"
+        ),
+    )
+    index.add_argument(
+        "--index-url",
+        default=None,
+        metavar="URL",
+        help="with --index-update: the service's base URL",
+    )
+    index.add_argument(
+        "--repo-root",
+        default=None,
+        metavar="DIR",
+        help="with --index-update: the checkout to read the delta from (default: --workspace)",
+    )
+    index.add_argument(
+        "--index-token-env",
+        default="FORGEPILOT_INDEX_TOKEN",
+        metavar="NAME",
+        help="with --index-update: the variable holding the write token",
+    )
+    index.add_argument(
+        "--index-full",
+        action="store_true",
+        help="with --index-update: send a complete snapshot instead of a delta",
+    )
     return parser
 
 
@@ -1394,6 +1428,86 @@ def _enter_maintenance(state: Path) -> tuple[Any, Any] | None:
     return coordinator, lease
 
 
+def _index_update(args: argparse.Namespace) -> int:
+    """Send the commits since the indexed revision to a running index service.
+
+    Three decisions worth naming, because each of them is a way this could
+    quietly lie:
+
+    * The revision to index is ``git rev-parse HEAD`` in the checkout, not a
+      branch name: a branch moves, and an index built from "main" cannot say
+      which commit it holds.
+    * The base is what the *service* says it has, not what this process
+      remembers. A process that remembers is a second source of truth, and the
+      two disagree the first time the job runs from a different machine.
+    * "The service has no revision for this repository" sends a complete
+      snapshot. An empty delta in that situation would tell the service
+      "nothing changed", which is the opposite of true.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.providers.retrieve.remote import HttpIndexWriter
+    from forgepilot.runtime.index_update import Plan, git_head, plan, plan_full
+    from forgepilot.seams.index_service import IndexRefused, IndexUnavailable
+    from forgepilot.seams.refs import RepoRef
+    from forgepilot.seams.security import ExecutionConstraints
+
+    url = args.index_url
+    if not url:
+        print("error: --index-update needs --index-url", file=sys.stderr)
+        return 2
+    root = Path(args.repo_root or args.workspace or ".").resolve()
+    parts = args.index_update.strip("/").split("/")
+    if len(parts) != 3 or not all(parts):
+        print(
+            f"error: --index-update wants host/namespace/name, not {args.index_update!r}",
+            file=sys.stderr,
+        )
+        return 2
+    repo = RepoRef(host=parts[0], namespace=parts[1], name=parts[2])
+    token = os.environ.get(args.index_token_env or "", "")
+    writer = HttpIndexWriter(url, token=token)
+    constraints = ExecutionConstraints(
+        principal_id="index-ingest",
+        tenant_id=os.environ.get("FORGEPILOT_TENANT", ""),
+        allowed_repos=frozenset({repo}),
+    )
+    try:
+        head = git_head(root)
+        indexed = asyncio.run(writer.indexed_ref(repo))
+        if indexed is None or args.index_full:
+            planned: Plan = plan_full(root, repo=repo, ref=head)
+            how = "complete snapshot"
+        elif indexed == head:
+            print(f"already at {head}")
+            return 0
+        else:
+            planned = plan(root, repo=repo, base=indexed, head=head)
+            how = f"delta from {indexed[:12]}"
+        if not planned.update.documents and not planned.update.deletes:
+            print(f"nothing to send for {head}")
+            return 0
+        asyncio.run(writer.apply(planned.update, constraints))
+    except IndexRefused as exc:
+        print(f"error: the index refused the write: {exc}", file=sys.stderr)
+        return 2
+    except IndexUnavailable as exc:
+        print(f"error: the index could not be reached: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not crash
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"indexed {repo.slug} at {head}: {how}, "
+        f"{len(planned.update.documents)} document(s), "
+        f"{len(planned.update.deletes)} deletion(s), {planned.changes} change(s)"
+    )
+    for refusal in planned.skipped:
+        print(f"  not indexed: {refusal}", file=sys.stderr)
+    return 0
+
+
 def _restore(args: argparse.Namespace) -> int:
     """Replace the state directory from an archive, verifying it first."""
     from forgepilot.runtime.backup import BackupRefused, restore
@@ -1683,6 +1797,7 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
             ("--prune", args.prune),
             ("--backup", bool(args.backup)),
             ("--restore", bool(args.restore)),
+            ("--index-update", bool(args.index_update)),
             ("--serve", args.serve),
         )
         if on
@@ -1710,6 +1825,8 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
         return _prune(args)
     if args.backup:
         return _backup(args)
+    if args.index_update:
+        return _index_update(args)
     if args.restore:
         return _restore(args)
     if args.serve:
