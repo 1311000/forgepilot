@@ -19,12 +19,14 @@ side.
 
 from __future__ import annotations
 
+import ast
+import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from forgepilot.seams.index_service import IndexDocument, IndexUpdate
+from forgepilot.seams.index_service import IndexDocument, IndexImport, IndexUpdate
 from forgepilot.seams.refs import RepoRef
 
 __all__ = [
@@ -170,6 +172,100 @@ def tracked_files(root: Path) -> tuple[str, ...]:
     return tuple(path for path in raw.split("\0") if path)
 
 
+PYTHON_SUFFIXES = (".py",)
+SCRIPT_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte")
+GO_SUFFIXES = (".go",)
+
+_SCRIPT_FROM = re.compile(r"""\b(?:import|export)\b[^;'"]*?\bfrom\s*['"]([^'"]+)['"]""")
+_SCRIPT_BARE = re.compile(r"""\bimport\s*['"]([^'"]+)['"]""")
+_SCRIPT_REQUIRE = re.compile(r"""\brequire\(\s*['"]([^'"]+)['"]\s*\)""")
+_GO_BLOCK = re.compile(r"""\bimport\s*\(([^)]*)\)""")
+_GO_SINGLE = re.compile(r'\bimport\s+(?:(?:[\w.]+|_|\.)\s+)?"([^"]+)"')
+
+
+def _python_imports(path: str, text: str) -> list[str]:
+    """The modules a Python file names, with relative imports resolved to the package.
+
+    ``from .separable import x`` inside ``astropy/modeling/__init__.py`` is
+    ``astropy.modeling.separable`` — the specifier a question about the package would
+    use. A relative import that climbs above the root is recorded as written, because
+    there is nothing honest to resolve it to.
+
+    ``from a.b import c`` records ``a.b`` and *not* ``a.b.c``: whether ``c`` is a
+    submodule or a name in ``a.b`` needs the filesystem, and guessing it is how an edge
+    list starts lying about the module graph.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    package = path.rpartition("/")[0]
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and not node.level:
+                found.append(node.module)
+            elif node.level:
+                parts = package.split("/") if package else []
+                climbed = node.level - 1
+                if climbed > len(parts):
+                    # `from ...x import y` climbs above the repository: nothing to name.
+                    continue
+                base = parts[: len(parts) - climbed] if climbed else parts
+                target = [*base, node.module] if node.module else base
+                if target:
+                    found.append(".".join(target))
+    return found
+
+
+def _script_imports(text: str) -> list[str]:
+    """Positional, because three patterns scanned in turn are not the file's order."""
+    found: list[tuple[int, str]] = []
+    for pattern in (_SCRIPT_FROM, _SCRIPT_BARE, _SCRIPT_REQUIRE):
+        found.extend((match.start(), match.group(1)) for match in pattern.finditer(text))
+    found.sort()
+    return [target for _position, target in found]
+
+
+def _go_imports(text: str) -> list[str]:
+    found: list[str] = []
+    for match in _GO_BLOCK.finditer(text):
+        for line in match.group(1).splitlines():
+            entry = line.strip().strip('"')
+            if not entry or entry.startswith("//"):
+                continue
+            found.append(entry.split()[-1].strip('"'))
+    found.extend(match.group(1) for match in _GO_SINGLE.finditer(text))
+    return found
+
+
+def imports_for(path: str, text: str) -> tuple[IndexImport, ...]:
+    """The static imports one file names, deduplicated.
+
+    Three languages, because they are the three shapes the fixtures use and each is a
+    different parser (ast, a string regex, a Go import block). Anything else yields no
+    edges — an unknown language is not evidence of no imports, and the seam's status is
+    the place to say so, not a guess here. The order is whatever that parser produced;
+    it is stable for a given file and it is not a contract.
+    """
+    lowered = path.lower()
+    if lowered.endswith(PYTHON_SUFFIXES):
+        targets = _python_imports(path, text)
+    elif lowered.endswith(SCRIPT_SUFFIXES):
+        targets = _script_imports(text)
+    elif lowered.endswith(GO_SUFFIXES):
+        targets = _go_imports(text)
+    else:
+        return ()
+    seen: list[str] = []
+    for target in targets:
+        if target and target not in seen:
+            seen.append(target)
+    return tuple(IndexImport(path=path, target=target) for target in seen)
+
+
 def _read_document(root: Path, path: str, max_bytes: int) -> tuple[IndexDocument | None, str]:
     """Read one file as text, or say why it is not a document."""
     full = root / path
@@ -201,6 +297,14 @@ def documents_for(
     return documents, tuple(skipped)
 
 
+def _imports_of(documents: Iterable[IndexDocument]) -> tuple[IndexImport, ...]:
+    """The edges every document names — one pass, beside the documents themselves."""
+    edges: list[IndexImport] = []
+    for document in documents:
+        edges.extend(imports_for(document.path, document.text))
+    return tuple(edges)
+
+
 def plan(
     root: Path,
     *,
@@ -227,6 +331,7 @@ def plan(
         documents=tuple(documents),
         deletes=tuple(deletes),
         complete=False,
+        imports=_imports_of(documents),
     )
     return Plan(update=update, skipped=skipped, changes=len(changes))
 
@@ -241,5 +346,11 @@ def plan_full(
     """A complete snapshot — what a job sends when the index has no revision at all."""
     head = ref or git_head(root)
     documents, skipped = documents_for(root, tracked_files(root), max_bytes=max_bytes)
-    update = IndexUpdate(repo=repo, ref=head, documents=tuple(documents), complete=True)
+    update = IndexUpdate(
+        repo=repo,
+        ref=head,
+        documents=tuple(documents),
+        complete=True,
+        imports=_imports_of(documents),
+    )
     return Plan(update=update, skipped=skipped, changes=len(documents))

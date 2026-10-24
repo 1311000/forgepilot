@@ -470,3 +470,38 @@ reference service's, one host, no replication), and a shard set that changes whi
 are in flight — a rebuild swaps the whole list under the lock, which is honest for a
 reference implementation and not what a 200-repository deployment should do.
 
+
+## P22 — a cheap edge: who imports this module (2026-10-22)
+
+A retrieval system that can answer "where is this name" still cannot answer the first
+question a change asks: *who depends on this?* P22 adds that, and it adds the cheapest version
+of it deliberately.
+
+**What an edge is.** A static ``import``/``require`` statement naming a module, recorded per
+file and per revision. ``from astropy.modeling import separable`` records
+``astropy.modeling`` and **not** ``astropy.modeling.separable``: whether the last component is
+a submodule or a name defined in the package needs the filesystem, and guessing is how a
+module graph starts lying. For Python the statements come from ``ast`` (so a comment or a
+string that merely contains the word ``import`` is not an edge); for JavaScript/TypeScript and
+Go, three regexes with a positional sort, and nothing at all for a language nobody taught it —
+an unknown suffix yields no edges, which is not the same claim as "imports nothing".
+
+**What it answers.** ``POST /importers {module, repos}`` over the same wire as the rest, and
+``IndexService.importers`` on the seam. Matching is by **whole components**:
+``astropy.modeling`` matches ``astropy.modeling`` and ``astropy.modeling.fitting``, never
+``astropy.modeling_extra``.
+
+**What changes when a file changes.** An ingested document **replaces** its own edges: a file
+sent without an import has stopped importing it, and keeping the old edge would answer with a
+file that no longer does. ``deletes`` removes the edges with the file; a ``complete`` snapshot
+removes the edges of every path it does not name.
+
+**What it is not.** No call graph, no name resolution, no dynamic imports (``importlib``,
+``require(variable)``). A cross-repository question works because the slug is carried on every
+edge, but "this function calls that one" is a v2 question and the notes above are why: the day
+it answers wrongly, it answers *confidently*.
+
+Measured: ``tests/runtime/test_import_edges.py`` (11 tests over the extractor and the plan),
+``tests/providers/test_the_index_answers_who_imports.py`` (5 over a real socket: an edge is
+found, a re-sent file replaces it, a deleted file takes it away, a near-miss target is not a
+match, a repository outside the credential is never asked).

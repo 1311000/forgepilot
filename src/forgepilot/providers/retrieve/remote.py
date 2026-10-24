@@ -57,12 +57,15 @@ how old the index is is the confidently-wrong answer the seam is written about.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 
 from forgepilot.kernel import PluginService
 from forgepilot.seams.index_service import (
+    IndexImporter,
+    IndexImportQuery,
     IndexQuery,
     IndexRefused,
     IndexService,
@@ -262,6 +265,42 @@ class HttpIndexService(_Wire):
         _refuse_failed_shards(body, "symbols")
         return [hit for hit in hits if constraints.allows_repo(hit.location.repo)]
 
+    async def importers(
+        self, query: IndexImportQuery, constraints: ExecutionConstraints
+    ) -> Sequence[IndexImporter]:
+        """Who imports this module or package, answered by the service.
+
+        No shard bookkeeping: edges are one lookup on the service side, and the shards that
+        exist are of *files*. An empty ``repos`` sends an empty list — the service reads
+        that as "no repository", never "all of them".
+        """
+        if not query.repos:
+            return ()
+        payload = {
+            "module": query.module,
+            "repos": [repo.slug for repo in query.repos],
+            "maxHits": query.max_hits,
+        }
+        if query.ref:
+            payload["ref"] = query.ref
+        body = await self._request("POST", "/importers", payload)
+        found: list[IndexImporter] = []
+        for entry in body.get("importers", ()):
+            repo = _repo(str(entry["repo"]))
+            if not constraints.allows_repo(repo):
+                continue
+            found.append(
+                IndexImporter(
+                    location=CodeRef(
+                        repo=repo,
+                        path=str(entry["path"]),
+                        ref=str(entry.get("ref", query.ref)),
+                    ),
+                    target=str(entry["target"]),
+                )
+            )
+        return found
+
     async def open(
         self, location: CodeRef, span: LineSpan, constraints: ExecutionConstraints
     ) -> IndexSlice:
@@ -340,6 +379,7 @@ class HttpIndexWriter(_Wire):
                 ],
                 "deletes": list(update.deletes),
                 "complete": update.complete,
+                "imports": [{"path": edge.path, "target": edge.target} for edge in update.imports],
             },
         )
 

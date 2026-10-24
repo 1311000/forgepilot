@@ -23,6 +23,12 @@ has already recorded once:
    repository and a stale index are three different answers; collapsing them into
    an empty result is how a search silently misses most of the code.
 
+The import edges (`IndexImport`, `importers`) are deliberately the *cheap* ones: the
+module or package a file names in its static import/require statements, nothing inferred.
+No call graph, no name resolution, no dynamic imports — each of those needs a language
+front end per language and, done approximately, produces a confident wrong answer about
+who depends on what. "This file names this module" is a fact the parser can be sure of.
+
 The wire shape is the provider's business, not the seam's: this module defines
 what a caller may ask and what any answer must carry. `providers/retrieve/remote.py`
 is one implementation over HTTP, and its module docstring is the protocol it
@@ -48,6 +54,10 @@ __all__ = [
     "IndexService",
     "IndexDocument",
     "IndexUpdate",
+    "IndexImport",
+    "IndexImportQuery",
+    "IndexImporter",
+    "imports_match",
     "IndexWriter",
     "IndexLag",
     "lag",
@@ -137,6 +147,61 @@ class IndexUpdate:
     documents: Sequence[IndexDocument] = ()
     deletes: Sequence[str] = ()
     complete: bool = False
+    #: The static imports the documents name. A path sent in ``documents`` with no
+    #: entry here has its edges *cleared* — a file that stopped importing anything
+    #: must stop being an importer, and "absent" is the only way to say that.
+    imports: Sequence[IndexImport] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IndexImport:
+    """One static import statement, as the index holds it.
+
+    ``target`` is the specifier the file names, verbatim: a dotted module
+    (``astropy.modeling``), a package (``react``), a relative path (``./util``) for
+    JavaScript, an import path (``github.com/x/y``) for Go. Relative specifiers are kept
+    as written and only match the same string — resolving them needs the module system,
+    which is the line this layer does not cross.
+    """
+
+    path: str
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexImportQuery:
+    """Who imports this module or package?
+
+    ``module`` is a dotted name or a package prefix. ``astropy.modeling`` matches
+    ``astropy.modeling.separable`` (a component prefix), and never ``astropy.modelingx``:
+    the match is on whole components, because a substring match would make ``os`` match
+    every ``os.path`` question and every ``pygments`` answer.
+
+    Empty ``repos`` is *no repository*, never all of them — the same rule as search.
+    """
+
+    module: str
+    repos: Sequence[RepoRef]
+    ref: str = ""
+    max_hits: int = 100
+
+
+@dataclass(frozen=True, slots=True)
+class IndexImporter:
+    """One file that names the module, and which specifier it used."""
+
+    location: CodeRef
+    target: str
+
+
+def imports_match(target: str, module: str) -> bool:
+    """Whether an imported ``target`` is ``module`` or something inside it.
+
+    One definition, because the service, the client and any second implementation have to
+    agree about the one question this layer answers; two readings of ``astropy.modeling``
+    would make the edge list disagree with itself.
+    """
+    return target == module or target.startswith(module + ".")
 
 
 @runtime_checkable
@@ -228,3 +293,7 @@ class IndexService(Protocol):
     ) -> IndexSlice: ...
 
     async def status(self, constraints: ExecutionConstraints) -> IndexStatus: ...
+
+    async def importers(
+        self, query: IndexImportQuery, constraints: ExecutionConstraints
+    ) -> Sequence[IndexImporter]: ...

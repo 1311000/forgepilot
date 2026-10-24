@@ -52,7 +52,11 @@ except ImportError:  # pragma: no cover - `--help` and `parse_tokens` work witho
     _Request = Any  # type: ignore[assignment,misc]
 
 from forgepilot.providers.retrieve.index import IndexCorpus, IndexedFile, symbols_for
-from forgepilot.seams.index_service import IndexDocument
+from forgepilot.seams.index_service import (
+    IndexDocument,
+    IndexImport,
+    imports_match,
+)
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
 from forgepilot.seams.retriever import SearchQuery, SymbolHit, SymbolKind, SymbolQuery
 from forgepilot.seams.security import ExecutionConstraints, Operation
@@ -330,6 +334,7 @@ def build_app(
     anonymous: bool = False,
     shard_by: str = "repo",
     shard_delay_s: Mapping[str, float] | None = None,
+    edges: Mapping[tuple[str, str], tuple[IndexImport, ...]] | None = None,
 ) -> Any:
     """The four endpoints, bound to one corpus and one token map.
 
@@ -346,6 +351,10 @@ def build_app(
         (hit.location.repo.slug, hit.location.path): [hit] for hit in corpus.symbol_hits
     }
     app.state.stamps = {indexed.repo.slug: indexed.ref for indexed in corpus.files}
+    # Edges are answered from one map rather than per shard: the list is small next to the
+    # corpus, and a fan-out over it would cost a round per shard for a question that is a
+    # lookup. Keyed by (slug, path) because a path is only unique inside its repository.
+    app.state.edges: dict[tuple[str, str], tuple[IndexImport, ...]] = dict(edges or {})
     app.state.updated_at = updated_at or _now()
     app.state.shard_by = shard_by
     app.state.deadline_s = DEFAULT_DEADLINE_MS / 1000.0
@@ -369,6 +378,7 @@ def build_app(
         documents: list[IndexDocument],
         deletes: tuple[str, ...],
         complete: bool,
+        edges: tuple[IndexImport, ...] = (),
     ) -> int:
         """Mutate the snapshot, then rebuild — one transaction's worth of work, in memory.
 
@@ -385,6 +395,7 @@ def build_app(
             key = (slug, path)
             app.state.files.pop(key, None)
             app.state.symbols.pop(key, None)
+            app.state.edges.pop(key, None)
         for document in documents:
             key = (slug, document.path)
             app.state.files[key] = IndexedFile(
@@ -393,6 +404,14 @@ def build_app(
             app.state.symbols[key] = list(
                 symbols_for(document.text, repo=repo, path=document.path, ref=ref)
             )
+            # Replaced, not merged: a file sent without an edge has stopped importing what
+            # it used to, and keeping the old edges would answer "who imports this" with a
+            # file that no longer does.
+            app.state.edges[key] = tuple(edge for edge in edges if edge.path == document.path)
+        if complete:
+            keeps = {(slug, document.path) for document in documents}
+            for key in [key for key in app.state.edges if key[0] == slug and key not in keeps]:
+                app.state.edges.pop(key, None)
         app.state.stamps[slug] = ref
         app.state.updated_at = _now()
         _rebuild()
@@ -597,13 +616,51 @@ def build_app(
                 raise Refused(400, f"documents[{position}] has no path")
             documents.append(IndexDocument(path=path, text=str(raw.get("text", ""))))
         deletes = tuple(str(path) for path in body.get("deletes", ()) if path)
-        count = _apply(repo, ref, documents, deletes, bool(body.get("complete", False)))
+        edges: list[IndexImport] = []
+        for position, raw in enumerate(body.get("imports", ())):
+            path = str(raw.get("path", ""))
+            target = str(raw.get("target", ""))
+            if not path or not target:
+                raise Refused(400, f"imports[{position}] needs a path and a target")
+            edges.append(IndexImport(path=path, target=target))
+        count = _apply(
+            repo, ref, documents, deletes, bool(body.get("complete", False)), tuple(edges)
+        )
         return {
             "repo": repo.slug,
             "ref": ref,
             "files": count,
+            "imports": sum(1 for key in app.state.edges if key[0] == repo.slug),
             "refsByRepo": dict(app.state.stamps),
         }
+
+    @app.post("/importers")
+    async def importers(request: _Request) -> Any:
+        who, allowed = _who(request)
+        body = await request.json()
+        module = str(body.get("module", "")).strip()
+        if not module:
+            raise Refused(400, "`module` is required: the question is 'who imports what'")
+        constraints = _constraints(who, allowed, app.state.corpus)
+        max_hits = max(1, min(int(body.get("maxHits") or 100), 1000))
+        hits: list[dict[str, str]] = []
+        for (slug, path), edges in sorted(app.state.edges.items()):
+            if not constraints.allows_repo(_repo_ref(slug)):
+                continue
+            for edge in edges:
+                if not imports_match(edge.target, module):
+                    continue
+                hits.append(
+                    {
+                        "repo": slug,
+                        "path": path,
+                        "ref": app.state.stamps.get(slug, ""),
+                        "target": edge.target,
+                    }
+                )
+                if len(hits) >= max_hits:
+                    return {"importers": hits, "truncated": True}
+        return {"importers": hits, "truncated": False}
 
     @app.get("/status")
     async def status(request: _Request) -> Any:
@@ -616,6 +673,7 @@ def build_app(
             "updatedAt": app.state.updated_at,
             "refs": refs,
             "refsByRepo": dict(app.state.stamps),
+            "imports": len(app.state.edges),
             "shardBy": app.state.shard_by,
             "shards": [
                 {
@@ -630,6 +688,29 @@ def build_app(
         }
 
     return app
+
+
+def load_edges(path: Path) -> dict[tuple[str, str], tuple[IndexImport, ...]]:
+    """The ``imports`` array of a corpus file, keyed the way the service holds it.
+
+    A corpus written before this existed has no array; that is an index with no edges, not
+    an error, and `/importers` answering nothing for it is the honest answer.
+    """
+    import json
+
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    edges: dict[tuple[str, str], tuple[IndexImport, ...]] = {}
+    for entry in raw.get("imports") or ():
+        slug = str(entry.get("repo", ""))
+        where = str(entry.get("path", ""))
+        target = str(entry.get("target", ""))
+        if not slug or not where or not target:
+            continue
+        edges[(slug, where)] = (
+            *edges.get((slug, where), ()),
+            IndexImport(path=where, target=target),
+        )
+    return edges
 
 
 def _parse_delays(specs: list[str]) -> dict[str, float]:
@@ -733,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
         anonymous=args.allow_anonymous,
         shard_by=args.shard_by,
         shard_delay_s=_parse_delays(args.shard_delay),
+        edges=load_edges(args.index),
     )
     app.state.deadline_s = max(0.001, args.shard_deadline_ms / 1000.0)
 
