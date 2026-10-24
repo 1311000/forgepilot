@@ -544,3 +544,41 @@ refused, an empty list returned as empty, 503 and a non-JSON body as unavailable
 span and revision, a slice that names its revision, a slice without text refused, a catalog
 that makes staleness visible, an omitted revision stale-not-fresh, links answered when present
 and named as absent when not.
+
+## P24 — the edge gets a consumer: `forgepilot --dependents` (2026-10-22)
+
+P22 shipped an edge model, a service endpoint and an adapter, and the honest reading of it was
+the defect this project has recorded three times: **an implementation nothing could reach**.
+`IndexService.importers` was exercised by tests and called by no one. P24 is the consumer, and
+it is a CLI command rather than a tool inside the agent loop, for a reason worth stating:
+
+- **A reviewer's question, not a model's.** "Who depends on this module" is asked *before* a
+  change is made or while a pull request is read. The tool surface the model sees is already
+  six tools plus MCP; adding a seventh for a question the model rarely needs would make the
+  loop pay for a capability with no measured use.
+- **It pairs with the ingestion command.** `--index-update` is what a deployment runs after a
+  push; `--dependents` is what it runs to answer a question about the corpus it just built.
+  Same `--index-url` and `--index-token-env`, same failure vocabulary.
+
+```
+forgepilot --dependents astropy.modeling \
+  --index-url https://search.internal/ --index-repo git.corp/team/api
+# git.corp/team/api:paging/limits.py@main  (imports astropy.modeling)
+# 1 file(s) import astropy.modeling
+```
+
+Three decisions in the output:
+
+1. **`repo:path@ref` per line.** A path alone is ambiguous the moment there are two
+   repositories, and a hit without its revision is the confidently-wrong answer this seam
+   exists to forbid.
+2. **An empty answer exits 0** and says `no file in … imports …`. "Nobody imports it" is a
+   real answer to a real question.
+3. **Exit 2 is reserved for the two answers that must not be mistaken for it** — a refused
+   credential and an unreachable index. Both are printed as errors on stderr; neither can ever
+   be read as "nobody imports it".
+
+Measured: `tests/cli/test_dependents_cli.py`, 6 tests against the reference service on a real
+socket — the table and the count line, an empty answer exiting 0, a refused token exiting 2,
+an unreachable port exiting 2 **without** printing the empty-answer line, the two usage errors,
+and `--dependents` refusing to combine with `--index-update`.

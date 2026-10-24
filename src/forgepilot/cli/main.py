@@ -286,6 +286,22 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --index-update: send a complete snapshot instead of a delta",
     )
+    index.add_argument(
+        "--dependents",
+        default=None,
+        metavar="MODULE",
+        help=(
+            "print which files in an index import MODULE, then exit. Requires "
+            "--index-url and at least one --index-repo"
+        ),
+    )
+    index.add_argument(
+        "--index-repo",
+        action="append",
+        default=[],
+        metavar="REPO",
+        help="with --dependents: a repository to ask about (host/namespace/name, repeatable)",
+    )
     return parser
 
 
@@ -1508,6 +1524,89 @@ def _index_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dependents(args: argparse.Namespace) -> int:
+    """Ask an index who imports a module, and print it the way a reviewer reads it.
+
+    This is the consumer the import edges were missing: `IndexService.importers` had a
+    service endpoint, an adapter and tests, and nothing a person could run. The answer is
+    ``repo:path@ref`` per line because a path alone is ambiguous the moment there are two
+    repositories, and a hit without its revision is exactly the confidently-wrong answer the
+    seam forbids.
+
+    An empty answer is *printed as empty and exits 0*: "nobody imports it" is a real answer
+    to a real question. A refused or unreachable index exits 2, because those two must never
+    look like the first one.
+    """
+    import asyncio
+    import os
+
+    from forgepilot.providers.retrieve.remote import HttpIndexService
+    from forgepilot.seams.index_service import (
+        IndexImportQuery,
+        IndexRefused,
+        IndexUnavailable,
+    )
+    from forgepilot.seams.refs import RepoRef
+    from forgepilot.seams.security import ExecutionConstraints
+
+    if not args.index_url:
+        print("error: --dependents needs --index-url", file=sys.stderr)
+        return 2
+    repos: list[RepoRef] = []
+    for raw in args.index_repo or ():
+        parts = str(raw).strip("/").split("/")
+        if len(parts) != 3 or not all(parts):
+            print(
+                f"error: --index-repo wants host/namespace/name, not {raw!r}",
+                file=sys.stderr,
+            )
+            return 2
+        repos.append(RepoRef(host=parts[0], namespace=parts[1], name=parts[2]))
+    if not repos:
+        print("error: --dependents needs at least one --index-repo", file=sys.stderr)
+        return 2
+
+    module = str(args.dependents).strip()
+    if not module:
+        print("error: --dependents needs a module name", file=sys.stderr)
+        return 2
+    token = os.environ.get(args.index_token_env or "", "")
+    service = HttpIndexService(args.index_url, token=token)
+    constraints = ExecutionConstraints(
+        principal_id="index-reader",
+        tenant_id=os.environ.get("FORGEPILOT_TENANT", ""),
+        allowed_repos=frozenset(repos),
+    )
+    try:
+        found = asyncio.run(
+            service.importers(
+                IndexImportQuery(module=module, repos=tuple(repos)),
+                constraints,
+            )
+        )
+    except IndexRefused as exc:
+        print(f"error: the index refused the read: {exc}", file=sys.stderr)
+        return 2
+    except IndexUnavailable as exc:
+        print(f"error: the index could not be answered: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not crash
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    ordered = sorted(found, key=lambda hit: (hit.location.repo.slug, hit.location.path))
+    if not ordered:
+        print(f"no file in {', '.join(repo.slug for repo in repos)} imports {module}")
+        return 0
+    for hit in ordered:
+        print(
+            f"{hit.location.repo.slug}:{hit.location.path}@{hit.location.ref}"
+            f"  (imports {hit.target})"
+        )
+    print(f"{len(ordered)} file(s) import {module}")
+    return 0
+
+
 def _restore(args: argparse.Namespace) -> int:
     """Replace the state directory from an archive, verifying it first."""
     from forgepilot.runtime.backup import BackupRefused, restore
@@ -1798,6 +1897,7 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
             ("--backup", bool(args.backup)),
             ("--restore", bool(args.restore)),
             ("--index-update", bool(args.index_update)),
+            ("--dependents", bool(args.dependents)),
             ("--serve", args.serve),
         )
         if on
@@ -1827,6 +1927,8 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
         return _backup(args)
     if args.index_update:
         return _index_update(args)
+    if args.dependents:
+        return _dependents(args)
     if args.restore:
         return _restore(args)
     if args.serve:
