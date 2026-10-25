@@ -1,0 +1,10 @@
+# A zero-latency `llm`, for measuring the replica and not the vendor.
+#
+# Load runs select this so a turn costs what *this* server costs. It is deliberately in no
+# profile and no bundle list: a deployment that selected it would have no model at all, and
+# `--boot` would look healthy while every answer was a canned sentence.
+- id: llm
+  plugin: forgepilot.providers.llm.echo:EchoLLMPlugin
+  tier: trusted
+  config:
+    model: echo-0

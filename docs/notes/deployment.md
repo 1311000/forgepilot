@@ -267,3 +267,52 @@ What is still left to the operator: the copy itself. A JSONL tar can still captu
 torn last line written *between* the lease check and the read, and the SQLite store
 must be copied with `VACUUM INTO` (WAL holds committed rows not yet in the main file).
 The lease removes the *racing writer*, not the need for a store-aware copy.
+
+## P30 — a single replica, measured (2026-10-25)
+
+M26 shipped a single-replica SLO with nothing behind it but a promise: `/readyz`, a drain, a
+`forgepilot_ready` gauge, and alert thresholds measured against *turn durations in session
+logs*. `tools/load_single_replica.py` is the load. It starts one replica (or drives a running
+one), spreads turns across **one session per worker** — a second `POST` on a busy session is
+`409` by design, so loading one session measures the busy flag, not the server — and prints
+nearest-rank percentiles, because an interpolated p95 prints a latency nobody experienced.
+
+**The model is deliberately not in the loop.** With the default profile the `llm` row points at
+a real endpoint, and a turn then costs 1.4 s of somebody else's latency plus money. The driver
+overrides `llm` with `bundles/llm_echo/` (a zero-latency provider, zero usage) unless
+`--real-model` is passed, so the numbers below are *this server's* cost. Both tables are the
+same machine on the same afternoon:
+
+| concurrency | turn p50 / p95 / p99 | read p50 / p95 | `/metrics` p50 / p95 | wall | rate |
+|---|---|---|---|---|---|
+| 1 | 17 / 22 / 88 ms | 4 / 5 ms | 4 / 4 ms | 0.6 s | 97 req/s |
+| 8 | 54 / 103 / 193 ms | 20 / 37 ms | 22 / 39 ms | 2.3 s | 216 req/s |
+| 24 | 180 / 529 / 803 ms | 78 / 406 ms | 76 / 329 ms | 10.1 s | 145 req/s |
+| 48 | 503 / 560 / 610 ms | 148 / 327 ms | 148 / 160 ms | 16.5 s | 178 req/s |
+| 96 | 1047 / 1191 / 1323 ms | 300 / 347 ms | 301 / 316 ms | 33.9 s | 173 req/s |
+
+and the same driver against the deployment's own model (`--real-model`, `deepseek-flash`):
+
+| concurrency | turn p50 / p95 |
+|---|---|
+| 1 | 2 240 / 5 899 ms |
+| 8 | 3 090 / 7 763 ms |
+| 24 | 3 454 / 8 868 ms |
+
+What the numbers say, and what they do not:
+
+- **There is no cliff below 96 concurrent turns.** Zero failures at every level; turn latency
+  grows roughly linearly past 8, which is a queue, not a wall. Throughput plateaus around
+  175 req/s — that plateau is the process's own CPU (JSONL appends, projections, the poll loop),
+  and finding the exact knee needs a profiler, not a bigger number here.
+- **Reads are cheap and `/metrics` is cheaper**, but both degrade together with turns: one event
+  loop serves all three.
+- **The turn numbers include the driver's own polling.** `POST` answers `202` and the turn runs
+  in the background; this client waits by `GET /sessions/{id}` every 5 ms, which is itself load.
+  A real client streams `/events` instead, so treat the high-concurrency turn numbers as an
+  upper bound on latency and a lower bound on achievable rate.
+- **It does not measure a fleet.** One process, one core's worth of event loop; P16's replicas
+  are a separate question and this tool says nothing about them.
+- **It is not the deployment.** localhost, no TLS terminator, no reverse proxy, replay-free but
+  also disk-warm; a Caddy hop and a cold page cache both add milliseconds this table omits.
+
