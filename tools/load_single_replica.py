@@ -41,6 +41,9 @@ DEFAULT_CONCURRENCY = 8
 DEFAULT_REQUESTS = 40
 DEFAULT_TIMEOUT_S = 30.0
 TOKEN = "load-token"
+#: The key the replica signs and verifies credentials with. Read from the environment (never
+#: from a profile), and a fixed value here so a test never depends on the machine's `.env.local`.
+SIGNING_KEY = "load-test-signing-key"
 
 
 def percentile(samples: Sequence[float], q: float) -> float:
@@ -242,6 +245,11 @@ def start_server(
     environment["FORGEPILOT_DEV_TOKENS"] = json.dumps(
         [{"token": TOKEN, "principal_id": "alice", "tenant_id": "default"}]
     )
+    # The deployment's signing key, and it is not optional: without one the credentials it
+    # issues are unsigned and `authenticate` — correctly — refuses to open a scope from a
+    # credential nobody can verify. On a developer machine `.env.local` usually supplies this,
+    # which is exactly how CI failed with a 401 while the same test passed locally.
+    environment["FORGEPILOT_SIGNING_KEY"] = SIGNING_KEY
     command = [
         sys.executable,
         "-m",
