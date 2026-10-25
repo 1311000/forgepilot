@@ -204,6 +204,38 @@ The third state is the contract: a shared index with no checkout returns `None` 
 `ProxyServer=127.0.0.1:10792`) make every locally served index look unreachable — 20 tests
 red with no code change. Both index clients now pass `trust_env=False`, because a deployment
 that needs an egress proxy should configure one rather than inherit one silently.
+**P28 (the boundary, read against a shipped design) — complete.** The comparison exists
+because a boundary claim is worthless without knowing what "outside" would even buy. Reading
+NVIDIA OpenShell 0.1.0 (2026-09-28 announcement, public repo, no source at hand beyond the
+documents cited in the note) produced a 13-row table whose honest answer is *theirs stronger*
+for most of the rows that matter: enforcement lives outside the workload and here it lives in
+this process (only `run` crosses the sandbox), network policy is per-request OPA/Rego rather
+than all-or-nothing, credentials are substituted outside the workload rather than into a
+child's `argv`, and a policy prover can say what an agent cannot do. The system is *stronger*
+nowhere; it is *equal* on one-shot approval and audit, and `pre-execute` purity is **not
+comparable** — OpenShell has no phase that runs a hook before approval, so it neither has the
+defect nor the defence.
+
+The table's first effect was on this repository, not on the comparison: writing "the real
+credential never enters the workload" as a *theirs* row made the row above it read false.
+`docs/notes/threat-model.md` had said *"A credential never appears as a literal — the value
+lives in the environment"*, and the value does not live in the environment: it is substituted
+into the command string and sits in the child's `argv` while the command runs. The row now
+says so, names `runtime/credentials.py` as the mechanism, and points at a test that asserts
+both halves — the value in `argv`, the value in neither the result nor the log
+(`tests/security/test_a_secret_reaches_the_child_argv_and_not_the_log.py`, the first test
+written *because* the comparison made the sentence impossible to keep).
+
+Four things are decided rather than merely noticed, each with the condition that would reopen
+it: no supervisor-side credential proxy (until a deployment's credentials must not be readable
+by this process), no per-request protocol inspection (until a tool can issue arbitrary HTTP),
+no policy prover (until an agent can propose a policy change), and this table stands in place
+of a proof. `tests/contract/test_the_boundary_comparison_is_kept.py` keeps it honest: every
+row names a mechanism and a test that exist, verdicts come from a closed set, both external
+links are present, and the note says what it is not (a benchmark, a verdict on fitness) — the
+guard was falsified twice while being written, once by a dangling test path this author had
+written from memory.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.
