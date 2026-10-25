@@ -175,3 +175,87 @@ def test_a_caller_who_can_wait_gets_the_slow_shard_too(sharded: str) -> None:
     assert body["shards"]["failed"] == []
     assert f"{MONO.slug}#web" in body["shards"]["answered"]
     assert [hit["path"] for hit in body["hits"]] == ["web/app.py"]
+
+
+def _write_two_repo_index(path: Path, *, per_repo: int) -> Path:
+    def entry(slug: str, where: str) -> dict[str, Any]:
+        return {"repo": slug, "path": where, "ref": "main", "text": "def handle():\n    return 1\n"}
+
+    files = []
+    for slug in ("git.corp/team/one", "git.corp/team/two"):
+        for index in range(per_repo):
+            files.append(entry(slug, f"pkg/f{index:03d}.py"))
+    path.write_text(json.dumps({"files": files, "symbols": []}), encoding="utf-8")
+    return path
+
+
+@pytest.fixture(scope="module")
+def two_shards(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    work = tmp_path_factory.mktemp("two-shard-index")
+    index = _write_two_repo_index(work / "index.json", per_repo=10)
+    port = _free_port()
+    log = (work / "service.log").open("wb")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVE),
+            "--index",
+            str(index),
+            "--port",
+            str(port),
+            "--token",
+            f"{TOKEN}=*",
+        ],
+        cwd=str(FORGE),
+        stdout=subprocess.DEVNULL,
+        stderr=log,
+    )
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 30.0
+    try:
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                log.flush()
+                pytest.fail(
+                    f"the index service exited with {process.returncode}: "
+                    f"{(work / 'service.log').read_text(encoding='utf-8', errors='replace')[-2000:]}"
+                )
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            pytest.fail("the index service never accepted a connection")
+        yield base
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:  # pragma: no cover - only on a wedged process
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_the_hit_budget_is_shared_across_shards(two_shards: str) -> None:
+    """The reply cannot be longer than maxHits, however many shards answered.
+
+    A contract test, and deliberately not a proof of the per-shard division added at P32: the
+    endpoint already truncated the merged list, which is why this passes with or without that
+    change. What the division changes is the *work* -- each shard is asked for its share instead
+    of the whole budget -- and that is measured by 	ools/bench_scale.py, not asserted here.
+    The test stays because removing the truncation would let the reply grow with the shard
+    count, which a bench would report as latency instead of as the bound it is.
+    """
+
+    repos = (RepoRef("git.corp", "team", "one"), RepoRef("git.corp", "team", "two"))
+    constraints = ExecutionConstraints(
+        principal_id="alice", tenant_id="demo", allowed_repos=frozenset(repos)
+    )
+    service = HttpIndexService(two_shards, token=TOKEN, timeout_s=10.0)
+    import asyncio
+
+    hits = asyncio.run(
+        service.search(IndexQuery(pattern="def", repos=repos, ref="main", max_hits=6), constraints)
+    )
+    assert len(hits) == 6, f"asked for 6 hits, got {len(hits)} from two shards"

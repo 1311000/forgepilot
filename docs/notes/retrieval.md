@@ -725,3 +725,37 @@ What this still does not do: compute lag **without** a local checkout (a server-
 no checkout on the same machine has to be told what `HEAD` is by whoever pushed), and prove the
 ingest *ran* — the exporter reads `updated_at`, which a run that ingested one repository and
 crashed on the second still advances.
+
+## P32 — 60 000 files, and the two things the size exposed (2026-10-25)
+
+`tools/bench_scale.py` generates a reproducible tree (60 000 files across 20 synthetic
+repositories, 240 000 symbols, 42 MB of text, a 100.3 MB index), builds it, and measures the
+reference service over a real socket. Generate 13.9 s, build 18.8 s (3 191 files/s — synthetic
+files are small and parse faster than real code), a 200-file delta ingests at **805 files/s**.
+Search:
+
+| shape | in-process p95 | HTTP p95 (20 shards) |
+|---|---|---|
+| rare token (`needle_`) | 239.9 ms | 461.4 ms |
+| common token (`def`) | 108.4 ms | 342.0 ms |
+| glob (`pkg03/**`) | 111.0 ms | 4.0 ms |
+
+Three readings, in order of what they change:
+
+1. **`maxHits` was being spent per shard, not per request.** Twenty shards each returning the
+   caller's 200 hits meant the service did twenty times the work and truncated afterwards; the
+   per-shard share is now `maxHits / shards`, which took the rare-token p95 from 706 ms to
+   461 ms with no change to the reply.
+2. **The fan-out does not parallelize CPU-bound shards.** `asyncio.gather` over shard searches
+   that scan Python objects in-process is still one thread of work, so 20 shards cost about 20
+   shard scans. The 342–461 ms figures are the ceiling of *this* reference service, not of the
+   seam: a real index answers a token lookup with an inverted index, which is why the contract
+   separates "the client" from "the service that answers".
+3. **Glob queries are cheap because the path filter runs before the line scan** — 4 ms for
+   `pkg03/**` against 60 000 files. That is a property worth keeping in mind when a deployment
+   considers turning scoped search into a full-corpus search.
+
+What these numbers are not: recall (a synthetic corpus has no real entropy, so `P26`'s 0.968 is
+the number that means something), enterprise p95 (the service is Python scanning objects), or a
+multi-replica figure (that is a different process count, not a different corpus).
+

@@ -35,7 +35,7 @@ import fnmatch
 import os
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -461,15 +461,23 @@ def build_app(
         )
         chosen, skipped = choose_shards(app.state.shards, tuple(repos), query.globs)
         deadline_s = _deadline(body, app.state)
+        # A hit budget is a budget for the **answer**, not for each shard. Asking twenty shards
+        # for 200 hits returns up to 4 000, and at 60 000 files that turned a 200-hit request
+        # into a 700 ms reply (measured by `tools/bench_scale.py`): the cost was serialising
+        # hits the caller had already said it did not want. Divide the budget and truncate the
+        # merge, so the number the caller asked for is the number it pays for.
+        per_shard = max(1, -(-query.max_hits // max(len(chosen), 1)))
+        shard_query = replace(query, max_hits=per_shard)
 
         async def ask(shard_corpus: Any, shard: Any) -> list[Any]:
             await _maybe_slow(app, shard.name)
-            return await shard_corpus.search(query, constraints)
+            return await shard_corpus.search(shard_query, constraints)
 
         found, failed, answered = await fan_out(chosen, ask, deadline_s=deadline_s)
         found.sort(
             key=lambda hit: (-hit.score, hit.location.repo.slug, hit.location.path, hit.line)
         )
+        found = found[: query.max_hits]
         return {
             "shards": {
                 "answered": list(answered),
