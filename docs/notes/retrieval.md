@@ -583,6 +583,50 @@ socket — the table and the count line, an empty answer exiting 0, a refused to
 an unreachable port exiting 2 **without** printing the empty-answer line, the two usage errors,
 and `--dependents` refusing to combine with `--index-update`.
 
+## P26 — a real corpus, and the number a synthetic one could not give (2026-10-25)
+
+Two checkouts, not a generator: this repository (`519` tracked files) and the astropy
+`5.0` checkout the SWE-bench spike left behind (`~1 800` tracked files). The bench mode is
+`tools/bench_index.py --corpus SLUG=PATH` — `git ls-files` for the file set, `symbols_for`
+for the symbol table, one shard per repository.
+
+| | |
+|---|---|
+| corpus | **2 316 file(s), 20 862 symbol(s)**, 31.4 MB of text, 37.5 MB of index |
+| build | 15.2 s (parse + symbol extraction, one process) |
+| skipped | 4 files over 512 KiB, 75 not UTF-8 (all astropy fixtures) |
+| query, exact symbol name | p50 231 ms, p95 **238 ms**, 1 954 hits / 40 queries |
+| query, common word (`def`) | p50 35 ms, p95 **36 ms**, 8 000 hits (hit the page cap) |
+| query, `def` + `src/**` | p50 33 ms, p95 **34 ms** |
+
+**Recall is measurable now, and the misses are not coverage.** Sampled 200 symbols, asked
+each one twice — `/symbols` by name, `/search` by the name as text — and counted whether the
+*defining file* came back in the first page:
+
+| sample | `/symbols` definition | `/symbols` rank 1 | `/search` definition | `/search` rank 1 |
+|---|---|---|---|---|
+| overall (n=212) | 0.906 | 0.623 | 0.849 | 0.481 |
+| unambiguous (n=188) | **0.968** | 0.691 | 0.894 | 0.543 |
+
+The bucket matters. A probe over the same sample checked whether every sampled
+`(repo, path, name)` was in the index at all: **0 of 150 were missing**. What fails is
+*paging*: `__init__` alone has **576** definitions in this corpus, `setup_class` 118,
+`evaluate` 94 — ask for one of those and the defining file can be past `max_hits`, with
+nothing in the answer saying the page was cut. That is the defect shape one level up (an
+answer that is correct and incomplete without saying so), and the fix is a `truncated` flag
+on `/symbols` and `/search`, which this milestone does **not** do — it measures the cost
+instead, and the two rows above are that cost.
+
+**What the latency numbers are not.** The reference service matches with `IndexCorpus` in
+Python, deliberately (`tools/serve_index.py` line 19: a second matcher would make "the same
+query" mean two things). So a query is a scan of the corpus text, and the cap explains the
+gap between the rows: a common word stops after 200 hits, a rare name reads everything. These
+are **not** evidence about an enterprise deployment's p95 — an inverted index would not scan
+— and they are not comparable to the P21 synthetic numbers, which were measured on a
+generator's small strings. What they do establish is the shape of the cost on real text:
+~31 MB of source is ~240 ms per un-narrowed full scan in one process, and a narrowed glob
+does not pay for it because the shards that cannot match are never asked.
+
 ## P25 — the freshness rule gets a reader (2026-10-25)
 
 `lag()` was written at P11 and had no caller in `src/`: a pure function that could say

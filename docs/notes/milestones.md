@@ -236,6 +236,27 @@ links are present, and the note says what it is not (a benchmark, a verdict on f
 guard was falsified twice while being written, once by a dangling test path this author had
 written from memory.
 
+**P26 (a real corpus, and a recall number) — complete.** Every latency figure in this log
+before now came from a generated corpus whose needles were planted, so it could not answer
+"does the index find the definition". `tools/bench_index.py --corpus SLUG=PATH` indexes real
+checkouts instead — `git ls-files` for the file set, `symbols_for` for the table — and this
+milestone ran it on two: this repository and the astropy 5.0 checkout the SWE-bench spike
+left behind. **2 316 files, 20 862 symbols, 31.4 MB of text, 37.5 MB of index, 15.2 s to
+build.** Latency: p95 **238 ms** for a rare exact name, **36 ms** for a word that fills the
+page, **34 ms** when a glob narrows it.
+
+The number that only a real corpus can give is recall: sample 200 symbols, ask `/symbols` and
+`/search` for each, and count whether the defining file comes back — **0.968 / 0.894** among
+unambiguous names. The misses are not coverage: a probe found **0 of 150** sampled rows absent
+from the index. They are **paging** — `__init__` has 576 definitions here, and a page of 50
+says nothing about having been cut. That is the defect shape again (a correct answer that is
+silently incomplete), measured rather than fixed: the fix is a `truncated` flag on the wire,
+and the doc records the cost instead of pretending the sample speaks for the index.
+
+One caveat that had to be written down: the reference service matches in Python by design, so
+these are **scan** latencies, not inverted-index latencies, and they are not evidence about an
+enterprise p95. What they establish is the cost shape on real text.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.

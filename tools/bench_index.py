@@ -182,13 +182,256 @@ def measure(base: str, *, repos: int, queries: int) -> dict[str, Any]:
     return {"shards": shards, "all": all_shards, "narrow": narrowed}
 
 
+# --- a real checkout, because a synthetic corpus cannot answer a recall question ---------
+#
+# The synthetic corpus above measures latency at a size somebody chose. It cannot answer
+# "does the index find the definition", because its needles were planted: every query has a
+# known answer that was written next to it. A real checkout has real names, real collisions
+# (`__init__`, `test_...`, `setup`) and symbols whose defining line the index has to have
+# parsed correctly — so it is the only corpus on which a recall number means anything.
+
+MAX_FILE_BYTES = 512 * 1024
+
+
+def _git(root: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=120
+    )
+    return done.stdout.decode("utf-8", "replace")
+
+
+def _tracked(root: Path) -> list[str]:
+    raw = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        check=True,
+        timeout=120,
+    ).stdout
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def build_real_corpus(
+    targets: list[tuple[str, Path]], path: Path
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Index real checkouts. Returns the payload and the symbol rows that were indexed."""
+    from forgepilot.providers.retrieve.index import symbols_for
+
+    payload: dict[str, Any] = {"files": [], "symbols": []}
+    skipped = {"binary": 0, "large": 0}
+    for slug, root in targets:
+        ref = _git(root, "rev-parse", "HEAD").strip()
+        if _git(root, "status", "--porcelain").strip():
+            ref = f"{ref}+dirty"
+        for relative in _tracked(root):
+            source = root / relative
+            if not source.is_file():
+                continue
+            if source.stat().st_size > MAX_FILE_BYTES:
+                skipped["large"] += 1
+                continue
+            try:
+                text = source.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                skipped["binary"] += 1
+                continue
+            payload["files"].append({"repo": slug, "path": relative, "ref": ref, "text": text})
+            if relative.endswith(".py"):
+                for hit in symbols_for(text, repo=slug, path=relative, ref=ref):
+                    payload["symbols"].append(
+                        {
+                            "repo": hit.location.repo,
+                            "path": hit.location.path,
+                            "ref": hit.location.ref,
+                            "name": hit.name,
+                            "kind": hit.kind,
+                            "start": hit.span.start,
+                            "end": hit.span.end,
+                        }
+                    )
+        print(f"  {slug}: {root}")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    print(
+        f"  skipped: {skipped['large']} over {MAX_FILE_BYTES} bytes, {skipped['binary']} not UTF-8"
+    )
+    return payload, payload["symbols"]
+
+
+def _recall(
+    client: httpx.Client, *, symbols: list[dict[str, Any]], sample: int, seed: int = 7
+) -> dict[str, Any]:
+    """How often the index hands back the file a symbol is defined in.
+
+    Two questions, because they are two mechanisms: ``/symbols`` is the symbol table and
+    ``/search`` is full text. A name that appears in forty files is not a failure of either —
+    so the measure is *the defining file appears in the first page*, and ``top1`` is reported
+    beside it because a definition at rank 19 is a different product from one at rank 0.
+
+    ⚠️ The sample is bucketed by **ambiguity**, because that is what the misses turn out to
+    be. On this corpus the symbol table holds every definition (a probe found 0 of 150
+    sampled rows missing), and the misses are names with more definitions than a page holds:
+    ``__init__`` alone has 576. A single recall number over such a sample measures the
+    sample's name mix, not the index — so both the overall and the unambiguous figure are
+    printed, and the gap between them is the truncation cost.
+    """
+    counts: dict[str, int] = {}
+    for row in symbols:
+        counts[row["name"]] = counts.get(row["name"], 0) + 1
+    page = 50  # the default max_hits of a symbol query
+    rng = random.Random(seed)
+    chosen = rng.sample(symbols, min(sample, len(symbols)))
+    tallies = {
+        "all": [0, 0, 0, 0, 0],  # sampled, symbols hit, symbols top1, search hit, search top1
+        "unambiguous": [0, 0, 0, 0, 0],
+    }
+    for row in chosen:
+        bucket = "all" if counts[row["name"]] > page else "unambiguous"
+        for key in ("all", bucket):
+            tallies[key][0] += 1
+        wanted = {"repos": [row["repo"]], "ref": row["ref"]}
+        table = client.post("/symbols", json={**wanted, "name": row["name"]}).json()
+        rows = [hit for hit in table.get("symbols", ()) if hit.get("path") == row["path"]]
+        text_answer = client.post("/search", json={**wanted, "pattern": row["name"]}).json()
+        hits = text_answer.get("hits", ())
+        for key in ("all", bucket):
+            if rows:
+                tallies[key][1] += 1
+                tallies[key][2] += 1 if table["symbols"][0].get("path") == row["path"] else 0
+            if any(hit.get("path") == row["path"] for hit in hits):
+                tallies[key][3] += 1
+                tallies[key][4] += 1 if hits and hits[0].get("path") == row["path"] else 0
+
+    def _row(values: list[int]) -> dict[str, Any]:
+        total = values[0]
+        return {
+            "sampled": total,
+            "symbols_recall": round(values[1] / total, 3) if total else 0.0,
+            "symbols_top1": round(values[2] / total, 3) if total else 0.0,
+            "search_recall": round(values[3] / total, 3) if total else 0.0,
+            "search_top1": round(values[4] / total, 3) if total else 0.0,
+        }
+
+    return {"overall": _row(tallies["all"]), "unambiguous": _row(tallies["unambiguous"])}
+
+
+def _latency(
+    client: httpx.Client, *, slugs: list[str], names: list[str], queries: int
+) -> dict[str, Any]:
+    """Three shapes: an exact symbol name, a common word, and a narrowed glob."""
+    shapes: dict[str, dict[str, Any]] = {}
+    for label, payload in (
+        ("symbol name", {"pattern": "clamp"}),
+        ("common word", {"pattern": "def"}),
+        ("narrow glob", {"pattern": "def", "globs": ["src/**"]}),
+    ):
+        latencies: list[float] = []
+        hits = 0
+        for index in range(queries):
+            body = {**payload, "repos": slugs, "ref": None}
+            if label == "symbol name":
+                body["pattern"] = names[index % len(names)]
+            started = time.perf_counter()
+            answer = client.post("/search", json=body).json()
+            latencies.append((time.perf_counter() - started) * 1000.0)
+            hits += len(answer.get("hits", ()))
+        shapes[label] = {
+            "hits": hits,
+            "p50_ms": round(_percentile(latencies, 0.50), 2),
+            "p95_ms": round(_percentile(latencies, 0.95), 2),
+            "max_ms": round(max(latencies), 2),
+        }
+    return shapes
+
+
+def run_real(args: argparse.Namespace) -> int:
+    from forgepilot.seams.refs import RepoRef
+
+    targets: list[tuple[str, Path]] = []
+    for entry in args.corpus:
+        slug, _, where = entry.partition("=")
+        parts = slug.split("/")
+        if len(parts) != 3 or not all(parts):
+            print(f"not a repository slug: {slug!r} (want host/namespace/name)", file=sys.stderr)
+            return 2
+        repo = RepoRef(host=parts[0], namespace=parts[1], name=parts[2])
+        root = Path(where).resolve()
+        if not (root / ".git").exists():
+            print(f"not a checkout: {root}", file=sys.stderr)
+            return 2
+        targets.append((repo.slug, root))
+    if not targets:
+        print("--corpus needs at least one SLUG=PATH", file=sys.stderr)
+        return 2
+
+    work = args.work or (FORGE / ".tmp" / "bench-real")
+    work.mkdir(parents=True, exist_ok=True)
+    index = work / "index.json"
+    started = time.perf_counter()
+    payload, symbols = build_real_corpus(targets, index)
+    build_s = time.perf_counter() - started
+    text_bytes = sum(len(row["text"]) for row in payload["files"])
+    print(
+        f"corpus: {len(payload['files'])} file(s), {len(symbols)} symbol(s), "
+        f"{text_bytes / 1e6:.1f} MB of text, {index.stat().st_size / 1e6:.1f} MB on disk, "
+        f"built in {build_s:.1f}s"
+    )
+
+    slugs = [slug for slug, _ in targets]
+    process, base = _start(index, layout=args.shard_by)
+    try:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        with httpx.Client(base_url=base, headers=headers, timeout=120.0) as client:
+            client.post("/search", json={"pattern": "def", "repos": slugs, "ref": None})
+            latency = _latency(
+                client, slugs=slugs, names=[row["name"] for row in symbols], queries=args.queries
+            )
+            recall = _recall(client, symbols=symbols, sample=args.sample)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:  # pragma: no cover - only on a wedged process
+            process.kill()
+            process.wait(timeout=20)
+
+    print()
+    print("| query shape | hits | p50 ms | p95 ms | max ms |")
+    print("|---|---|---|---|---|")
+    for label, row in latency.items():
+        print(f"| {label} | {row['hits']} | {row['p50_ms']} | {row['p95_ms']} | {row['max_ms']} |")
+    print()
+    print(
+        "| recall | n | `/symbols` definition | `/symbols` rank 1 | `/search` definition | `/search` rank 1 |"
+    )
+    print("|---|---|---|---|---|---|")
+    for label, row in recall.items():
+        print(
+            f"| {label} | {row['sampled']} | {row['symbols_recall']} | {row['symbols_top1']} | "
+            f"{row['search_recall']} | {row['search_top1']} |"
+        )
+    print()
+    print(json.dumps({"files": len(payload["files"]), "symbols": len(symbols), **recall}))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="measure the sharded index")
     parser.add_argument("--files", type=int, default=10_000)
     parser.add_argument("--repos", type=int, default=20)
     parser.add_argument("--queries", type=int, default=60)
     parser.add_argument("--work", type=Path, default=None)
+    parser.add_argument(
+        "--corpus",
+        action="append",
+        default=[],
+        metavar="SLUG=PATH",
+        help="index a real checkout instead of the synthetic corpus (repeatable)",
+    )
+    parser.add_argument("--sample", type=int, default=200, help="symbols to sample for recall")
+    parser.add_argument("--shard-by", choices=("repo", "top-dir"), default="repo")
     args = parser.parse_args(argv)
+
+    if args.corpus:
+        return run_real(args)
 
     work = args.work or (FORGE / ".tmp" / "bench-index")
     work.mkdir(parents=True, exist_ok=True)
