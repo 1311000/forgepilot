@@ -34,6 +34,7 @@ from urllib.parse import quote
 from forgepilot.kernel import PluginService
 from forgepilot.seams.approval import ApprovalOutcome, ApprovalRequest
 from forgepilot.seams.coordination import (
+    SERVICE_NAME,
     CoordinationUnavailable,
     Lease,
 )
@@ -171,14 +172,30 @@ class FileCoordination:
             except FileNotFoundError:
                 pass
 
-    async def holder(self, session_id: SessionId) -> str | None:
+    async def holder(self, session_id: SessionId) -> Lease | None:
+        """The live lease, not just the name on it.
+
+        The seam declares ``Lease | None`` and this method used to return ``str | None`` -- a
+        mismatch nothing caught, because every caller only asked "is it None". The facade caught
+        it: ``registry.owner_of`` read ``lease.holder`` off a string. Returning the whole record
+        is also the more useful answer, since the fencing number is what tells a caller whether
+        the lease it saw is still the current one.
+        """
         current = _read_json(self._lease_path(session_id))
         if current is None:
             return None
-        if float(current.get("expires_at", 0.0)) <= self.clock():
+        expires_at = float(current.get("expires_at", 0.0))
+        if expires_at <= self.clock():
             return None
         holder = current.get("holder")
-        return str(holder) if holder is not None else None
+        if holder is None:
+            return None
+        return Lease(
+            session_id=session_id,
+            holder=str(holder),
+            fencing=int(current.get("fencing", 0)),
+            expires_at=expires_at,
+        )
 
     # -- writers and the deployment lease ----------------------------------
     async def join_writers(self, *, holder: str, ttl_s: float) -> Lease | None:
@@ -313,7 +330,14 @@ class FileCoordination:
 
 @dataclass
 class FileCoordinationPlugin(PluginService):
-    """The ``coordination`` row. Config keys: ``state_dir``, ``poll_s``."""
+    """The ``coordination`` row. Config keys: ``state_dir``, ``poll_s``.
+
+    ``provide`` is load-bearing: without it the kernel refuses the row with "service name is
+    required", so the shipped ``bundles/coordination/patch.yaml`` was a bundle nothing could
+    boot -- the tests built ``FileCoordination`` directly and never went through the row.
+    """
+
+    provide = SERVICE_NAME
 
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx)
@@ -335,7 +359,7 @@ class FileCoordinationPlugin(PluginService):
     async def release(self, lease: Lease) -> None:
         await self._files.release(lease)
 
-    async def holder(self, session_id: SessionId) -> str | None:
+    async def holder(self, session_id: SessionId) -> Lease | None:
         return await self._files.holder(session_id)
 
     async def post_approval(self, request: ApprovalRequest, *, expires_at: float) -> None:

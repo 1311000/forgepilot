@@ -1,0 +1,87 @@
+# Two API replicas over one state volume, behind the same TLS terminator.
+#
+# This is `compose.yaml` with a second `api` service and `--multi-replica` on both.
+# Everything the replicas must share is the `state` volume:
+#
+#   /data/sessions      the append-only log (one file per session, tenant subdirectories)
+#   /data/leases        the coordinator's leases: one session has one writer
+#   /data/mailbox       the shared approval mailbox, answered by whichever replica a
+#                       human's request lands on
+#
+# Three things are deliberately *not* solved here, and each is a decision recorded in
+# `docs/notes/deployment.md`:
+#
+# 1. The volume is a local Docker volume, i.e. one host. A network filesystem that
+#    implements `fcntl` record locks across clients is a different product; the lease
+#    would still work (it is `O_CREAT|O_EXCL` plus a rename) but the JSONL append
+#    lock is advisory and NFS's advisory locks are the classic way to lose a log.
+# 2. The database session store (`bundles/session_sqlite`) is not used here. It
+#    assigns `seq` inside a transaction, which is what a *shared database* would
+#    need; a SQLite file on a volume two hosts mount is not that database.
+# 3. `--multi-replica` disables the single-server lock on purpose. Two processes
+#    over one state directory is exactly what it is for; a third copy started by
+#    hand would corrupt the log, so the lock is the deployment's job now (one
+#    service definition, N replicas under an orchestrator that owns the name).
+#
+# Usage:
+#   docker compose -f deploy/compose.two.yaml up --build
+#   curl -k https://localhost/healthz
+
+name: forgepilot
+
+x-replica: &replica
+  image: forgepilot:local
+  restart: unless-stopped
+  command:
+    - "--patch"
+    - "src/forgepilot/bundles/coordination/patch.yaml"
+    - "--serve"
+    - "--multi-replica"
+    - "--host"
+    - "0.0.0.0"
+    - "--port"
+    - "8000"
+    - "--workspace"
+    - "/workspace"
+  environment:
+    FORGEPILOT_HOME: /data
+    FORGEPILOT_TMP: /data/workspaces
+    FORGEPILOT_DEV_TOKENS: ${FORGEPILOT_DEV_TOKENS:?FORGEPILOT_DEV_TOKENS must be set}
+    FORGEPILOT_SIGNING_KEY: ${FORGEPILOT_SIGNING_KEY:?FORGEPILOT_SIGNING_KEY must be set}
+    FORGEPILOT_LLM_API_KEY: ${FORGEPILOT_LLM_API_KEY:-}
+    FORGEPILOT_LLM_BASE_URL: ${FORGEPILOT_LLM_BASE_URL:-}
+    FORGEPILOT_LLM_MODEL: ${FORGEPILOT_LLM_MODEL:-}
+    FORGEPILOT_GITHUB_TOKEN: ${FORGEPILOT_GITHUB_TOKEN:-}
+  volumes:
+    - state:/data
+    - ${FORGEPILOT_WORKSPACE:-../examples/stat-fix}:/workspace
+  expose:
+    - "8000"
+
+services:
+  api-a:
+    <<: *replica
+  api-b:
+    <<: *replica
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api-a
+      - api-b
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile.two:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  state:
+  caddy_data:
+  caddy_config:

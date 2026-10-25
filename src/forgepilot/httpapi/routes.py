@@ -234,9 +234,21 @@ def build_router(
         connection open would make that approval undeliverable. The client
         follows the turn on the event stream.
         """
-        live = _owned(registry, session_id, cred)
-        # The busy check comes first, and `start_turn` takes a *factory* rather
-        # than a coroutine. Building the coroutine eagerly would leave it
+        try:
+            live = _owned(registry, session_id, cred)
+        except ApiError as exc:
+            if exc.status != 404:
+                raise
+            owner = await _known_elsewhere(registry, session_id, cred)
+            if owner is None:
+                raise
+            # 409, not 404: the session exists and a replica is running it, just not
+            # this one. A client that retried here would queue behind a lease this
+            # process can never take, so the owner is named.
+            raise ApiError(
+                409, f"another replica ({owner}) is running session {session_id}"
+            ) from exc
+        # The busy check comes first, and `start_turn` takes a *factory* rather        # than a coroutine. Building the coroutine eagerly would leave it
         # un-awaited whenever the check refused — a `RuntimeWarning` at best, and
         # a coroutine that never ran at worst, which is the kind of thing that
         # gets explained away as noise.
@@ -403,6 +415,28 @@ def _owned(registry: SessionRegistry, session_id: str, cred: Any):
     except SessionNotFound as exc:
         # 404 for "not yours" too: a 403 would confirm that the id exists.
         raise ApiError(404, f"no session {session_id!r}") from exc
+
+
+async def _known_elsewhere(registry: Any, session_id: str, cred: Any) -> str | None:
+    """The replica running this session, if it is one this principal may see at all.
+
+    Called only after the live lookup said "not here". Two answers are being kept
+    apart: a session that exists and is being run by somebody else (409, with the
+    owner named) and a session this principal has no business knowing about (404,
+    unchanged). The store's header is the second test because the lease alone would
+    make a stranger's session id answerable.
+    """
+    owner = await registry.owner_of(SessionId(session_id))
+    if owner is None:
+        return None
+    store = registry.root.sessionPersistence
+    try:
+        header = await store.header(SessionId(session_id))
+    except KeyError:
+        return None
+    if header.principal != str(cred.principal.principal_id):
+        return None
+    return owner
 
 
 async def _open_session(

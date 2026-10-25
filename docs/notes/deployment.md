@@ -345,3 +345,63 @@ tool behind a tiny HTTP wrapper. Two things this does not do: it does not push t
 the API's `/metrics` (that process has no checkouts — the fact lives beside the repositories), and
 it does not run the ingest itself. A freshness check that also fixed things would hide the
 failures it exists to report.
+
+## P33 — two replicas, run for real (2026-10-25)
+
+`tools/two_replicas.py` starts **two** `--serve --multi-replica` processes over one state
+directory and drives seven checks against them. `tests/tools/test_two_replicas.py` runs the same
+scenario inside the ordinary gate, so the Linux CI job is the end-to-end proof that this shape
+works on the platform it ships to.
+
+| check | what it proves |
+|---|---|
+| a session is created on replica A | the store is shared, not per-process |
+| A starts a turn | the lease is taken by A |
+| B is refused while A runs it, and the refusal names the other replica | one writer per session, across a process boundary |
+| B reads the log A wrote | the JSONL append is visible to the other process |
+| B streams A's turn from the shared log | SSE tails the log, not a queue in A |
+| B runs its own turn | the lease is released, not merely expired |
+| A reads the session B ran | the second replica's writes are equally visible |
+
+`deploy/compose.two.yaml` is that shape as a deployment (two API services, one `state` volume,
+`--multi-replica` and the coordination bundle on both) with `deploy/Caddyfile.two` balancing
+round-robin in front. Both files were validated with `docker compose -f deploy/compose.two.yaml
+config`, and `tests/contract/test_the_two_replica_deployment_is_coherent.py` keeps them from
+drifting — a replica added to compose and not to the proxy is traffic that never arrives.
+
+### What the run found, and why an in-process test could not
+
+Three defects, all invisible to P16's two-registry test:
+
+1. **`EchoLLMPlugin` offered `chunks()`, and the loop calls `llm.stream()`.** Every echo turn
+   therefore ended `turn/end {"reason": "error"}` with `usage.calls == 0`. The provider's own
+   tests called `chunks` directly, so they passed. A load test built on it measured a failure
+   path that happens to be fast.
+2. **The `coordination` bundle could not boot at all** — it used the `patches:` mapping form
+   without `entries:` (rejected at load), and `FileCoordinationPlugin` had no `provide`. A
+   deployment that followed the documentation would have failed to start rather than run without
+   a lease, which is at least the loud direction, but nothing had ever loaded the bundle except
+   the test that imported the class.
+3. **`FileCoordination.holder` returned a string where the seam declares `Lease | None`.** Every
+   in-process caller only asked "is it None", so the type was never exercised; the two-replica
+   refusal was the first caller that needed the holder's *name*.
+
+### The P30 numbers, re-measured (2026-10-25)
+
+The single-replica table above was produced while the echo provider was failing every turn. The
+error happened after projection (the request was built, the provider was called, the stream was
+empty), so the timings were close — but they were timings of a turn that ended in failure, which
+is not what the table claims to measure. Re-measured with a provider that satisfies the seam, on
+the same machine, the shape is the same within noise:
+
+| concurrency | turn p50/p95/p99 (ms) | read p50/p95 (ms) |
+|---|---|---|
+| 1 | 16 / 22 / 72 | 4 / 4 |
+| 8 | 53 / 120 / 180 | 19 / 55 |
+| 24 | 201 / 620 / 1150 | 96 / 434 |
+| 48 | 487 / 571 / 571 | 146 / 274 |
+| 96 | 946 / 1212 / 1226 | 302 / 319 |
+
+Zero failures at every level; throughput plateaus around 175–210 req/s. The lesson is not the
+number — it is that a load test with no assertion about **what the request did** measures a
+server that is very fast at saying no.

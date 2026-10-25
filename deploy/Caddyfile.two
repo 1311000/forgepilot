@@ -1,0 +1,34 @@
+# TLS termination in front of **two** API replicas.
+#
+# The only difference from `Caddyfile` that matters is the upstream list. Caddy's
+# default policy is round-robin, which is what a client wants here: any replica can
+# answer `/sessions` (the store is shared), can stream a session it is not running
+# (the log is the source), and refuses a turn someone else is running with a 409 that
+# names the other replica — so a request landing on the "wrong" box is a redirect the
+# client does not have to make.
+#
+# Sticky sessions are deliberately not configured. They would hide the one behaviour
+# worth seeing in a two-replica deployment — that a session started on A is readable
+# and streamable from B — behind a load balancer that happens to keep the client on A.
+#
+# `flush_interval -1` stays: an SSE response buffered by the proxy is a progress page
+# that looks frozen and then delivers everything at once.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+
+	reverse_proxy api-a:8000 api-b:8000 {
+		lb_policy round_robin
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

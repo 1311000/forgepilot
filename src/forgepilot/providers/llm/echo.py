@@ -15,10 +15,15 @@ while every answer was a canned sentence.
 Its usage numbers are zeros on purpose. Reporting a plausible-looking token count would make
 `turn/usage` events in a load run indistinguishable from a real run's, and the price in the log
 of a benchmark that called nobody should be exactly zero.
+
+`delay_s` is a test instrument, not a feature: a canned answer arrives in microseconds, so a
+test that needs to observe a turn *while it is running* — the two-replica test observing the
+lease from the other process — has no window unless the answer is held open. Zero by default.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -49,6 +54,10 @@ class EchoLLMPlugin(PluginService):
         super().__init__(ctx)
         cfg = dict(config or {})
         self.model: str = str(cfg.get("model", "echo-0"))
+        delay = cfg.get("delay_s", 0.0)
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < 0:
+            raise ValueError(f"delay_s must be a number of seconds, not {delay!r}")
+        self.delay_s: float = float(delay)
         #: Every request this provider has seen, in order — public on purpose.
         self.requests: list[ChatRequest] = []
 
@@ -60,10 +69,20 @@ class EchoLLMPlugin(PluginService):
             supports_system_prompt=True,
         )
 
-    def chunks(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
+    def stream(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
+        """The seam's streaming method -- `stream`, not `chunks`.
+
+        The first version of this provider offered `chunks`, which is not a method the protocol
+        declares: `log_guard.guarded_stream` calls `llm.stream(...)`, so every echo turn ended
+        with `turn/end {"reason": "error"}` and the load test that introduced this provider
+        measured a failing path. Its unit tests passed because they called `chunks` directly --
+        a test of a method nobody calls.
+        """
         self.requests.append(request)
 
         async def _generate() -> AsyncIterator[StreamChunk]:
+            if self.delay_s:
+                await asyncio.sleep(self.delay_s)
             yield StreamChunk(kind="text", text=ANSWER)
             yield StreamChunk(kind="usage", usage=Usage())
             yield StreamChunk(kind="done")
@@ -72,6 +91,8 @@ class EchoLLMPlugin(PluginService):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
+        if self.delay_s:
+            await asyncio.sleep(self.delay_s)
         return ChatResponse(
             message=ChatMessage(role="assistant", content=ANSWER),
             usage=Usage(),

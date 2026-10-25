@@ -458,6 +458,20 @@ class SessionRegistry:
             return live is not None
         return await self.coordinator.holder(session_id) is not None
 
+    async def owner_of(self, session_id: SessionId) -> str | None:
+        """Which replica holds the lease on this session, if any.
+
+        A request for a session this replica has never seen used to be
+        indistinguishable from a request for a session that does not exist: both
+        answered 404. With a lease the two are different, and the difference is
+        the one a client needs — "somebody else is running it" is a 409 it can
+        act on, "there is no such session" is a 404 it cannot.
+        """
+        if self.coordinator is None:
+            return None
+        lease = await self.coordinator.holder(session_id)
+        return None if lease is None else lease.holder
+
     def install(self) -> None:
         """Become the approval service's answerer.
 

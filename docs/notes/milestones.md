@@ -306,6 +306,17 @@ nearest-rank percentiles, one JSON row); `tests/providers/test_the_index_is_shar
 contract test that the reply never exceeds `maxHits`, with a docstring that says plainly it is
 not a proof of the per-shard division.
 
+- **P33 (two replicas, run for real) — complete.** `tools/two_replicas.py` starts two
+  `--serve --multi-replica` processes over one state directory and drives seven checks; it is in
+  the gate (`tests/tools/test_two_replicas.py`), so Linux CI is the end-to-end proof. The first
+  run passed 4/7 and the three failures were real: the echo provider offered `chunks()` where the
+  loop calls `llm.stream()` (so **P30's load table measured turns that ended in `error`** — the
+  numbers were re-measured and are within noise, but the old row was measuring the wrong thing),
+  the `coordination` bundle could not boot (mapping form without `entries:`, and a plugin with no
+  `provide`), and `FileCoordination.holder` returned a string where the seam says `Lease | None`.
+  `deploy/compose.two.yaml` + `deploy/Caddyfile.two` are the deployment shape, validated with
+  `docker compose config` and guarded by a contract test against drift.
+
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.

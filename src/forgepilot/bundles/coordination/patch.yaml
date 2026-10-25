@@ -5,13 +5,17 @@
 # `--patch src/forgepilot/bundles/coordination/patch.yaml` *and* run more than one
 # server against one state directory; `--serve --multi-replica` is what tells
 # serve_lock that the lock is not wanted.
-patches:
-  - id: coordination
-    plugin: forgepilot.providers.coordination.files:FileCoordinationPlugin
-    config:
-      # `state_dir` is omitted on purpose: the provider defaults to
-      # $FORGEPILOT_HOME (or ~/.forgepilot), the same directory the watermark store
-      # and the env loader use, so there is one answer to "where does this
-      # installation keep its files".
-      poll_s: 0.1
-    tier: trusted
+#
+# The layer is a bare list, like every other bundle this repository ships: the
+# `patches:` mapping form is for a different reader, and writing it here made the
+# bundle fail to load with "mapping form requires an 'entries' key" -- a bundle no
+# test loaded, because the tests built `FileCoordination` directly.
+- id: coordination
+  plugin: forgepilot.providers.coordination.files:FileCoordinationPlugin
+  config:
+    # `state_dir` is omitted on purpose: the provider defaults to
+    # $FORGEPILOT_HOME (or ~/.forgepilot), the same directory the watermark store
+    # and the env loader use, so there is one answer to "where does this
+    # installation keep its files".
+    poll_s: 0.1
+  tier: trusted

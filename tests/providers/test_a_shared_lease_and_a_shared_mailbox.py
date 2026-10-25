@@ -45,7 +45,13 @@ async def test_a_live_lease_is_not_taken_by_a_second_replica(tmp_path: Path) -> 
     lease = await a.acquire(SESSION, holder="replica-a", ttl_s=30.0)
     assert lease is not None
     assert await b.acquire(SESSION, holder="replica-b", ttl_s=30.0) is None
-    assert await b.holder(SESSION) == "replica-a"
+    # A lease, not a name: the seam declares `Lease | None`, and returning a string here is
+    # exactly the mismatch that made `registry.owner_of` raise AttributeError in the
+    # two-replica test. The fencing number is the part a caller needs and a name cannot carry.
+    seen = await b.holder(SESSION)
+    assert seen is not None
+    assert seen.holder == "replica-a"
+    assert seen.fencing == 1
 
 
 async def test_the_holder_does_not_steal_its_own_live_lease(tmp_path: Path) -> None:

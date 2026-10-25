@@ -49,11 +49,24 @@ async def test_it_advertises_no_tool_calling(provider) -> None:
 
 @pytest.mark.asyncio
 async def test_its_usage_is_zero_rather_than_plausible(provider) -> None:
-    response = drain_stream([chunk async for chunk in provider.chunks(a_request())])
+    response = drain_stream([chunk async for chunk in provider.stream(a_request())])
     usage = response.usage
     assert usage.input_tokens == 0
     assert usage.output_tokens == 0
     assert usage.cost_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_method_it_offers_is_the_one_the_loop_calls(provider) -> None:
+    """`stream`, not a convenience method: `guarded_stream` calls exactly this one.
+
+    This is the regression test for the defect the two-replica test found: the provider used to
+    offer `chunks`, its own tests called `chunks`, and every echo turn in the load test ended
+    `reason: error` -- so P30's first latency table measured a failing path.
+    """
+    assert hasattr(provider, "stream")
+    chunks = [chunk async for chunk in provider.stream(a_request())]
+    assert drain_stream(chunks).message.content == ANSWER
 
 
 @pytest.mark.asyncio
