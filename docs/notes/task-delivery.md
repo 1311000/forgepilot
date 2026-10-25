@@ -560,3 +560,29 @@ runs a command that fails once and passes on its second run, and asserts the
 delivery, the flaky meta, the log event and the body line. Setting the wiring back
 to `attempts=1` turns it red with `ReplayLLM ran out of scripted turns: request #3`
 — the second turn is the cost the key avoids, which is the whole argument for it.
+
+## P29 — the body cites its log (2026-10-25)
+
+A pull request body is a claim about work that happened elsewhere, and until this
+milestone it was assembled from values passed in memory — `checks`, `changed`, `diff`.
+The values were right; what was missing was the **pointer**, so a body that drifted from
+the log looked exactly like one that had not.
+
+- `runtime/claims.py::claims_for(events, repo=slug)` folds `task/check` and `task/state`
+  events into `Claim(text, event, seq)`. A claim cites an event, not a variable: if the
+  log does not contain the fact, no claim is produced, and the section is simply absent.
+- `render_evidence(session_id, claims)` prints `## Evidence` with the session id and one
+  line per claim (`- \u0060pytest -q\u0060 — passed — event 12 (\u0060task/check\u0060)`), placed before
+  the diff so the diff stays the last thing in the body.
+- `_rewrite_published_bodies` (the M21 sibling rewrite) is now the **last** thing a run
+  does before `flush()`, and it runs for single-repository deliveries too. Both changes
+  have the same reason: the commit and the run's verdict are events a delivery had not
+  written when its body was first assembled. Rewriting before the verdict append is how
+  a body ends up citing everything except the sentence a reviewer needs.
+- The guard is falsifiable rather than decorative:
+  `tests/task/test_task_mode.py::test_every_claim_in_the_body_cites_an_event_in_the_log`
+  parses every `event N (\u0060kind\u0060)` out of the body, looks the seq up in the log and
+  compares the kind. A citation that does not resolve fails the test.
+- **A failed rewrite still does not fail the task.** The pull request exists and the
+  change is in it; the body is the opening one, and `task/published` with
+  `updated: false` is where a reader learns that.

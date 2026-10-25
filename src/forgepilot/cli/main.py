@@ -966,9 +966,14 @@ def _print_plan(plan: Any, gateway: Any) -> None:
     print(f"classifier calls: {gateway.calls}")
 
 
-def _print_outcome(outcome: Any) -> None:
+def _print_outcome(outcome: Any, *, session_id: str = "") -> None:
     print()
     print(f"state     : {outcome.state.value}   ({outcome.reason})")
+    # The log is where every number below comes from, so it is printed with them. A
+    # reader who doubts "checks passed" needs the event seq, and the seq is only useful
+    # beside the session it belongs to.
+    if session_id:
+        print(f"log       : session {session_id}")
     # One block per repository. A ticket may name several (M13), and printing the
     # first one's branch beside the task's state is how a two-repository run used to
     # read as a one-repository run that happened to succeed.
@@ -1924,7 +1929,7 @@ def _task(args: argparse.Namespace) -> int:
                 max_steps=getattr(getattr(root, "agentLoop", None), "max_steps", None)
                 or DEFAULT_MAX_STEPS,
             )
-            _print_outcome(outcome)
+            _print_outcome(outcome, session_id=str(runtime.session.session_id))
         finally:
             await runtime.close()
 

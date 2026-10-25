@@ -284,3 +284,29 @@ not a cliff. Both tables, and the four things they do not prove, are in
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.
 
 `docs/实现方案.md`'s milestone table ends at M11; **M12–M28 came from `~/.claude/plans/` — one file per milestone, `mNN-<slug>.md` (for example `m28-a-shellless-arm.md`)**, and `~/.claude/plans/` is where the forward plan lives — the only document expected to change. The gaps that are not yet work items are named where they were found: `docs/notes/defect-shape.md` (its gaps are closed; the table is history), `docs/notes/evals.md` (the **+32%** that must not be repeated, and `Retriever.open`'s missing caller, which M19 closed by writing the consumer rather than revisiting the method) and `docs/notes/gates-on-linux.md` (N3–N6 are settled; **N5** was the last that only a hand audit could settle, and M17 turned it into a gate). **Cross-repo delivery is built** (M13 above), so it is no longer one of the unstarted tracks; what remains of it are the two items in its own bullet — the merged checkout arrived at M25; the two-pull-request item closed on 2026-10-18. The **enterprise index** was an unstarted track until **Q4** gave it an interface, an HTTP provider and an opt-in bundle (above) — the service, its incremental updates and its permissions stay a deployment's. The memory follow-ups were closed at M27, leaving lexical-only recall and the local-only store as *decisions* (Q5). A fourth, once small and mechanical, is closed: `runtime/review/narrative.py` and `providers/classify/llm.py` each built a `ChatRequest` themselves, so the claim that `runtime/projection.py` is the only constructor was false twice — **M16 made it true and put two AST contract tests behind it**, leaving only the ordinary residual that nothing yet asserts a *review* narrative's prompt reached the log (`docs/notes/context-and-session.md`).
+
+## P29 — the body cites its log (2026-10-25)
+
+A pull request body is a claim about work that happened elsewhere, and until this
+milestone it was assembled from values passed in memory — `checks`, `changed`, `diff`.
+The values were right; what was missing was the **pointer**, so a body that drifted from
+the log looked exactly like one that had not.
+
+- `runtime/claims.py::claims_for(events, repo=slug)` folds `task/check` and `task/state`
+  events into `Claim(text, event, seq)`. A claim cites an event, not a variable: if the
+  log does not contain the fact, no claim is produced, and the section is simply absent.
+- `render_evidence(session_id, claims)` prints `## Evidence` with the session id and one
+  line per claim (`- \u0060pytest -q\u0060 — passed — event 12 (\u0060task/check\u0060)`), placed before
+  the diff so the diff stays the last thing in the body.
+- `_rewrite_published_bodies` (the M21 sibling rewrite) is now the **last** thing a run
+  does before `flush()`, and it runs for single-repository deliveries too. Both changes
+  have the same reason: the commit and the run's verdict are events a delivery had not
+  written when its body was first assembled. Rewriting before the verdict append is how
+  a body ends up citing everything except the sentence a reviewer needs.
+- The guard is falsifiable rather than decorative:
+  `tests/task/test_task_mode.py::test_every_claim_in_the_body_cites_an_event_in_the_log`
+  parses every `event N (\u0060kind\u0060)` out of the body, looks the seq up in the log and
+  compares the kind. A citation that does not resolve fails the test.
+- **A failed rewrite still does not fail the task.** The pull request exists and the
+  change is in it; the body is the opening one, and `task/published` with
+  `updated: false` is where a reader learns that.

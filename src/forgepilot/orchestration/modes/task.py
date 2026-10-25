@@ -38,6 +38,7 @@ from forgepilot.orchestration.context_assembly import (
 from forgepilot.orchestration.preprocess import PreprocessResult, preprocess
 from forgepilot.orchestration.router import AdapterSelection, select_adapters
 from forgepilot.orchestration.task_state import TaskState, TaskStateMachine
+from forgepilot.runtime.claims import Claim, claims_for, render_evidence
 from forgepilot.runtime.loop.turn import DEFAULT_MAX_STEPS
 from forgepilot.seams.classifier import ClassificationRequest, TicketUnderstanding
 from forgepilot.seams.refs import RepoRef
@@ -512,15 +513,6 @@ async def run_task(
             RepoDelivery(repo=untouched, state=TaskState.QUEUED, reason=_NOT_ATTEMPTED)
         )
 
-    await _rewrite_sibling_sections(
-        plan=plan,
-        deliveries=deliveries,
-        vcs=vcs,
-        constraints=constraints,
-        session=session,
-        project=project,
-    )
-
     merged = await _run_merged_checks(
         project=project,
         deliveries=deliveries,
@@ -568,6 +560,18 @@ async def run_task(
             "reason": reason,
             "repositories": [delivery.repo.slug for delivery in deliveries],
         },
+    )
+    # **Rewritten last, so the body can cite the verdict.** The verdict is the one claim
+    # a pull request cannot make while it is being opened — it is the run's, and the run
+    # is not finished. Doing this before the append above is how a body ends up citing
+    # everything except the sentence a reviewer actually needs.
+    await _rewrite_published_bodies(
+        plan=plan,
+        deliveries=deliveries,
+        vcs=vcs,
+        constraints=constraints,
+        session=session,
+        project=project,
     )
     # A finished task's log must be durable. Without this the closing events sit in
     # the buffer, and a reader — or a crash — sees a task that never ended.
@@ -897,6 +901,8 @@ async def _deliver_repository(
             opened=opened,
             repo=repo,
             declared=_declared_checks(project),
+            claims=claims_for(session.events, repo=repo.slug),
+            session_id=str(session_id),
         ),
         # Traceable back to the work item, not only to a branch name.
         ticket_id=str(plan.ticket.id),
@@ -1223,7 +1229,7 @@ def _task_verdict(deliveries: Sequence[RepoDelivery]) -> tuple[TaskState, str]:
     return state, reason
 
 
-async def _rewrite_sibling_sections(
+async def _rewrite_published_bodies(
     *,
     plan: TaskPlan,
     deliveries: Sequence[RepoDelivery],
@@ -1232,28 +1238,27 @@ async def _rewrite_sibling_sections(
     session: Any,
     project: ProjectConfig,
 ) -> None:
-    """Give every pull request the sibling account the run can now write.
+    """Give every pull request the account the run can now write.
 
-    Publishing is serial, so the first pull request of a plural ticket is opened
-    while the run still knows nothing about the second one — and its body says so:
-    "not attempted yet". That sentence was true when it was written and stops being
-    the whole truth the moment the next delivery reaches a verdict. A reviewer
-    reading pull request #1 should not have to reconstruct the run order to learn
-    that #2 exists and passed.
+    Two things are only knowable after the last delivery. The **sibling** account —
+    publishing is serial, so the first pull request of a plural ticket is opened while
+    the run still knows nothing about the second one, and its body says "not attempted
+    yet". And the **evidence** — the commit and the run's verdict are events this
+    delivery had not written when its body was first assembled (P29). A single-repository
+    run gets the rewrite for the second reason alone; a reviewer should not have to take
+    "delivered" on faith when the log can be cited.
 
-    So the sibling sections are rewritten once, after every delivery has an
-    outcome. What is rewritten is exactly the paragraph `_split_section` produces;
-    the checks, the diff and the symptom are recomputed from the same recorded
-    values, so a rewritten body is the body the run would have written had it known
-    the future.
+    So the body is rewritten once, after every delivery has an outcome. The checks, the
+    diff and the symptom are recomputed from the same recorded values, so a rewritten
+    body is the body the run would have written had it known the future.
 
-    **A failed rewrite does not fail the task.** The pull request exists and the
-    change is in it; the description is stale, which is worth a log event and not
-    worth reporting a delivered ticket as failed. The event is where a reader finds
-    out that the body they are looking at is the opening one.
+    **A failed rewrite does not fail the task.** The pull request exists and the change is
+    in it; the description is stale, which is worth a log event and not worth reporting a
+    delivered ticket as failed. The event is where a reader finds out that the body they
+    are looking at is the opening one.
     """
     with_pull_request = [d for d in deliveries if d.pull_request is not None]
-    if len(plan.repos) < 2 or not with_pull_request:
+    if not with_pull_request:
         return
 
     from forgepilot.seams.session import EventKind
@@ -1269,6 +1274,11 @@ async def _rewrite_sibling_sections(
             opened=finished,
             repo=delivery.repo,
             declared=_declared_checks(project),
+            # Recomputed here rather than carried from the first write: by now the log
+            # holds the checks, the commit *and* the run's verdict, so the rewritten body
+            # can cite a claim the first one could not make yet.
+            claims=claims_for(session.events, repo=delivery.repo.slug),
+            session_id=str(getattr(getattr(session, "header", None), "session_id", "")),
         )
         try:
             await vcs.update_pull_request_body(delivery.pull_request, body, constraints)
@@ -1365,6 +1375,8 @@ def _pull_request_body(
     opened: Sequence[RepoDelivery] = (),
     repo: RepoRef | None = None,
     declared: Sequence[str] = (),
+    claims: Sequence[Claim] = (),
+    session_id: str = "",
 ) -> str:
     """Assemble the PR description from what actually happened.
 
@@ -1415,6 +1427,9 @@ def _pull_request_body(
         lines.append("")
         lines.append("## Reported symptom")
         lines.append(plan.understanding.symptom)
+    # Before the diff, so the diff stays the last thing in the body: a reviewer who
+    # reads the diff does not want to scroll past evidence to get there.
+    lines.extend(render_evidence(session_id, claims))
     if diff:
         lines.append("")
         lines.append("<details><summary>Diff</summary>")

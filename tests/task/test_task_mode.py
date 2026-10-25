@@ -16,6 +16,7 @@ Three assertions here are the ones worth keeping:
 from __future__ import annotations
 
 import json
+import re
 
 from forgepilot.orchestration import ClassifierGateway
 from forgepilot.orchestration.modes.task import plan_task, run_task
@@ -767,3 +768,57 @@ async def test_a_project_can_cap_one_reply(task_rig, monkeypatch) -> None:
     )
 
     assert seen == [2048], f"the loop was told {seen}, not the project's cap"
+
+
+# ---------------------------------------------------------------------------
+# P29: the body cites the log, and the log can be asked
+# ---------------------------------------------------------------------------
+async def test_every_claim_in_the_body_cites_an_event_in_the_log(task_rig) -> None:
+    """The guard on claim→evidence: a citation that does not resolve is a false claim.
+
+    This is the falsifiable half of P29. Printing a sentence with a seq beside it is
+    easy; the sentence being *backed* by that seq is the property, and the only way to
+    test it is to look the seq up in the log and compare the kind.
+    """
+
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    await run(task_rig, plan)
+    # The body a reviewer ends up reading: the opening one is rewritten once the run has
+    # every outcome, and the rewrite is what carries the commit and the verdict.
+    body = task_rig.vcs.pull_request_bodies[-1][1]
+
+    assert "## Evidence" in body
+    session_id = str(task_rig.session.header.session_id)
+    assert session_id in body, "a citation without its session cannot be looked up"
+
+    kinds_by_seq = {event.seq: str(event.kind) for event in task_rig.session.events}
+    cited = re.findall(r"event (\d+) \(`([^`]+)`\)", body)
+    assert cited, "the body made claims and cited nothing"
+    for seq, kind in cited:
+        assert int(seq) in kinds_by_seq, f"the body cites event {seq}, which the log does not have"
+        assert kinds_by_seq[int(seq)] == kind, (
+            f"event {seq} is {kinds_by_seq[int(seq)]}, and the body calls it {kind}"
+        )
+
+
+async def test_the_body_cites_the_check_the_commit_and_the_verdict(task_rig) -> None:
+    plan = await make_plan(task_rig)
+    task_rig.llm.script(write_fix(FIXED), text_turn("done"))
+    task_rig.sandbox.script(ScriptedResult(exit_code=0, stdout="1 passed"))
+
+    await run(task_rig, plan)
+    opening = task_rig.vcs.pull_requests[0].body_md
+    final = task_rig.vcs.pull_request_bodies[-1][1]
+
+    # The opening body can cite the check — it had happened. It cannot cite the commit or
+    # the verdict: publishing is what writes them.
+    assert "`pytest -q` — passed" in opening
+    assert "`task/check`" in opening
+    assert "commit `" not in opening
+
+    assert "commit `" in final
+    assert "verdict `delivered`" in final
+    assert "`task/state`" in final
