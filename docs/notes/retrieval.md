@@ -583,6 +583,43 @@ socket — the table and the count line, an empty answer exiting 0, a refused to
 an unreachable port exiting 2 **without** printing the empty-answer line, the two usage errors,
 and `--dependents` refusing to combine with `--index-update`.
 
+## P27 — was the code that was read the code that changed? (2026-10-25)
+
+Every `read_code` result has carried the revision the index served since M14 (`meta.ref`), the
+checkout's own revision since P25 (`meta.workingRef`, `meta.stale`), and every delivery has
+written its commit since M18. **Nothing read them together.** The question a reviewer actually
+has — *was the code this agent read the code it changed?* — could only be answered by
+re-reading a transcript, which is the same as not being answered.
+
+`src/forgepilot/runtime/index_audit.py::audit(events)` is a pure fold, and
+`forgepilot --index-audit SESSION_ID` is the reader that runs. Three verdicts:
+
+| verdict | meaning | exit |
+|---|---|---|
+| `consistent` | every repository answered from exactly one revision, no call reported itself stale, and that revision is the delivered commit | 0 |
+| `mixed` | some answer came from another revision, or a call said the index lagged the checkout | 3 |
+| `unknown` | nothing to compare: no retrieval answered, or the session delivered nothing | 3 |
+
+Three decisions are worth naming because each is a way to get it wrong:
+
+- **`mixed` is not a failure.** An index that updates mid-session is a normal afternoon. The
+  verdict exists so a reviewer is *told*, not so a run is failed.
+- **`unknown` is never `0`.** Silence is not agreement — the same rule `--check` follows when
+  git cannot place a revision. A chat session, a review, an abandoned task: all `unknown`.
+- **A branch name is not a revision statement.** `main` cannot be shown to equal a delivered
+  sha without resolving it, so `same_revision` matches full shas and git's own 12-character
+  abbreviations and nothing else. A deployment whose index reports refs as branch names gets
+  `mixed`, and the fix belongs in the provider, not in the comparison.
+
+`code_search` deliberately contributes no revision: its result records the repositories it
+searched and which of them were stale (`meta.staleRepos`), but not a per-hit ref. Counting it
+as an answer would invent precision the log does not have. It contributes `searches` and
+`stale_searches`, and a stale search alone is enough to make a session `mixed`.
+
+Run against the two real sessions this repository produced, the fold says what the prose said:
+the task sessions are `consistent`; the sessions whose answers were served from the stale
+corpus while the checkout moved on are `mixed` with the stale call named.
+
 ## P26 — a real corpus, and the number a synthetic one could not give (2026-10-25)
 
 Two checkouts, not a generator: this repository (`519` tracked files) and the astropy

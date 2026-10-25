@@ -292,6 +292,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="with --index-update: send a complete snapshot instead of a delta",
     )
     index.add_argument(
+        "--index-audit",
+        default=None,
+        metavar="SESSION_ID",
+        help=(
+            "read one session's log and report whether the revision the index answered for "
+            "is the revision that was delivered, then exit"
+        ),
+    )
+    index.add_argument(
         "--dependents",
         default=None,
         metavar="MODULE",
@@ -1661,6 +1670,74 @@ def _dependents(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index_audit(args: argparse.Namespace) -> int:
+    """Answer, from the durable log, whether the code that was read is the code that changed.
+
+    Reads only. No token: the log is a local file this operator already owns, and an audit
+    that could refuse to run is one fewer audit. Exit codes follow ``--check``'s rule, where
+    "cannot say" is its own code and never 0:
+
+    * 0 — ``consistent``: every answer came from the revision that was delivered;
+    * 3 — ``mixed``: some answer came from another revision, or the index was behind. The
+      table says which repository and which revisions, because "mixed" alone is not actionable;
+    * 3 — ``unknown``: nothing to compare, and the reason is printed. Silence is not agreement.
+    """
+    import asyncio
+
+    from forgepilot.config import ConfigError, apply_layers, compose_layers, load_profile
+    from forgepilot.kernel import create_root, dispose_fiber
+    from forgepilot.runtime.index_audit import CONSISTENT, audit
+    from forgepilot.runtime.session import Session
+    from forgepilot.seams.refs import SessionId
+
+    session_id = str(args.index_audit).strip()
+    if not session_id:
+        print("error: --index-audit needs a session id", file=sys.stderr)
+        return 2
+
+    try:
+        profile = load_profile(args.config_dir, args.profile)
+        resolved = apply_layers(compose_layers(profile, args.patch), profile=profile.name)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    async def _read() -> Any:
+        root = create_root()
+        await resolved.materialize_async(root)
+        try:
+            session = await Session.open(root.sessionPersistence, SessionId(session_id))
+            return audit(session.events)
+        finally:
+            # A kernel root has no `dispose`; its fiber does, and disposing it tears the
+            # children down LIFO — the same door every plugin's effect goes out of.
+            await dispose_fiber(root.fiber)
+
+    try:
+        report = asyncio.run(_read())
+    except FileNotFoundError:
+        print(f"error: no session {session_id!r} in this state directory", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not crash
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if report.repos:
+        print(
+            "| repository | answered from | reads | stale reads | searches | stale searches | delivered |"
+        )
+        print("|---|---|---|---|---|---|---|")
+        for row in report.repos:
+            print(
+                f"| {row.repo} | {', '.join(ref[:12] for ref in row.served) or '-'} | "
+                f"{row.reads} | {row.stale_reads} | {row.searches} | {row.stale_searches} | "
+                f"{row.delivered[:12] if row.delivered else '-'} |"
+            )
+        print()
+    print(f"verdict: {report.verdict} — {report.reason}")
+    return 0 if report.verdict == CONSISTENT else 3
+
+
 def _restore(args: argparse.Namespace) -> int:
     """Replace the state directory from an archive, verifying it first."""
     from forgepilot.runtime.backup import BackupRefused, restore
@@ -1952,6 +2029,7 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
             ("--restore", bool(args.restore)),
             ("--index-update", bool(args.index_update)),
             ("--dependents", bool(args.dependents)),
+            ("--index-audit", bool(args.index_audit)),
             ("--serve", args.serve),
         )
         if on
@@ -1983,6 +2061,8 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
         return _index_update(args)
     if args.dependents:
         return _dependents(args)
+    if args.index_audit:
+        return _index_audit(args)
     if args.restore:
         return _restore(args)
     if args.serve:
