@@ -111,3 +111,36 @@ groups:
             old is a row that will not finish (the 2026-10-19 eval hang was a command
             waiting on stdin). If the stream log's last `tool/call` has no `tool/result`,
             that call is the one to look at.
+
+      # ⚠️ **These two series come from `tools/index_freshness.py`, not from `/metrics`.**
+      # The index does not have the checkouts, so it cannot know what `HEAD` is; the
+      # freshness of a corpus is a fact about the machine that holds the repositories.
+      # The exporter computes it and a Prometheus scrape of *it* supplies these series.
+      # A deployment that scrapes the API and not the exporter gets no index alerting —
+      # which is why `tests/httpapi/test_metrics.py` proves both producers between them.
+      - alert: ForgePilotIndexStale
+        expr: max(forgepilot_index_lag_commits) > 0
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Some repository's index is behind its checkout"
+          description: >-
+            An answer served from a stale index is the failure this whole retrieval
+            design exists to make visible: it is confidently wrong, not empty. Run the
+            ingest client (`--index-update`) for the named repository, or investigate why
+            the scheduled run stopped. `forgepilot --check` reports the same lag on one
+            machine, and every retrieval answer already carries its `indexed_at`.
+
+      - alert: ForgePilotIndexAge
+        expr: forgepilot_index_age_seconds > 86400
+        for: 1h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The index has not been updated in a day"
+          description: >-
+            Not the same fact as lag: a repository whose HEAD has not moved is fresh
+            however old the corpus is, and one that moved is stale however recent the
+            update. Age is the coarse signal that the ingest path itself stopped —
+            a scheduler that died, a token that expired, a webhook that was never wired.

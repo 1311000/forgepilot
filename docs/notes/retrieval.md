@@ -702,3 +702,26 @@ Two defects were found by wiring it, both of the shape this project keeps meetin
 gauge for it, and the reason is a property rather than an omission: the service does not own
 the checkout clock, so a gauge would measure the wrong thing. The reader is the client, which
 is where the checkout is.
+
+## P31 — freshness gets a producer (2026-10-25)
+
+P25 gave `lag()` readers on the request path. P31 gives it a *producer that runs when nobody is
+asking*, because a freshness rule whose only reader is a tool somebody has to remember to run is
+the same "field with no consumer" in slower motion. `tools/index_freshness.py` compares
+`refsByRepo` with each checkout's `HEAD` and prints `forgepilot_index_lag_commits`,
+`forgepilot_index_age_seconds` and `forgepilot_index_refs`; `deploy/alerts.yml` gained
+`ForgePilotIndexStale` and `ForgePilotIndexAge`, and the guard that checks every alert names a
+series that exists now scrapes **both** producers — the API and the exporter.
+
+Three decisions worth naming. The series come from an exporter rather than from `/metrics`
+because the index cannot see a checkout's `HEAD`; putting the gauge in the API would have meant
+shipping the repositories to the service. A missing `updated_at` renders as age 0, not as an
+ancient corpus: a service that does not report a timestamp is a gap in the exporter's knowledge,
+and an alert on a missing field is an alert people mute. And `head_of` refuses a directory that
+is not the root of a checkout — the fourth appearance of the `git -C <dir>` walk-up trap, now
+with a test.
+
+What this still does not do: compute lag **without** a local checkout (a server-side index with
+no checkout on the same machine has to be told what `HEAD` is by whoever pushed), and prove the
+ingest *ran* — the exporter reads `updated_at`, which a run that ingested one repository and
+crashed on the second still advances.

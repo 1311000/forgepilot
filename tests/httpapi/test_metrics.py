@@ -148,6 +148,38 @@ def test_label_values_are_escaped() -> None:
     assert sum(1 for line in body.splitlines() if line.startswith("forgepilot_http")) == 1
 
 
+def _exporter_series() -> set[str]:
+    """The series `tools/index_freshness.py` supplies, taken from a render, not a list.
+
+    The index-freshness series do not come from `/metrics`: the index cannot see a
+    checkout's `HEAD`, so a separate exporter computes them beside the repositories. This
+    imports the renderer and scrapes *its* output, which keeps the same property the live
+    scrape gives — renaming a series in the exporter fails here rather than silently
+    orphaning a rule.
+    """
+
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "tools" / "index_freshness.py"
+    spec = importlib.util.spec_from_file_location("index_freshness_for_alerts", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    text = module.render(
+        [module.Measurement("git.corp/team/svc-a", "head", "indexed", 0, True)],
+        age=1.0,
+        indexed_refs=("indexed",),
+    )
+    return {
+        line.split("{")[0].split(" ")[0]
+        for line in text.splitlines()
+        if line.startswith("forgepilot_")
+    }
+
+
 async def test_the_alert_rules_name_series_that_exist(api) -> None:
     """Every `forgepilot_*` series in `deploy/alerts.yml` is really emitted.
 
@@ -173,6 +205,9 @@ async def test_the_alert_rules_name_series_that_exist(api) -> None:
         for line in body.splitlines()
         if line.startswith("forgepilot_")
     }
+    # The index-freshness rules name series the API cannot export (it has no checkouts),
+    # so both producers are scraped: this one and the exporter beside the repositories.
+    emitted |= _exporter_series()
 
     named: set[str] = set()
     for group in document["groups"]:

@@ -29,6 +29,8 @@ derived from a constant in the code, and the derivation is what the third column
 | ForgePilotNoScrape | 5m | no measurement; five default scrape intervals |
 | ForgePilotApprovalWaiting | 4m | below `DEFAULT_APPROVAL_TIMEOUT_S` (300 s), the timeout it has to catch |
 | ForgePilotTurnStall | 10m | 1343 live turns: p50 0.2 s, p95 28.0 s, max 242.5 s |
+| ForgePilotIndexStale | 30m | not a latency budget: an ingest that is late by a minute is not broken, and `lag()` already refuses to call an unknown ref fresh |
+| ForgePilotIndexAge | 1h | the `for:` is what keeps one late nightly ingest from paging on a single scrape |
 
 The turn distribution comes from the durable session logs on this box — every
 `turn/start` paired with its `turn/end` (n = 1343, all `deepseek-flash`). No approval was ever
@@ -212,3 +214,56 @@ directory holds `sessions.db`, do not tar it: use `sqlite3 sessions.db "VACUUM I
 'backup.db'"`, which is safe while writers are active. For JSONL state, prefer a
 window with no traffic; a torn tail is caught by restore, but the archive is then
 useless.
+
+### ForgePilotIndexStale
+
+**What it means.** `max(forgepilot_index_lag_commits) > 0` for half an hour: at least one
+repository's index answers for a commit that is not its checkout's `HEAD`. This is the failure
+the whole retrieval design exists to make visible — a stale index is **confidently wrong**, not
+empty, and nothing in the answer looks unusual unless you read its `ref`.
+
+**First three commands.**
+```bash
+# Which repository, and by how much. The label carries both facts.
+curl -sS http://127.0.0.1:9101/metrics | grep forgepilot_index_lag_commits
+# The same answer from the repository side, with the checkout named.
+.venv/Scripts/python.exe -m forgepilot --index-url http://127.0.0.1:8000 \
+  --repo git.corp/team/app=/srv/app --index-token-env FORGEPILOT_INDEX_TOKEN --check
+# And the ingest that should have moved it.
+.venv/Scripts/python.exe -m forgepilot --index-update git.corp/team/app \
+  --index-url http://127.0.0.1:8000 --repo-root /srv/app
+```
+
+**What "fixed" looks like.** `forgepilot_index_lag_commits` is 0 for every label, and a
+retrieval answer for the repository carries `meta.workingRef` equal to its `meta.ref`.
+
+**Who to wake.** Whoever owns the ingest schedule. A lag of one commit right after a push is the
+system working; a lag that persists past a scheduled run is a job that stopped.
+
+**What it cannot tell you.** Whether the *checkout* is current. The exporter compares the index
+with `HEAD`; if `HEAD` itself is a week old because nobody fetched, both are stale together and
+the series reads 0.
+
+### ForgePilotIndexAge
+
+**What it means.** `forgepilot_index_age_seconds > 86400` for an hour: the service has not
+updated in a day. Not the same fact as lag — a repository whose `HEAD` has not moved is fresh
+however old the corpus is, and one that moved is stale however recent the update. Age is the
+coarse signal that the ingest path itself stopped.
+
+**First three commands.**
+```bash
+curl -sS http://127.0.0.1:9101/metrics | grep -E 'forgepilot_index_(age|refs)'
+curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/status
+crontab -l | grep index-update
+```
+
+**What "fixed" looks like.** `forgepilot_index_age_seconds` drops below 86400 after one
+scheduled run completes.
+
+**Who to wake.** The on-call for the ingest job, not the API on-call: the API is answering, which
+is exactly why this needs its own page.
+
+**What it cannot tell you.** Whether the run *succeeded*. The exporter reads `updated_at`, which
+a failed run does not advance — but a run that ingested one repository and crashed on the second
+does advance it, and that case is `ForgePilotIndexStale`'s job to catch.

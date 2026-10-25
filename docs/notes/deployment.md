@@ -322,4 +322,26 @@ refuses to open a scope from one. The first CI run of this tool failed with 401 
 while the same test passed here, because this machines .env.local supplies the key and CI does
 not. A test that leans on the developers key is a test of the developers machine.
 
+## P31 — freshness on a schedule
 
+`lag()` gained readers at P25 (`--check`, and both retrieval tools warn when an answer is
+behind), but nothing ran it on a *schedule*. `tools/index_freshness.py` is that half: it reads
+`/status`, compares each repository's indexed ref with its checkout's `HEAD`, and prints
+Prometheus series. Exit 0 fresh, 1 stale or older than `--max-age-hours`, 2 refused or
+unreachable.
+
+```cron
+# Every five minutes, beside the checkouts. `|| true` is deliberately absent: a non-zero exit
+# is how the scheduler's own monitoring learns the ingest stopped.
+*/5 * * * * cd /srv/forgepilot && .venv/bin/python tools/index_freshness.py \
+  --index-url http://127.0.0.1:8000 \
+  --repo git.corp/team/app=/srv/checkouts/app \
+  --repo git.corp/team/lib=/srv/checkouts/lib \
+  --index-token-env FORGEPILOT_INDEX_TOKEN >> /var/log/forgepilot/index.prom
+```
+
+Scrape `/var/log/forgepilot/index.prom` with `node_exporter`'s textfile collector, or run the
+tool behind a tiny HTTP wrapper. Two things this does not do: it does not push the numbers into
+the API's `/metrics` (that process has no checkouts — the fact lives beside the repositories), and
+it does not run the ingest itself. A freshness check that also fixed things would hide the
+failures it exists to report.
