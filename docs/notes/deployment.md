@@ -316,3 +316,10 @@ What the numbers say, and what they do not:
 - **It is not the deployment.** localhost, no TLS terminator, no reverse proxy, replay-free but
   also disk-warm; a Caddy hop and a cold page cache both add milliseconds this table omits.
 
+The tool sets FORGEPILOT_SIGNING_KEY in the child it starts, and that is not boilerplate: a
+deployment with no signing key issues **unsigned** credentials and uthenticate — correctly —
+refuses to open a scope from one. The first CI run of this tool failed with 401 Unauthorized
+while the same test passed here, because this machines .env.local supplies the key and CI does
+not. A test that leans on the developers key is a test of the developers machine.
+
+
