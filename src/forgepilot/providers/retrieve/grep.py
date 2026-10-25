@@ -42,6 +42,7 @@ from forgepilot.kernel import PluginService
 from forgepilot.seams.refs import CodeRef, LineSpan, RepoRef
 from forgepilot.seams.retriever import (
     SERVICE_NAME,
+    WORKING_TREE,
     CodeHit,
     FileSlice,
     RetrieverCapabilities,
@@ -221,6 +222,30 @@ class GrepRetrieverPlugin(PluginService):
         return completed.stdout.strip() or None
 
     # -- Retriever ---------------------------------------------------------
+    async def working_ref(
+        self, repo: RepoRef, constraints: ExecutionConstraints, root: str | None = None
+    ) -> str | None:
+        """The revision this checkout is on — the comparison `read_code` needs.
+
+        `None` when there is no checkout for the repository: a search provider may be
+        configured for one repository and not another, and inventing a revision would
+        make a stale answer look current. Permission is re-checked here like everywhere
+        else in this provider: a repository the caller may not read has no revision to
+        report, and saying so is not a leak.
+        """
+        if not constraints.allows_repo(repo):
+            return None
+        try:
+            checkout = self._root(repo, constraints, root)
+            return self._ref(checkout, WORKING_TREE)
+        except (UnknownCheckout, OSError):
+            # A checkout that is not on this machine is not a checkout at the caller's
+            # revision — it is no evidence either way, and None says exactly that. The
+            # _ref call is inside the guard because git refuses a cwd that is not
+            # a directory with an OSError, and a missing checkout is the normal case for
+            # a search provider configured against several repositories.
+            return None
+
     async def search(
         self, query: SearchQuery, constraints: ExecutionConstraints
     ) -> Sequence[CodeHit]:

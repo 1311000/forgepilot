@@ -118,8 +118,10 @@ class _Wire:
     async def _request(self, method: str, path: str, payload: Any = None) -> Any:
         url = f"{self._base}{path}"
         try:
+            # Same reason as remote.py: a machine-wide proxy must not be applied to the
+            # index's own URL, or a dead proxy on the box reads as an unreachable index.
             async with httpx.AsyncClient(
-                timeout=self._timeout_s, transport=self._transport
+                timeout=self._timeout_s, transport=self._transport, trust_env=False
             ) as client:
                 response = await client.request(method, url, json=payload, headers=self._headers())
         except httpx.HTTPError as exc:

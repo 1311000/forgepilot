@@ -36,6 +36,7 @@ __all__ = [
     "Retriever",
     "matches_glob",
     "ref_to_serve",
+    "working_ref_of",
 ]
 
 SERVICE_NAME = "retriever"
@@ -224,3 +225,30 @@ class Retriever(Protocol):
     async def open(
         self, location: CodeRef, span: LineSpan, constraints: ExecutionConstraints
     ) -> FileSlice: ...
+
+
+async def working_ref_of(
+    retriever: Retriever,
+    repo: RepoRef,
+    constraints: ExecutionConstraints,
+    root: str | None = None,
+) -> str | None:
+    """The revision the *checkout* is on — when the retriever has a checkout at all.
+
+    Optional on purpose, and the optionality is the honest part. A shared index answers
+    for the revision it ingested and has no idea what any developer's working tree is at;
+    a provider that cannot know says so by not having the method, which is a different
+    statement from "the tree is at the revision I served". Conflating the two is how a
+    confidently-wrong answer gets its confidence.
+
+    A reader compares this with the ref an answer carried: equal means the answer is
+    current, different means the index is behind, and `None` means nobody can tell.
+
+    ``root`` is the caller's working tree when it has one. It matters: the configured
+    path is where the repository lives, and a session works in a checkout cut from it,
+    so asking the configured copy answers a question about a different tree.
+    """
+    method = getattr(retriever, "working_ref", None)
+    if method is None:
+        return None
+    return await method(repo, constraints, root)

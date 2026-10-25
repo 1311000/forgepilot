@@ -190,6 +190,20 @@ now on the right side of the number they depend on, asserted by a guard against 
   reserved for a refused credential or an unreachable index — neither may ever be read as
   "nobody imports it". 6 tests over a real socket.
 
+
+**P25 (the freshness rule gets a reader) — complete.** `lag()` was a pure function with
+tests and no callers in `src/`. It has three readers now: `read_code` says, in the tool
+result, which revision the index answered for and which one the checkout holds;
+`code_search` appends one footer per run with one clause per repository; and
+`--index-update … --check` turns it into an exit code (0 current, 3 behind, 3 when git
+cannot place the indexed revision — "cannot compare" must not read as "nothing to compare").
+The third state is the contract: a shared index with no checkout returns `None` and produces
+*no sentence*, never "current". Wiring it found two defects: `working_ref` had to call
+`_ref` inside its `try` (a missing checkout is `NotADirectoryError` on Windows, not
+`UnknownCheckout`), and `httpx`'s `trust_env=True` let a dead machine proxy (registry
+`ProxyServer=127.0.0.1:10792`) make every locally served index look unreachable — 20 tests
+red with no code change. Both index clients now pass `trust_env=False`, because a deployment
+that needs an egress proxy should configure one rather than inherit one silently.
 **What "deliverable" still does not mean.** The **shared enterprise index** — the 300 GB server-side corpus — does not exist here and cannot be built on this machine. What M19 added is its *shape* as a running thing (`bundles/code_index/patch.yaml`, `tools/build_code_index.py`; `read_code`/`code_search` unchanged across the swap); M24 added the composition (index + working-tree overlay can run together); **Q4** added the interface a deployment's service can meet (`seams/index_service.py`), an HTTP client for it (`providers/retrieve/remote.py`) and an opt-in bundle (`bundles/retriever_remote/`, in no shipped profile). The service, its incremental updates and its permissions are a deployment's to supply.
 
 `--boot` resolves the default profile to **20 rows ACTIVE**: an earlier version of this file counted 17 with a disabled `retriever-remote` row pointing at a module that did not exist — that row is gone (see `docs/notes/retrieval.md`), `httpapi` has since joined the default profile via the `web` bundle, `credentials` (the `${NAME}` channel, empty by default) came with M11b Phase A, and `distillation` (the per-session watermark) with Phase C. `--boot` is the command that would have caught all three. ⚠️ **"20 ACTIVE" is a fact about the profile; "none failed" is a fact about the machine** — measured on this box: **21 rows, 20 ACTIVE, 1 FAILED**, the failure being `workspace` (`LocalTempWorkspacePlugin`), because `tempfile`'s last resort here is the repository root and the provider refuses it. **M15 made `--boot` tell the truth about that**: it prints the kernel's own reason under the row, ends with `result: 1 row(s) FAILED`, and **exits 1** — it used to print `result: OK` and exit 0 beside the same `FAILED` row, which is the defect recorded in `docs/notes/defect-shape.md`. `PENDING` is deliberately *not* a failure (a declared dependency is unavailable — the fail-closed property working — and awaiting it would hang), so only `FAILED` counts. Set `FORGEPILOT_TMP` to a writable directory and the row activates — without one, `--chat`, `--task`, `--serve` and `--distill` all stop at boot with the directory named in the error.

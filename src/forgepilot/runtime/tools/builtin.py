@@ -27,7 +27,7 @@ from forgepilot.runtime.credentials import resolve_placeholders, scrub_values
 from forgepilot.runtime.sandbox_denial import likely_denial, not_executed_reason
 from forgepilot.runtime.sandbox_env import command_env
 from forgepilot.seams.refs import CodeRef, LineSpan
-from forgepilot.seams.retriever import WORKING_TREE, SearchQuery
+from forgepilot.seams.retriever import WORKING_TREE, SearchQuery, working_ref_of
 from forgepilot.seams.sandbox import SandboxExecutionPolicy, SandboxMode
 from forgepilot.seams.security import Operation, normalise_relative
 from forgepilot.seams.tools import (
@@ -335,6 +335,7 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
     )
 
     hits = tuple(await retriever.search(query, ctx.constraints))
+    stale_repos: list[str] = []
     truncated = len(hits) > cap
     hits = hits[:cap]
 
@@ -345,6 +346,9 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
         )
 
     rendered = _render_hits(hits, mode)
+    stale, stale_repos = await _staleness_note(retriever, hits, ctx)
+    if stale:
+        rendered += stale
     if truncated:
         rendered += (
             f"\n\n[truncated: showing the first {cap} of more. Narrow the pattern or the "
@@ -358,8 +362,48 @@ async def _code_search(call: ToolCall, ctx: ToolContext, retriever: Any) -> Tool
             "truncated": truncated,
             "outputMode": mode,
             "repos": [r.slug for r in permitted],
+            "staleRepos": stale_repos,
         },
     )
+
+
+async def _staleness_note(
+    retriever: Any, hits: tuple[Any, ...], ctx: ToolContext
+) -> tuple[str, list[str]]:
+    """One footer naming every repository whose answer is behind its checkout.
+
+    Per hit would repeat the same sentence; per repository is what a reader needs, and
+    the repositories are bounded by the permitted set. A retriever that cannot know its
+    checkout (a shared index) returns None and produces no sentence — an absent note must
+    mean "nobody could tell", never "it is current".
+    """
+    served: dict[str, str] = {}
+    for hit in hits:
+        served.setdefault(hit.location.repo.slug, hit.location.ref)
+    behind: list[str] = []
+    for repo in retriever.repositories():
+        slug = repo.slug
+        if slug not in served or not ctx.constraints.allows_repo(repo):
+            continue
+        working = await working_ref_of(
+            retriever,
+            repo,
+            ctx.constraints,
+            str(ctx.workspace_root) if ctx.workspace_root else None,
+        )
+        if working is not None and working != served[slug]:
+            behind.append(
+                f"{slug}: the index answers for {served[slug]!r}, the checkout is at {working!r}"
+            )
+    if not behind:
+        return "", []
+    note = (
+        "\n\n[stale index: "
+        + "; ".join(behind)
+        + ". These results are behind the working tree — check the tree before editing "
+        "on it.]"
+    )
+    return note, [entry.split(":", 1)[0] for entry in behind]
 
 
 def _render_hits(hits: tuple[Any, ...], mode: str) -> str:
@@ -515,6 +559,7 @@ async def _read_code(call: ToolCall, ctx: ToolContext, retriever: Any) -> ToolOu
         return ToolOutcome(content=str(exc), is_error=True, meta={"phase": "missing"})
 
     served = slice_.location.ref
+    working = await working_ref_of(retriever, repo, ctx.constraints)
     header = f"{repo.slug}:{slice_.location.path} @ {served} (lines {slice_.span.start}-{slice_.span.end}"
     header += ", truncated]" if slice_.truncated else "]"
     note = ""
@@ -522,6 +567,12 @@ async def _read_code(call: ToolCall, ctx: ToolContext, retriever: Any) -> ToolOu
         note = (
             f"\n[asked for {ref!r}; the retriever served {served!r}. "
             f"The content below is from the revision named in the header.]\n"
+        )
+    if working is not None and working != served:
+        note += (
+            f"\n[the index answers for {served!r}; the checkout is at {working!r}. "
+            "This answer is behind the checkout: verify against the working tree before "
+            "editing on it, and do not treat it as what the tree holds.]\n"
         )
 
     return ToolOutcome(
@@ -531,6 +582,8 @@ async def _read_code(call: ToolCall, ctx: ToolContext, retriever: Any) -> ToolOu
             "path": slice_.location.path,
             "ref": served,
             "askedFor": ref,
+            "workingRef": working,
+            "stale": working is not None and working != served,
             "start": slice_.span.start,
             "end": slice_.span.end,
             "truncated": slice_.truncated,

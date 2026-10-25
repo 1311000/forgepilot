@@ -281,6 +281,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="with --index-update: the variable holding the write token",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="with --index-update: report how far behind the index is, write nothing",
+    )
     index.add_argument(
         "--index-full",
         action="store_true",
@@ -1444,6 +1449,49 @@ def _enter_maintenance(state: Path) -> tuple[Any, Any] | None:
     return coordinator, lease
 
 
+def _report_lag(root: Path, repo: RepoRef, indexed: str | None, head: str) -> int:
+    if indexed is None:
+        print(
+            f"{repo.slug}: the index has no revision for this repository; a full snapshot "
+            f"would start from {head}",
+            file=sys.stderr,
+        )
+        return 3
+    if indexed == head:
+        print(f"{repo.slug}: up to date at {head}")
+        return 0
+    behind = _commits_behind(root, indexed, head)
+    distance = f"{behind} commit(s) behind" if behind is not None else "behind"
+    print(f"{repo.slug}: {distance} — the index is at {indexed}, the checkout is at {head}")
+    return 3
+
+
+def _commits_behind(root: Path, indexed: str, head: str) -> int | None:
+    """How many commits the index is missing, or None when git cannot say.
+
+    None rather than 0: a revision that is not in this checkout's history (a rewritten
+    branch, a shallow clone) must not read as "up to date".
+    """
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--count", f"{indexed}..{head}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        return int(done.stdout.strip())
+    except ValueError:
+        return None
+
+
 def _index_update(args: argparse.Namespace) -> int:
     """Send the commits since the indexed revision to a running index service.
 
@@ -1492,6 +1540,12 @@ def _index_update(args: argparse.Namespace) -> int:
     try:
         head = git_head(root)
         indexed = asyncio.run(writer.indexed_ref(repo))
+        if getattr(args, "check", False):
+            # Read-only, and the reader `lag()` never had: an operator or a CI job asks
+            # "is the index behind?" and gets an exit code instead of a sentence in a
+            # document. Exit 3 because "behind" is not an error — the index is answering,
+            # just for an older commit — and it must not be confused with a broken command.
+            return _report_lag(root, repo, indexed, head)
         if indexed is None or args.index_full:
             planned: Plan = plan_full(root, repo=repo, ref=head)
             how = "complete snapshot"

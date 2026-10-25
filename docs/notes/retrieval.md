@@ -582,3 +582,42 @@ Measured: `tests/cli/test_dependents_cli.py`, 6 tests against the reference serv
 socket — the table and the count line, an empty answer exiting 0, a refused token exiting 2,
 an unreachable port exiting 2 **without** printing the empty-answer line, the two usage errors,
 and `--dependents` refusing to combine with `--index-update`.
+
+## P25 — the freshness rule gets a reader (2026-10-25)
+
+`lag()` was written at P11 and had no caller in `src/`: a pure function that could say
+"this answer is behind its checkout", reachable from tests and from nothing that runs. Three
+readers now exist, and they are deliberately different kinds:
+
+| reader | who sees it | what it says |
+|---|---|---|
+| `read_code` | the model | one sentence in the tool result: the index answered for `A`, the checkout is at `B` |
+| `code_search` | the model | one footer per run, one clause per repository (not per hit) |
+| `~--index-update … --check` | an operator or a CI job | exit 0 current, exit 3 behind, exit 3 when git cannot place the indexed revision |
+
+**The third state is the contract.** `retriever.working_ref_of` returns `None` when the
+retriever has no `working_ref` at all — a shared enterprise index has no checkout of its own
+— and `None` renders as *no sentence*, never as "current". Same rule as the seam's
+"cannot answer is not 'nothing there'": an absent note must mean "nobody could tell".
+
+Two defects were found by wiring it, both of the shape this project keeps meeting:
+
+1. **A method that exists and is never called is not a mechanism** — the P25 premise. The
+   one exposed defect inside it: `working_ref` must call `_ref` *inside* its `try`, because
+   `GrepRetrieverPlugin._git` runs `subprocess.run(cwd=…)` and a configured checkout that is
+   not there raises `NotADirectoryError` on Windows, not `UnknownCheckout`.
+2. **A machine-wide proxy is not the index's transport.** `httpx` defaults to
+   `trust_env=True`, so a stale `ProxyEnable=1 ProxyServer=127.0.0.1:10792` in the Windows
+   registry made *every* client call to a locally served index fail with
+   `ConnectError: [WinError 10061]` — 20 tests, no code change on either side. Measured with
+   one process and one URL: `trust_env=True` → refused, `trust_env=False` → 200. Both index
+   clients (`providers/retrieve/remote.py`, `providers/retrieve/enterprise.py`) now pass
+   `trust_env=False`: a deployment that needs an egress proxy should configure that proxy
+   rather than inherit one silently. The suites also set `NO_PROXY` for loopback
+   (`tests/conftest.py`), so a developer's machine settings cannot decide whether the tests
+   pass.
+
+**What is still not here.** `lag()` is still not called by a *server*; there is no metric
+gauge for it, and the reason is a property rather than an omission: the service does not own
+the checkout clock, so a gauge would measure the wrong thing. The reader is the client, which
+is where the checkout is.

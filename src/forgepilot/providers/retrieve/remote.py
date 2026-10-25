@@ -157,8 +157,14 @@ class _Wire:
     async def _request(self, method: str, path: str, payload: Any = None) -> Any:
         url = f"{self._base}{path}"
         try:
+            # 	rust_env=False is a correctness fix, not a preference: with the default
+            # an \HTTP_PROXY\ (or a Windows registry proxy) is applied to *every* URL,
+            # including W.0.0.1\, so a dead machine-wide proxy makes a local index look
+            # unreachable. Measured on this box: identical code, \ConnectError\ with
+            # trust_env on and 200 with it off. A deployment that needs an egress proxy
+            # should configure that proxy, not inherit one silently.
             async with httpx.AsyncClient(
-                timeout=self._timeout_s, transport=self._transport
+                timeout=self._timeout_s, transport=self._transport, trust_env=False
             ) as client:
                 response = await client.request(method, url, json=payload, headers=self._headers())
         except httpx.HTTPError as exc:

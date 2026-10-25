@@ -44,6 +44,35 @@ def _the_environment_a_test_leaves_behind_is_the_one_it_found():
         os.environ.update(before)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _a_test_that_serves_on_loopback_is_not_sent_to_a_proxy():
+    """Keep ``http://127.0.0.1:<port>`` off whatever proxy this machine happens to have.
+
+    Measured on this box, 2026-10-25: a stale ``ProxyEnable=1 ProxyServer=127.0.0.1:10792``
+    in the Windows registry (set during a push investigation) made every bare ``httpx.get``
+    against a locally served index fail with ``ConnectError: [WinError 10061]`` — 20 tests,
+    with no code change on either side. The *clients* now pass ``trust_env=False`` (a
+    deployment must not inherit a machine proxy silently), but the suites that drive the
+    service with plain ``httpx`` would still be at the mercy of the developer's machine.
+
+    ``NO_PROXY`` is the standard way to say "not this host"; setting it for the session is
+    the narrowest version of that, and it leaves the rest of the environment alone.
+    """
+    had = {name: os.environ.get(name) for name in ("NO_PROXY", "no_proxy")}
+    loopback = "127.0.0.1,localhost,::1"
+    for name, previous in had.items():
+        merged = f"{previous},{loopback}" if previous else loopback
+        os.environ[name] = merged
+    try:
+        yield
+    finally:
+        for name, previous in had.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+
+
 # ---------------------------------------------------------------------------
 # A temp root inside the checkout, decided rather than inherited.
 #
